@@ -29,7 +29,16 @@ pub async fn start(name: &str) -> anyhow::Result<()> {
             expected: "stopped".to_string(),
         }
     );
-    qemu::start(&inst).await?;
+
+    let config = crate::config::load(&inst.config_path())?;
+    let memory = config
+        .vm
+        .as_ref()
+        .and_then(|vm| vm.memory.as_deref())
+        .unwrap_or("2G");
+    let cpus = config.vm.as_ref().and_then(|vm| vm.cpus).unwrap_or(2);
+
+    qemu::start(&inst, memory, cpus).await?;
     inst.write_status(instance::Status::Running).await?;
     Ok(())
 }
