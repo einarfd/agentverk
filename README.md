@@ -19,6 +19,9 @@ Early development. The CLI scaffold is in place but commands are not yet functio
   - macOS: `brew install cdrtools`
   - Ubuntu/Debian: `sudo apt install genisoimage`
   - Fedora: `sudo dnf install genisoimage`
+- OpenSSH (for SSH access to VMs)
+  - macOS: included with the OS
+  - Linux: `sudo apt install openssh-client` (usually pre-installed)
 - Rust 1.85+ (build only)
 
 ## Usage

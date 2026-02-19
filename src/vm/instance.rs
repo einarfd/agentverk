@@ -97,6 +97,18 @@ impl Instance {
         self.dir.join("id_ed25519")
     }
 
+    /// Path to the SSH public key.
+    #[must_use]
+    pub fn ssh_pub_key_path(&self) -> PathBuf {
+        self.dir.join("id_ed25519.pub")
+    }
+
+    /// Path to the file storing the localhost port forwarded to guest SSH.
+    #[must_use]
+    pub fn ssh_port_path(&self) -> PathBuf {
+        self.dir.join("ssh_port")
+    }
+
     /// Path to the PID file.
     #[must_use]
     pub fn pid_path(&self) -> PathBuf {
