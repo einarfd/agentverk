@@ -15,7 +15,11 @@ Early development. The CLI scaffold is in place but commands are not yet functio
   - macOS: `brew install qemu`
   - Ubuntu/Debian: `sudo apt install qemu-system`
   - Fedora: `sudo dnf install qemu-system-x86` (or `qemu-system-aarch64`)
-- Rust 1.85+
+- mkisofs or genisoimage (for cloud-init seed image generation)
+  - macOS: `brew install cdrtools`
+  - Ubuntu/Debian: `sudo apt install genisoimage`
+  - Fedora: `sudo dnf install genisoimage`
+- Rust 1.85+ (build only)
 
 ## Usage
 

@@ -39,6 +39,9 @@ pub struct VmConfig {
     /// Disk size, e.g. "20G".
     pub disk: Option<String>,
 
+    /// Username for the VM's default user. Defaults to "agent".
+    pub user: Option<String>,
+
     /// Base image URL (qcow2 cloud image).
     pub image: Option<String>,
 
