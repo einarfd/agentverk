@@ -22,13 +22,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     match cli.command {
         Command::Create(args) => {
-            let name = args
-                .name
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("--name is required (config file support coming soon)"))?;
-            tracing::info!(name, "creating VM");
-            eprintln!("agv create: not yet implemented");
-            Ok(())
+            let start = args.start;
+            let (name, config) = config::build_from_cli(&args)?;
+            tracing::info!(name = %name, "creating VM");
+            vm::create(&name, &config, start).await
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, "starting VM");

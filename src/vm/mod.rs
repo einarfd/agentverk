@@ -7,14 +7,186 @@ pub mod cloud_init;
 pub mod instance;
 pub mod qemu;
 
-use anyhow::Context as _;
+use std::path::Path;
 
-use crate::config::Config;
-use instance::Instance;
+use anyhow::Context as _;
+use tracing::{info, warn};
+
+use crate::config::{Config, ProvisionStep};
+use crate::error::Error;
+use crate::{dirs, image, ssh};
+use instance::{Instance, Status};
 
 /// Create a new VM from the given configuration.
-pub async fn create(_name: &str, _config: &Config, _start_after: bool) -> anyhow::Result<()> {
-    todo!("orchestrate full VM creation: image, disk, keys, cloud-init, boot, provision")
+///
+/// This is the top-level entry point with error recovery: if creation fails
+/// after the instance directory has been created, the VM is marked as broken
+/// and the error is logged to `error.log`.
+pub async fn create(name: &str, config: &Config, start_after: bool) -> anyhow::Result<()> {
+    // Guard: instance must not already exist.
+    let inst_dir = dirs::instance_dir(name)?;
+    if inst_dir.exists() {
+        return Err(Error::VmAlreadyExists {
+            name: name.to_string(),
+        }
+        .into());
+    }
+
+    // Create the instance directory.
+    tokio::fs::create_dir_all(&inst_dir)
+        .await
+        .with_context(|| format!("failed to create instance directory for VM '{name}'"))?;
+
+    let inst = Instance {
+        name: name.to_string(),
+        dir: inst_dir,
+    };
+
+    // Write initial status.
+    inst.write_status(Status::Creating).await?;
+
+    // Delegate to inner function; catch errors to mark broken.
+    if let Err(e) = create_inner(&inst, name, config, start_after).await {
+        // Mark as broken so users can inspect / destroy.
+        let _ = inst.write_status(Status::Broken).await;
+        let _ = tokio::fs::write(
+            inst.error_log_path(),
+            format!("{e:#}"),
+        )
+        .await;
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Inner creation logic — does all real work, uses `?` for early return.
+async fn create_inner(
+    inst: &Instance,
+    name: &str,
+    config: &Config,
+    start_after: bool,
+) -> anyhow::Result<()> {
+    let vm = config.vm.as_ref();
+
+    // Extract values with defaults.
+    let memory = vm.and_then(|v| v.memory.as_deref()).unwrap_or("2G");
+    let cpus = vm.and_then(|v| v.cpus).unwrap_or(2);
+    let disk_size = vm.and_then(|v| v.disk.as_deref()).unwrap_or("20G");
+    let user = vm.and_then(|v| v.user.as_deref()).unwrap_or("agent");
+    let default_url = image::default_image_url();
+    let image_url = vm
+        .and_then(|v| v.image.as_deref())
+        .unwrap_or(default_url);
+    let checksum = vm.and_then(|v| v.image_checksum.as_deref());
+
+    // Save config to instance dir so restarts / inspect can reload it.
+    crate::config::save(config, &inst.config_path()).await?;
+
+    // Cache base image (potentially downloads 500+ MB, idempotent).
+    info!(url = image_url, "caching base image");
+    let base_image = image::ensure_cached(image_url, checksum).await?;
+
+    // Create qcow2 overlay disk.
+    info!(size = disk_size, "creating overlay disk");
+    image::create_overlay(&base_image, &inst.disk_path(), disk_size).await?;
+
+    // Generate SSH keypair.
+    let pub_key = ssh::generate_keypair(inst).await?;
+
+    // Gather files for cloud-init injection.
+    let files: Vec<(String, String)> = config
+        .files
+        .iter()
+        .map(|f| (f.source.clone(), f.dest.clone()))
+        .collect();
+
+    // Generate cloud-init seed ISO.
+    info!("generating cloud-init seed ISO");
+    cloud_init::generate_seed(&inst.seed_path(), &pub_key, name, user, &files).await?;
+
+    // If not starting, we're done — write stopped status.
+    if !start_after {
+        inst.write_status(Status::Stopped).await?;
+        if !config.provision.is_empty() {
+            warn!(
+                "provisioning steps defined but --start not specified — \
+                 run `agv start {name}` then `agv provision {name}` to provision"
+            );
+        }
+        info!(name, "VM created (stopped)");
+        return Ok(());
+    }
+
+    // Start QEMU.
+    info!(name, memory, cpus, "starting QEMU");
+    qemu::start(inst, memory, cpus).await?;
+    inst.write_status(Status::Running).await?;
+
+    // Wait for SSH to become ready.
+    ssh::wait_for_ready(inst, user).await?;
+
+    // Run provisioning steps (if any).
+    if !config.provision.is_empty() {
+        run_provisioning(inst, user, &config.provision).await?;
+    }
+
+    info!(name, "VM created and running");
+    Ok(())
+}
+
+/// Execute provisioning steps in order. First failure aborts remaining steps.
+async fn run_provisioning(
+    instance: &Instance,
+    user: &str,
+    steps: &[ProvisionStep],
+) -> anyhow::Result<()> {
+    for (i, step) in steps.iter().enumerate() {
+        if let Some(ref script) = step.run {
+            info!(step = i + 1, "running inline provisioning script");
+            ssh::session(
+                instance,
+                user,
+                &["bash".to_string(), "-c".to_string(), script.clone()],
+            )
+            .await
+            .with_context(|| format!("provisioning step {}: inline script failed", i + 1))?;
+        } else if let Some(ref script_path) = step.script {
+            info!(step = i + 1, path = script_path, "running provisioning script file");
+            let remote_path = format!("/tmp/agv-provision-{i}.sh");
+
+            // Copy the script file to the VM.
+            ssh::copy_to(instance, user, Path::new(script_path), &remote_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "provisioning step {}: failed to copy script {script_path}",
+                        i + 1
+                    )
+                })?;
+
+            // Make executable and run.
+            ssh::session(
+                instance,
+                user,
+                &[
+                    "bash".to_string(),
+                    "-c".to_string(),
+                    format!("chmod +x {remote_path} && {remote_path}"),
+                ],
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "provisioning step {}: script {script_path} failed",
+                    i + 1
+                )
+            })?;
+        }
+    }
+
+    info!("provisioning complete");
+    Ok(())
 }
 
 /// Start an existing stopped VM.
@@ -22,8 +194,8 @@ pub async fn start(name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
     anyhow::ensure!(
-        status == instance::Status::Stopped,
-        crate::error::Error::VmBadState {
+        status == Status::Stopped,
+        Error::VmBadState {
             name: name.to_string(),
             status: status.to_string(),
             expected: "stopped".to_string(),
@@ -39,7 +211,7 @@ pub async fn start(name: &str) -> anyhow::Result<()> {
     let cpus = config.vm.as_ref().and_then(|vm| vm.cpus).unwrap_or(2);
 
     qemu::start(&inst, memory, cpus).await?;
-    inst.write_status(instance::Status::Running).await?;
+    inst.write_status(Status::Running).await?;
     Ok(())
 }
 
@@ -48,8 +220,8 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
     anyhow::ensure!(
-        status == instance::Status::Running,
-        crate::error::Error::VmBadState {
+        status == Status::Running,
+        Error::VmBadState {
             name: name.to_string(),
             status: status.to_string(),
             expected: "running".to_string(),
@@ -60,7 +232,7 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     } else {
         qemu::stop(&inst).await?;
     }
-    inst.write_status(instance::Status::Stopped).await?;
+    inst.write_status(Status::Stopped).await?;
     Ok(())
 }
 
@@ -68,7 +240,7 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
 pub async fn destroy(name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     // If running, stop first.
-    if inst.reconcile_status().await? == instance::Status::Running {
+    if inst.reconcile_status().await? == Status::Running {
         let _ = qemu::force_stop(&inst).await;
     }
     tokio::fs::remove_dir_all(&inst.dir)
@@ -79,7 +251,7 @@ pub async fn destroy(name: &str) -> anyhow::Result<()> {
 
 /// List all known VM instances.
 pub async fn list() -> anyhow::Result<Vec<Instance>> {
-    let dir = crate::dirs::instances_dir()?;
+    let dir = dirs::instances_dir()?;
     if !dir.exists() {
         return Ok(Vec::new());
     }

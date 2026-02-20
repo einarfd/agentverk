@@ -73,17 +73,17 @@ pub struct CreateArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Memory allocation, e.g. 2G, 512M.
-    #[arg(long, default_value = "2G")]
-    pub memory: String,
+    /// Memory allocation, e.g. 2G, 512M [default: 2G].
+    #[arg(long)]
+    pub memory: Option<String>,
 
-    /// Number of virtual CPUs.
-    #[arg(long, default_value_t = 2)]
-    pub cpus: u32,
+    /// Number of virtual CPUs [default: 2].
+    #[arg(long)]
+    pub cpus: Option<u32>,
 
-    /// Disk size, e.g. 20G.
-    #[arg(long, default_value = "20G")]
-    pub disk: String,
+    /// Disk size, e.g. 20G [default: 20G].
+    #[arg(long)]
+    pub disk: Option<String>,
 
     /// Base image URL (defaults to Ubuntu 24.04 for current arch).
     #[arg(long, value_name = "URL")]
