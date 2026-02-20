@@ -4,11 +4,17 @@
 //! (`qemu-img`, `mkisofs`/`genisoimage`). Tests skip gracefully if tools are
 //! missing, so `cargo test` always passes.
 //!
-//! Tests use unique VM names prefixed with `_test-` and clean up after
-//! themselves. They use the real agv data directory.
+//! Each test creates its own dummy base image in the agv image cache using
+//! a unique filename, so tests never overwrite real cached images or conflict
+//! with each other.
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use agv::vm::instance::{Instance, Status};
-use agv::{config, dirs, image, vm};
+use agv::{config, dirs, vm};
+
+/// Counter to generate unique filenames across concurrent tests.
+static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Check whether `qemu-img` is available.
 fn qemu_img_available() -> bool {
@@ -52,22 +58,18 @@ fn qemu_available() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Create a small dummy qcow2 and place it in the image cache under the
-/// filename that `ensure_cached()` would use for the default image URL.
-/// This avoids downloading a real cloud image during tests.
-async fn populate_image_cache() {
+/// Create a unique dummy qcow2 in the image cache and return a fake URL
+/// whose filename matches the cached file. Each call produces a unique
+/// filename so concurrent tests never collide.
+async fn create_test_base_image() -> String {
+    let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let filename = format!("_agv-test-base-{id}.qcow2");
+    let fake_url = format!("https://example.invalid/{filename}");
+
     let cache_dir = dirs::image_cache_dir().unwrap();
     tokio::fs::create_dir_all(&cache_dir).await.unwrap();
 
-    let default_url = image::default_image_url();
-    let filename = default_url.rsplit('/').next().unwrap();
-    let cached_path = cache_dir.join(filename);
-
-    // Only create if not already cached (another test may have populated it).
-    if cached_path.exists() {
-        return;
-    }
-
+    let cached_path = cache_dir.join(&filename);
     let cached_str = cached_path.to_str().unwrap();
     let output = tokio::process::Command::new("qemu-img")
         .args(["create", "-f", "qcow2", cached_str, "1G"])
@@ -76,14 +78,15 @@ async fn populate_image_cache() {
         .unwrap();
     assert!(
         output.status.success(),
-        "qemu-img create failed for test base image: {}",
+        "qemu-img create failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    fake_url
 }
 
-/// Build a minimal Config that uses the default image URL (which we've
-/// pre-populated in the cache) and small resource values.
-fn test_config() -> config::Config {
+/// Build a minimal Config that uses the given test image URL.
+fn test_config(image_url: &str) -> config::Config {
     config::Config {
         vm: Some(config::VmConfig {
             name: None,
@@ -91,17 +94,12 @@ fn test_config() -> config::Config {
             cpus: Some(1),
             disk: Some("2G".to_string()),
             user: Some("agent".to_string()),
-            image: None, // uses default → pre-cached
+            image: Some(image_url.to_string()),
             image_checksum: None,
         }),
         files: vec![],
         provision: vec![],
     }
-}
-
-/// Ensure agv data dirs exist.
-async fn ensure_dirs() {
-    dirs::ensure_dirs().await.unwrap();
 }
 
 /// Force-destroy a VM, ignoring errors (best-effort cleanup).
@@ -120,14 +118,12 @@ async fn create_without_start() {
         return;
     }
 
-    ensure_dirs().await;
-    populate_image_cache().await;
+    let image_url = create_test_base_image().await;
 
     let name = "_test-create-nostrt";
-    // Clean up any leftover from a previous failed run.
     cleanup(name).await;
 
-    let config = test_config();
+    let config = test_config(&image_url);
     vm::create(name, &config, false).await.unwrap();
 
     // Verify instance directory and files exist.
@@ -179,13 +175,12 @@ async fn create_duplicate_name_fails() {
         return;
     }
 
-    ensure_dirs().await;
-    populate_image_cache().await;
+    let image_url = create_test_base_image().await;
 
     let name = "_test-create-dup";
     cleanup(name).await;
 
-    let config = test_config();
+    let config = test_config(&image_url);
 
     // First create should succeed.
     vm::create(name, &config, false).await.unwrap();
@@ -204,7 +199,7 @@ async fn create_duplicate_name_fails() {
 
 #[tokio::test]
 async fn create_marks_broken_on_failure() {
-    ensure_dirs().await;
+    dirs::ensure_dirs().await.unwrap();
 
     let name = "_test-create-broken";
     cleanup(name).await;
@@ -262,7 +257,7 @@ async fn create_with_start_and_provision() {
         return;
     }
 
-    ensure_dirs().await;
+    dirs::ensure_dirs().await.unwrap();
 
     let name = "_test-create-full";
     cleanup(name).await;

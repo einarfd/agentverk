@@ -121,6 +121,18 @@ impl Instance {
         self.dir.join("qmp.sock")
     }
 
+    /// Path to the per-instance EFI NVRAM vars file (aarch64 only).
+    #[must_use]
+    pub fn efi_vars_path(&self) -> PathBuf {
+        self.dir.join("efi-vars.fd")
+    }
+
+    /// Path to the serial console log.
+    #[must_use]
+    pub fn serial_log_path(&self) -> PathBuf {
+        self.dir.join("serial.log")
+    }
+
     /// Path to the error log (present only when status is broken).
     #[must_use]
     pub fn error_log_path(&self) -> PathBuf {

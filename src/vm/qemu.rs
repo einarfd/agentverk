@@ -280,40 +280,82 @@ fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
     }
 }
 
-/// Find the EFI firmware file for aarch64 QEMU.
-///
-/// Only called on aarch64 targets. Searches common installation paths.
+/// EFI firmware paths for aarch64: read-only code and writable vars template.
 #[cfg(target_arch = "aarch64")]
-fn find_efi_firmware() -> anyhow::Result<PathBuf> {
-    let candidates: &[&str] = if cfg!(target_os = "macos") {
-        &[
-            "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-            "/usr/local/share/qemu/edk2-aarch64-code.fd",
-        ]
+struct EfiFirmware {
+    code: PathBuf,
+    vars: PathBuf,
+}
+
+/// Find the EFI firmware files for aarch64 QEMU.
+///
+/// Returns paths to both the read-only code image and the writable NVRAM
+/// vars template. The vars file must be copied to the instance directory
+/// before use, since each VM needs its own writable copy.
+#[cfg(target_arch = "aarch64")]
+fn find_efi_firmware() -> anyhow::Result<EfiFirmware> {
+    let (code_candidates, vars_candidates): (&[&str], &[&str]) = if cfg!(target_os = "macos") {
+        (
+            &[
+                "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+                "/usr/local/share/qemu/edk2-aarch64-code.fd",
+            ],
+            &[
+                "/opt/homebrew/share/qemu/edk2-arm-vars.fd",
+                "/usr/local/share/qemu/edk2-arm-vars.fd",
+            ],
+        )
     } else {
-        &[
-            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-            "/usr/share/AAVMF/AAVMF_CODE.fd",
-            "/usr/share/edk2/aarch64/QEMU_EFI.fd",
-            "/usr/share/qemu/edk2-aarch64-code.fd",
-        ]
+        (
+            &[
+                "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+                "/usr/share/AAVMF/AAVMF_CODE.fd",
+                "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+                "/usr/share/qemu/edk2-aarch64-code.fd",
+            ],
+            &[
+                "/usr/share/AAVMF/AAVMF_VARS.fd",
+                "/usr/share/edk2/aarch64/vars-template-pflash.raw",
+                "/usr/share/qemu/edk2-arm-vars.fd",
+            ],
+        )
     };
 
-    for path in candidates {
-        let p = Path::new(path);
-        if p.exists() {
-            return Ok(p.to_path_buf());
+    let code = code_candidates
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists())
+        .map(Path::to_path_buf);
+
+    let vars = vars_candidates
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists())
+        .map(Path::to_path_buf);
+
+    match (code, vars) {
+        (Some(code), Some(vars)) => Ok(EfiFirmware { code, vars }),
+        (None, _) => {
+            let searched = code_candidates.join(", ");
+            bail!(
+                "EFI firmware code not found for aarch64 — searched: {searched}\n\
+                 Install QEMU with EFI support:\n\
+                 \x20 macOS: brew install qemu\n\
+                 \x20 Debian/Ubuntu: apt install qemu-efi-aarch64\n\
+                 \x20 Fedora: dnf install edk2-aarch64"
+            )
+        }
+        (_, None) => {
+            let searched = vars_candidates.join(", ");
+            bail!(
+                "EFI NVRAM vars template not found for aarch64 — searched: {searched}\n\
+                 Install QEMU with EFI support:\n\
+                 \x20 macOS: brew install qemu\n\
+                 \x20 Debian/Ubuntu: apt install qemu-efi-aarch64\n\
+                 \x20 Fedora: dnf install edk2-aarch64"
+            )
         }
     }
-
-    let searched = candidates.join(", ");
-    bail!(
-        "EFI firmware not found for aarch64 — searched: {searched}\n\
-         Install QEMU with EFI support:\n\
-         \x20 macOS: brew install qemu\n\
-         \x20 Debian/Ubuntu: apt install qemu-efi-aarch64\n\
-         \x20 Fedora: dnf install edk2-aarch64"
-    )
 }
 
 /// Build the full QEMU argument list.
@@ -325,14 +367,35 @@ fn build_qemu_args(
 ) -> anyhow::Result<(String, Vec<String>)> {
     let (binary, mut args) = platform_args()?;
 
-    // EFI firmware for aarch64.
+    // EFI firmware for aarch64: pflash drives for code (read-only) and
+    // vars (writable per-instance copy for UEFI NVRAM).
     #[cfg(target_arch = "aarch64")]
     {
         let firmware = find_efi_firmware()?;
-        let firmware_str = firmware
+        let code_str = firmware
+            .code
             .to_str()
-            .context("EFI firmware path is not valid UTF-8")?;
-        args.extend(["-bios".to_string(), firmware_str.to_string()]);
+            .context("EFI firmware code path is not valid UTF-8")?;
+        let vars_dst = instance.efi_vars_path();
+        // Copy the vars template if this instance doesn't have one yet.
+        if !vars_dst.exists() {
+            std::fs::copy(&firmware.vars, &vars_dst).with_context(|| {
+                format!(
+                    "failed to copy EFI vars template {} → {}",
+                    firmware.vars.display(),
+                    vars_dst.display()
+                )
+            })?;
+        }
+        let vars_str = vars_dst
+            .to_str()
+            .context("EFI vars path is not valid UTF-8")?;
+        args.extend([
+            "-drive".to_string(),
+            format!("if=pflash,format=raw,readonly=on,file={code_str}"),
+            "-drive".to_string(),
+            format!("if=pflash,format=raw,file={vars_str}"),
+        ]);
     }
 
     let disk_str = instance
@@ -386,12 +449,17 @@ fn build_qemu_args(
         format!("unix:{qmp_str},server,nowait"),
     ]);
 
-    // No display, serial, or monitor — headless operation.
+    // Headless operation with serial console logged to file.
+    let serial_str = instance
+        .serial_log_path()
+        .to_str()
+        .context("serial log path is not valid UTF-8")?
+        .to_string();
     args.extend([
         "-display".to_string(),
         "none".to_string(),
         "-serial".to_string(),
-        "none".to_string(),
+        format!("file:{serial_str}"),
         "-monitor".to_string(),
         "none".to_string(),
     ]);

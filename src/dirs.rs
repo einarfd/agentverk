@@ -2,6 +2,8 @@
 //!
 //! On macOS: `~/Library/Application Support/agv/`
 //! On Linux: `~/.local/share/agv/`
+//!
+//! The data directory can be overridden via [`set_data_dir`] for testing.
 
 use std::path::PathBuf;
 
