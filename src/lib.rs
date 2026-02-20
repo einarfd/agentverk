@@ -29,23 +29,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, "starting VM");
-            eprintln!("agv start: not yet implemented");
-            Ok(())
+            vm::start(&args.name).await
         }
         Command::Stop(args) => {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");
-            eprintln!("agv stop: not yet implemented");
-            Ok(())
+            vm::stop(&args.name, args.force).await
         }
         Command::Destroy(args) => {
             tracing::info!(name = %args.name, "destroying VM");
-            eprintln!("agv destroy: not yet implemented");
-            Ok(())
+            vm::destroy(&args.name).await
         }
         Command::Ssh(args) => {
-            tracing::info!(name = %args.name, "opening SSH session");
-            eprintln!("agv ssh: not yet implemented");
-            Ok(())
+            let inst = vm::instance::Instance::open(&args.name).await?;
+            let cfg = config::load(&inst.config_path())?;
+            let user = cfg
+                .vm
+                .as_ref()
+                .and_then(|v| v.user.as_deref())
+                .unwrap_or("agent");
+            ssh::session(&inst, user, &args.command).await
         }
         Command::Ls => {
             let instances = vm::list().await?;
