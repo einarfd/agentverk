@@ -50,6 +50,9 @@ pub enum Command {
     /// List all VMs.
     Ls,
 
+    /// List available images.
+    Images,
+
     /// Show detailed information about a VM.
     Inspect(InspectArgs),
 
@@ -65,33 +68,28 @@ pub enum Command {
 
 #[derive(Debug, clap::Args)]
 pub struct CreateArgs {
+    /// Name for the new VM instance.
+    pub name: String,
+
     /// Path to .toml config file (defaults to agv.toml if it exists).
     #[arg(long, value_name = "PATH")]
     pub config: Option<String>,
 
-    /// VM name (required if not specified in config).
+    /// Image to base the VM on [default: ubuntu-24.04].
     #[arg(long)]
-    pub name: Option<String>,
+    pub image: Option<String>,
 
-    /// Memory allocation, e.g. 2G, 512M [default: 2G].
+    /// Memory allocation, e.g. 2G, 512M.
     #[arg(long)]
     pub memory: Option<String>,
 
-    /// Number of virtual CPUs [default: 2].
+    /// Number of virtual CPUs.
     #[arg(long)]
     pub cpus: Option<u32>,
 
-    /// Disk size, e.g. 20G [default: 20G].
+    /// Disk size, e.g. 20G.
     #[arg(long)]
     pub disk: Option<String>,
-
-    /// Base image URL (defaults to Ubuntu 24.04 for current arch).
-    #[arg(long, value_name = "URL")]
-    pub image: Option<String>,
-
-    /// SHA256 checksum for image verification (format: sha256:abc123...).
-    #[arg(long, value_name = "CHECKSUM")]
-    pub image_checksum: Option<String>,
 
     /// Copy a file or directory into the VM. Repeatable. Format: source:dest.
     #[arg(long = "file", value_name = "SRC:DEST")]

@@ -10,6 +10,7 @@ pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod image;
+pub mod images;
 pub mod ssh;
 pub mod vm;
 
@@ -23,7 +24,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Create(args) => {
             let start = args.start;
-            let (name, config) = config::build_from_cli(&args)?;
+            let name = args.name.clone();
+            let config = config::build_from_cli(&args)?;
             tracing::info!(name = %name, "creating VM");
             vm::create(&name, &config, start).await
         }
@@ -41,18 +43,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
-            let cfg = config::load(&inst.config_path())?;
-            let user = cfg
-                .vm
-                .as_ref()
-                .and_then(|v| v.user.as_deref())
-                .unwrap_or("agent");
-            ssh::session(&inst, user, &args.command).await
+            let cfg = config::load_resolved(&inst.config_path())?;
+            ssh::session(&inst, &cfg.user, &args.command).await
         }
         Command::Ls => {
             let instances = vm::list().await?;
             if instances.is_empty() {
-                eprintln!("No VMs found. Create one with: agv create --name <name>");
+                eprintln!("No VMs found. Create one with: agv create <name>");
                 return Ok(());
             }
             let mut table = Table::new();
@@ -64,6 +61,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     .await
                     .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
                 table.add_row([&inst.name, &status, "", ""]);
+            }
+            println!("{table}");
+            Ok(())
+        }
+        Command::Images => {
+            let images = images::list_all()?;
+            if images.is_empty() {
+                eprintln!("No images found.");
+                return Ok(());
+            }
+            let mut table = Table::new();
+            table.set_content_arrangement(ContentArrangement::Dynamic);
+            table.set_header(["NAME", "SOURCE"]);
+            for img in &images {
+                table.add_row([&img.name, &img.source.to_string()]);
             }
             println!("{table}");
             Ok(())

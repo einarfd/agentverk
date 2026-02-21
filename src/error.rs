@@ -66,6 +66,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    // -- Image definition errors --
+    #[error("image '{name}' not found (searched built-in images and {dir})")]
+    ImageNotFound { name: String, dir: PathBuf },
+
+    #[error("circular image inheritance: {chain}")]
+    CircularInheritance { chain: String },
+
     // -- Image errors --
     #[error("failed to download image from {url}")]
     ImageDownload {

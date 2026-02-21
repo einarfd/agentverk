@@ -1,0 +1,160 @@
+//! Built-in and user image registry.
+//!
+//! Image definitions are TOML files that describe how to set up a VM.
+//! Built-in images are embedded in the binary via `include_str!()`.
+//! Users can add custom images in `<data_dir>/images/*.toml`.
+
+use std::path::PathBuf;
+
+use anyhow::Context as _;
+
+use crate::config::Config;
+use crate::dirs;
+
+const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
+const CLAUDE_TOML: &str = include_str!("claude.toml");
+
+const BUILTIN_IMAGES: &[(&str, &str)] = &[
+    ("ubuntu-24.04", UBUNTU_TOML),
+    ("claude", CLAUDE_TOML),
+];
+
+/// Information about an available image.
+#[derive(Debug)]
+pub struct ImageInfo {
+    /// Image name (derived from filename or built-in key).
+    pub name: String,
+    /// Where this image comes from.
+    pub source: ImageSource,
+}
+
+/// Where an image definition was found.
+#[derive(Debug)]
+pub enum ImageSource {
+    /// Baked into the binary.
+    BuiltIn,
+    /// User-provided file.
+    User(PathBuf),
+}
+
+/// Look up an image definition by name.
+///
+/// Search order: user images dir → built-in images.
+/// Returns `None` if no image with that name exists.
+pub fn lookup(name: &str) -> anyhow::Result<Option<Config>> {
+    // Check user images first — they override built-in.
+    if let Ok(user_dir) = dirs::images_dir() {
+        let user_path = user_dir.join(format!("{name}.toml"));
+        if user_path.exists() {
+            let contents = std::fs::read_to_string(&user_path)
+                .with_context(|| format!("failed to read image file {}", user_path.display()))?;
+            let config: Config = toml::from_str(&contents)
+                .with_context(|| format!("failed to parse image file {}", user_path.display()))?;
+            return Ok(Some(config));
+        }
+    }
+
+    // Check built-in images.
+    for &(builtin_name, toml_str) in BUILTIN_IMAGES {
+        if builtin_name == name {
+            let config: Config = toml::from_str(toml_str)
+                .with_context(|| format!("failed to parse built-in image '{name}'"))?;
+            return Ok(Some(config));
+        }
+    }
+
+    Ok(None)
+}
+
+/// List all available images (user images + built-in).
+///
+/// User images with the same name as a built-in image shadow the built-in.
+pub fn list_all() -> anyhow::Result<Vec<ImageInfo>> {
+    let mut images = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // User images first (they take precedence).
+    if let Ok(user_dir) = dirs::images_dir() {
+        if user_dir.exists() {
+            let entries = std::fs::read_dir(&user_dir)
+                .with_context(|| format!("failed to read images dir {}", user_dir.display()))?;
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "toml") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let name = stem.to_string();
+                        seen.insert(name.clone());
+                        images.push(ImageInfo {
+                            name,
+                            source: ImageSource::User(path),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Built-in images (skip if shadowed by user image).
+    for &(name, _) in BUILTIN_IMAGES {
+        if !seen.contains(name) {
+            images.push(ImageInfo {
+                name: name.to_string(),
+                source: ImageSource::BuiltIn,
+            });
+        }
+    }
+
+    images.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(images)
+}
+
+impl std::fmt::Display for ImageSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BuiltIn => write!(f, "built-in"),
+            Self::User(path) => write!(f, "{}", path.display()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_builtin_ubuntu() {
+        let config = lookup("ubuntu-24.04").unwrap();
+        assert!(config.is_some(), "ubuntu-24.04 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "ubuntu-24.04 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+    }
+
+    #[test]
+    fn lookup_builtin_claude() {
+        let config = lookup("claude").unwrap();
+        assert!(config.is_some(), "claude should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert_eq!(base.from.as_deref(), Some("ubuntu-24.04"));
+    }
+
+    #[test]
+    fn lookup_nonexistent() {
+        let config = lookup("does-not-exist-12345").unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn list_all_includes_builtins() {
+        let images = list_all().unwrap();
+        let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"ubuntu-24.04"));
+        assert!(names.contains(&"claude"));
+    }
+}

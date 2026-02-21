@@ -32,6 +32,11 @@ pub fn instances_dir() -> anyhow::Result<PathBuf> {
     Ok(data_dir()?.join("instances"))
 }
 
+/// Return the directory for user-provided image definitions.
+pub fn images_dir() -> anyhow::Result<PathBuf> {
+    Ok(data_dir()?.join("images"))
+}
+
 /// Return the state directory for a specific VM instance.
 pub fn instance_dir(name: &str) -> anyhow::Result<PathBuf> {
     Ok(instances_dir()?.join(name))
@@ -44,7 +49,7 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 
 /// Ensure the core directory structure exists.
 pub async fn ensure_dirs() -> anyhow::Result<()> {
-    let dirs = [image_cache_dir()?, instances_dir()?];
+    let dirs = [image_cache_dir()?, instances_dir()?, images_dir()?];
     for dir in &dirs {
         tokio::fs::create_dir_all(dir)
             .await

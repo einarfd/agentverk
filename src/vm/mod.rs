@@ -12,17 +12,17 @@ use std::path::Path;
 use anyhow::Context as _;
 use tracing::{info, warn};
 
-use crate::config::{Config, ProvisionStep};
+use crate::config::{ProvisionStep, ResolvedConfig};
 use crate::error::Error;
 use crate::{dirs, image, ssh};
 use instance::{Instance, Status};
 
-/// Create a new VM from the given configuration.
+/// Create a new VM from the given resolved configuration.
 ///
 /// This is the top-level entry point with error recovery: if creation fails
 /// after the instance directory has been created, the VM is marked as broken
 /// and the error is logged to `error.log`.
-pub async fn create(name: &str, config: &Config, start_after: bool) -> anyhow::Result<()> {
+pub async fn create(name: &str, config: &ResolvedConfig, start_after: bool) -> anyhow::Result<()> {
     // Guard: instance must not already exist.
     let inst_dir = dirs::instance_dir(name)?;
     if inst_dir.exists() {
@@ -64,32 +64,20 @@ pub async fn create(name: &str, config: &Config, start_after: bool) -> anyhow::R
 async fn create_inner(
     inst: &Instance,
     name: &str,
-    config: &Config,
+    config: &ResolvedConfig,
     start_after: bool,
 ) -> anyhow::Result<()> {
-    let vm = config.vm.as_ref();
-
-    // Extract values with defaults.
-    let memory = vm.and_then(|v| v.memory.as_deref()).unwrap_or("2G");
-    let cpus = vm.and_then(|v| v.cpus).unwrap_or(2);
-    let disk_size = vm.and_then(|v| v.disk.as_deref()).unwrap_or("20G");
-    let user = vm.and_then(|v| v.user.as_deref()).unwrap_or("agent");
-    let default_url = image::default_image_url();
-    let image_url = vm
-        .and_then(|v| v.image.as_deref())
-        .unwrap_or(default_url);
-    let checksum = vm.and_then(|v| v.image_checksum.as_deref());
-
-    // Save config to instance dir so restarts / inspect can reload it.
+    // Save resolved config to instance dir so restarts / inspect can reload it.
     crate::config::save(config, &inst.config_path()).await?;
 
     // Cache base image (potentially downloads 500+ MB, idempotent).
-    info!(url = image_url, "caching base image");
-    let base_image = image::ensure_cached(image_url, checksum).await?;
+    info!(url = %config.base_url, "caching base image");
+    let base_image =
+        image::ensure_cached(&config.base_url, config.base_checksum.as_deref()).await?;
 
     // Create qcow2 overlay disk.
-    info!(size = disk_size, "creating overlay disk");
-    image::create_overlay(&base_image, &inst.disk_path(), disk_size).await?;
+    info!(size = %config.disk, "creating overlay disk");
+    image::create_overlay(&base_image, &inst.disk_path(), &config.disk).await?;
 
     // Generate SSH keypair.
     let pub_key = ssh::generate_keypair(inst).await?;
@@ -103,7 +91,7 @@ async fn create_inner(
 
     // Generate cloud-init seed ISO.
     info!("generating cloud-init seed ISO");
-    cloud_init::generate_seed(&inst.seed_path(), &pub_key, name, user, &files).await?;
+    cloud_init::generate_seed(&inst.seed_path(), &pub_key, name, &config.user, &files).await?;
 
     // If not starting, we're done — write stopped status.
     if !start_after {
@@ -119,16 +107,16 @@ async fn create_inner(
     }
 
     // Start QEMU.
-    info!(name, memory, cpus, "starting QEMU");
-    qemu::start(inst, memory, cpus).await?;
+    info!(name, memory = %config.memory, cpus = config.cpus, "starting QEMU");
+    qemu::start(inst, &config.memory, config.cpus).await?;
     inst.write_status(Status::Running).await?;
 
     // Wait for SSH to become ready.
-    ssh::wait_for_ready(inst, user).await?;
+    ssh::wait_for_ready(inst, &config.user).await?;
 
     // Run provisioning steps (if any).
     if !config.provision.is_empty() {
-        run_provisioning(inst, user, &config.provision).await?;
+        run_provisioning(inst, &config.user, &config.provision).await?;
     }
 
     info!(name, "VM created and running");
@@ -202,15 +190,9 @@ pub async fn start(name: &str) -> anyhow::Result<()> {
         }
     );
 
-    let config = crate::config::load(&inst.config_path())?;
-    let memory = config
-        .vm
-        .as_ref()
-        .and_then(|vm| vm.memory.as_deref())
-        .unwrap_or("2G");
-    let cpus = config.vm.as_ref().and_then(|vm| vm.cpus).unwrap_or(2);
+    let config = crate::config::load_resolved(&inst.config_path())?;
 
-    qemu::start(&inst, memory, cpus).await?;
+    qemu::start(&inst, &config.memory, config.cpus).await?;
     inst.write_status(Status::Running).await?;
     Ok(())
 }

@@ -1,0 +1,15 @@
+# Base Ubuntu 24.04 LTS (Noble Numbat) cloud image.
+
+[base.aarch64]
+url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
+# checksum = "sha256:..."
+
+[base.x86_64]
+url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+# checksum = "sha256:..."
+
+[vm]
+memory = "2G"
+cpus = 2
+disk = "20G"
+user = "agent"

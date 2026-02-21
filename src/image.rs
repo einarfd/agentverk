@@ -118,16 +118,6 @@ pub async fn create_overlay(base_image: &Path, output: &Path, size: &str) -> any
     }
 }
 
-/// Return the default base image URL for the current architecture.
-#[must_use]
-pub fn default_image_url() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
-    } else {
-        "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------

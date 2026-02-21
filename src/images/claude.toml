@@ -1,0 +1,13 @@
+# Claude AI coding agent image.
+# Inherits from ubuntu-24.04 and adds development tools.
+
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+memory = "4G"
+cpus = 4
+disk = "20G"
+
+[[provision]]
+run = "apt-get update && apt-get install -y git curl build-essential"

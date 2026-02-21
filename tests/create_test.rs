@@ -85,18 +85,15 @@ async fn create_test_base_image() -> String {
     fake_url
 }
 
-/// Build a minimal Config that uses the given test image URL.
-fn test_config(image_url: &str) -> config::Config {
-    config::Config {
-        vm: Some(config::VmConfig {
-            name: None,
-            memory: Some("512M".to_string()),
-            cpus: Some(1),
-            disk: Some("2G".to_string()),
-            user: Some("agent".to_string()),
-            image: Some(image_url.to_string()),
-            image_checksum: None,
-        }),
+/// Build a minimal `ResolvedConfig` that uses the given test image URL.
+fn test_config(image_url: &str) -> config::ResolvedConfig {
+    config::ResolvedConfig {
+        base_url: image_url.to_string(),
+        base_checksum: None,
+        memory: "512M".to_string(),
+        cpus: 1,
+        disk: "2G".to_string(),
+        user: "agent".to_string(),
         files: vec![],
         provision: vec![],
     }
@@ -155,11 +152,10 @@ async fn create_without_start() {
         "SSH port file should not exist"
     );
 
-    // Saved config should be loadable.
-    let saved = config::load(&inst.config_path()).unwrap();
-    let vm = saved.vm.unwrap();
-    assert_eq!(vm.memory.as_deref(), Some("512M"));
-    assert_eq!(vm.cpus, Some(1));
+    // Saved config should be loadable as a ResolvedConfig.
+    let saved = config::load_resolved(&inst.config_path()).unwrap();
+    assert_eq!(saved.memory, "512M");
+    assert_eq!(saved.cpus, 1);
 
     cleanup(name).await;
 }
@@ -206,16 +202,13 @@ async fn create_marks_broken_on_failure() {
 
     // Build a config that points to a nonexistent image URL — this will fail
     // during the image download/cache step.
-    let config = config::Config {
-        vm: Some(config::VmConfig {
-            name: None,
-            memory: Some("512M".to_string()),
-            cpus: Some(1),
-            disk: Some("2G".to_string()),
-            user: Some("agent".to_string()),
-            image: Some("http://127.0.0.1:1/nonexistent-image.qcow2".to_string()),
-            image_checksum: None,
-        }),
+    let config = config::ResolvedConfig {
+        base_url: "http://127.0.0.1:1/nonexistent-image.qcow2".to_string(),
+        base_checksum: None,
+        memory: "512M".to_string(),
+        cpus: 1,
+        disk: "2G".to_string(),
+        user: "agent".to_string(),
         files: vec![],
         provision: vec![],
     };
@@ -262,22 +255,28 @@ async fn create_with_start_and_provision() {
     let name = "_test-create-full";
     cleanup(name).await;
 
-    let config = config::Config {
+    // Resolve ubuntu-24.04 as the base, add a provision step.
+    let config = config::resolve(config::Config {
+        base: Some(config::BaseConfig {
+            from: Some("ubuntu-24.04".to_string()),
+            ..Default::default()
+        }),
         vm: Some(config::VmConfig {
-            name: None,
             memory: Some("1G".to_string()),
             cpus: Some(2),
             disk: Some("10G".to_string()),
             user: Some("agent".to_string()),
-            image: None, // uses default Ubuntu image
-            image_checksum: None,
         }),
         files: vec![],
         provision: vec![config::ProvisionStep {
             run: Some("echo 'provisioning complete' > /tmp/agv-test-marker".to_string()),
             script: None,
         }],
-    };
+    })
+    .unwrap();
+
+    // Ensure we have the provision step.
+    assert!(!config.provision.is_empty());
 
     vm::create(name, &config, true).await.unwrap();
 
