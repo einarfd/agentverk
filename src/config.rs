@@ -51,13 +51,13 @@ pub struct BaseConfig {
 }
 
 /// Per-architecture cloud image definition.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ArchImage {
     /// Cloud image URL for this architecture.
     pub url: String,
 
     /// SHA256 checksum, format: `sha256:<hex>`.
-    pub checksum: Option<String>,
+    pub checksum: String,
 }
 
 /// VM resource configuration — all fields optional for merging.
@@ -110,7 +110,11 @@ pub struct ResolvedConfig {
     pub base_url: String,
 
     /// SHA256 checksum for the base image.
-    pub base_checksum: Option<String>,
+    pub base_checksum: String,
+
+    /// Skip checksum verification (set via `--no-checksum`).
+    #[serde(default)]
+    pub skip_checksum: bool,
 
     /// Memory allocation, e.g. "2G".
     pub memory: String,
@@ -198,6 +202,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         Ok(ResolvedConfig {
             base_url: arch_image.url.clone(),
             base_checksum: arch_image.checksum.clone(),
+            skip_checksum: false,
             memory: vm
                 .and_then(|v| v.memory.clone())
                 .unwrap_or_else(|| "2G".to_string()),
@@ -231,6 +236,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
     ResolvedConfig {
         base_url: parent.base_url,
         base_checksum: parent.base_checksum,
+        skip_checksum: parent.skip_checksum,
         memory: vm
             .and_then(|v| v.memory.clone())
             .unwrap_or(parent.memory),
@@ -347,7 +353,14 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     }
 
     // 6. Resolve the full inheritance chain.
-    resolve(config)
+    let mut resolved = resolve(config)?;
+
+    // 7. Apply --no-checksum flag.
+    if args.no_checksum {
+        resolved.skip_checksum = true;
+    }
+
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -365,6 +378,7 @@ mod tests {
             files: vec![],
             provisions: vec![],
             provision_scripts: vec![],
+            no_checksum: false,
             start: false,
         }
     }
@@ -376,11 +390,11 @@ mod tests {
                 from: None,
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
-                    checksum: Some("sha256:abc123".to_string()),
+                    checksum: "sha256:abc123".to_string(),
                 }),
                 x86_64: Some(ArchImage {
                     url: "https://example.com/amd64.img".to_string(),
-                    checksum: None,
+                    checksum: "sha256:def456".to_string(),
                 }),
             }),
             vm: Some(VmConfig {
@@ -399,12 +413,13 @@ mod tests {
         let arch = std::env::consts::ARCH;
         if arch == "aarch64" {
             assert_eq!(resolved.base_url, "https://example.com/arm64.img");
-            assert_eq!(resolved.base_checksum.as_deref(), Some("sha256:abc123"));
+            assert_eq!(resolved.base_checksum, "sha256:abc123");
         } else {
             assert_eq!(resolved.base_url, "https://example.com/amd64.img");
-            assert!(resolved.base_checksum.is_none());
+            assert_eq!(resolved.base_checksum, "sha256:def456");
         }
 
+        assert!(!resolved.skip_checksum);
         assert_eq!(resolved.memory, "4G");
         assert_eq!(resolved.cpus, 4);
         assert_eq!(resolved.disk, "30G");
@@ -418,11 +433,11 @@ mod tests {
                 from: None,
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
-                    checksum: None,
+                    checksum: "sha256:aaa".to_string(),
                 }),
                 x86_64: Some(ArchImage {
                     url: "https://example.com/amd64.img".to_string(),
-                    checksum: None,
+                    checksum: "sha256:bbb".to_string(),
                 }),
             }),
             vm: None,
@@ -524,7 +539,8 @@ mod tests {
     fn merge_scalars_child_wins() {
         let parent = ResolvedConfig {
             base_url: "https://example.com/base.img".to_string(),
-            base_checksum: None,
+            base_checksum: "sha256:abc".to_string(),
+            skip_checksum: false,
             memory: "2G".to_string(),
             cpus: 2,
             disk: "20G".to_string(),
@@ -557,7 +573,8 @@ mod tests {
     fn merge_lists_accumulate() {
         let parent = ResolvedConfig {
             base_url: "https://example.com/base.img".to_string(),
-            base_checksum: None,
+            base_checksum: "sha256:abc".to_string(),
+            skip_checksum: false,
             memory: "2G".to_string(),
             cpus: 2,
             disk: "20G".to_string(),
@@ -731,7 +748,8 @@ cpus = 4
 
         let config = ResolvedConfig {
             base_url: "https://example.com/base.img".to_string(),
-            base_checksum: None,
+            base_checksum: "sha256:abc".to_string(),
+            skip_checksum: false,
             memory: "4G".to_string(),
             cpus: 8,
             disk: "50G".to_string(),

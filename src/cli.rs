@@ -103,6 +103,10 @@ pub struct CreateArgs {
     #[arg(long = "provision-script", value_name = "PATH")]
     pub provision_scripts: Vec<String>,
 
+    /// Skip image checksum verification.
+    #[arg(long)]
+    pub no_checksum: bool,
+
     /// Start the VM after creation.
     #[arg(long)]
     pub start: bool,

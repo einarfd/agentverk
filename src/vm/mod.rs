@@ -72,8 +72,12 @@ async fn create_inner(
 
     // Cache base image (potentially downloads 500+ MB, idempotent).
     info!(url = %config.base_url, "caching base image");
-    let base_image =
-        image::ensure_cached(&config.base_url, config.base_checksum.as_deref()).await?;
+    let checksum = if config.skip_checksum {
+        None
+    } else {
+        Some(config.base_checksum.as_str())
+    };
+    let base_image = image::ensure_cached(&config.base_url, checksum).await?;
 
     // Create qcow2 overlay disk.
     info!(size = %config.disk, "creating overlay disk");

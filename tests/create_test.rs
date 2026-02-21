@@ -89,7 +89,8 @@ async fn create_test_base_image() -> String {
 fn test_config(image_url: &str) -> config::ResolvedConfig {
     config::ResolvedConfig {
         base_url: image_url.to_string(),
-        base_checksum: None,
+        base_checksum: "sha256:test".to_string(),
+        skip_checksum: true,
         memory: "512M".to_string(),
         cpus: 1,
         disk: "2G".to_string(),
@@ -204,7 +205,8 @@ async fn create_marks_broken_on_failure() {
     // during the image download/cache step.
     let config = config::ResolvedConfig {
         base_url: "http://127.0.0.1:1/nonexistent-image.qcow2".to_string(),
-        base_checksum: None,
+        base_checksum: "sha256:test".to_string(),
+        skip_checksum: true,
         memory: "512M".to_string(),
         cpus: 1,
         disk: "2G".to_string(),

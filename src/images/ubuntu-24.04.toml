@@ -1,12 +1,13 @@
 # Base Ubuntu 24.04 LTS (Noble Numbat) cloud image.
+# Pinned to the 20260209 release for reproducible builds.
 
 [base.aarch64]
-url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
-# checksum = "sha256:..."
+url = "https://cloud-images.ubuntu.com/releases/noble/release-20260209/ubuntu-24.04-server-cloudimg-arm64.img"
+checksum = "sha256:849e02e42c89074506501dae2e9b365eb7bda927be0c5cb6b1c35e2a5f173ab2"
 
 [base.x86_64]
-url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-# checksum = "sha256:..."
+url = "https://cloud-images.ubuntu.com/releases/noble/release-20260209/ubuntu-24.04-server-cloudimg-amd64.img"
+checksum = "sha256:2f9acc20a381cde6fa678672e20a1408d2b3f346531b9026df2a935c37d2de20"
 
 [vm]
 memory = "2G"
