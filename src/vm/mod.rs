@@ -363,7 +363,10 @@ pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()>
         &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
     );
 
-    if !inst.is_provisioned() {
+    if inst.is_provisioned() {
+        wait_for_ssh(&inst, &config.user, &spinner).await?;
+        step_done(&spinner, "SSH is ready");
+    } else {
         run_first_boot(&inst, &config, verbose, quiet, &spinner).await?;
     }
 
