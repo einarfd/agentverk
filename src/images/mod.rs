@@ -13,10 +13,18 @@ use crate::dirs;
 
 const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
+const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
+const DOCKER_TOML: &str = include_str!("docker.toml");
+const RUST_TOML: &str = include_str!("rust.toml");
+const UV_TOML: &str = include_str!("uv.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
     ("claude", CLAUDE_TOML),
+    ("devtools", DEVTOOLS_TOML),
+    ("docker", DOCKER_TOML),
+    ("rust", RUST_TOML),
+    ("uv", UV_TOML),
 ];
 
 /// Information about an available image.
@@ -140,8 +148,54 @@ mod tests {
         assert!(config.is_some(), "claude should be a built-in image");
 
         let config = config.unwrap();
-        let base = config.base.unwrap();
-        assert_eq!(base.from.as_deref(), Some("ubuntu-24.04"));
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(config.setup.is_empty(), "claude should have no setup steps");
+        assert!(!config.provision.is_empty(), "claude should have provision steps");
+    }
+
+    #[test]
+    fn lookup_builtin_devtools() {
+        let config = lookup("devtools").unwrap();
+        assert!(config.is_some(), "devtools should be a built-in image");
+
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "devtools should have setup steps");
+    }
+
+    #[test]
+    fn lookup_builtin_docker() {
+        let config = lookup("docker").unwrap();
+        assert!(config.is_some(), "docker should be a built-in image");
+
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "docker should have setup steps");
+    }
+
+    #[test]
+    fn lookup_builtin_rust() {
+        let config = lookup("rust").unwrap();
+        assert!(config.is_some(), "rust should be a built-in image");
+
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "rust should have setup steps");
+    }
+
+    #[test]
+    fn lookup_builtin_uv() {
+        let config = lookup("uv").unwrap();
+        assert!(config.is_some(), "uv should be a built-in image");
+
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.provision.is_empty(), "uv should have provision steps");
     }
 
     #[test]
@@ -156,5 +210,9 @@ mod tests {
         let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
         assert!(names.contains(&"ubuntu-24.04"));
         assert!(names.contains(&"claude"));
+        assert!(names.contains(&"devtools"));
+        assert!(names.contains(&"docker"));
+        assert!(names.contains(&"rust"));
+        assert!(names.contains(&"uv"));
     }
 }

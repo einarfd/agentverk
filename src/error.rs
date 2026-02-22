@@ -73,6 +73,12 @@ pub enum Error {
     #[error("circular image inheritance: {chain}")]
     CircularInheritance { chain: String },
 
+    #[error("circular include dependency: {chain}")]
+    CircularInclude { chain: String },
+
+    #[error("include '{name}' not found (searched built-in images and user images dir)")]
+    InvalidInclude { name: String },
+
     // -- Image errors --
     #[error("failed to download image from {url}")]
     ImageDownload {

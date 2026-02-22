@@ -1,0 +1,6 @@
+# Docker Engine mixin.
+# Installs Docker and adds the default user to the docker group.
+# Use via: include = ["docker"]
+
+[[setup]]
+run = "curl -fsSL https://get.docker.com | sh && usermod -aG docker {{AGV_USER}}"

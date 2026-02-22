@@ -1,0 +1,6 @@
+# Development tools mixin.
+# Installs common build dependencies: git, curl, build-essential.
+# Use via: include = ["devtools"]
+
+[[setup]]
+run = "apt-get update && apt-get install -y git curl build-essential"

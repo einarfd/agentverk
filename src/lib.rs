@@ -12,6 +12,7 @@ pub mod error;
 pub mod image;
 pub mod images;
 pub mod ssh;
+pub mod template;
 pub mod vm;
 
 use cli::{Cli, Command};

@@ -91,6 +91,10 @@ pub struct CreateArgs {
     #[arg(long)]
     pub disk: Option<String>,
 
+    /// Include a named module (files/setup/provision). Repeatable.
+    #[arg(long = "include", value_name = "NAME")]
+    pub includes: Vec<String>,
+
     /// Copy a file or directory into the VM. Repeatable. Format: source:dest.
     #[arg(long = "file", value_name = "SRC:DEST")]
     pub files: Vec<String>,

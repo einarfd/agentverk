@@ -1,0 +1,9 @@
+# Rust toolchain mixin.
+# Installs Rust via rustup for the default user.
+# Use via: include = ["rust"]
+
+[[setup]]
+run = "apt-get update && apt-get install -y curl gcc pkg-config libssl-dev"
+
+[[provision]]
+run = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"

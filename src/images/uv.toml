@@ -1,0 +1,6 @@
+# uv (Python package manager) mixin.
+# Installs uv for the default user.
+# Use via: include = ["uv"]
+
+[[provision]]
+run = "curl -LsSf https://astral.sh/uv/install.sh | sh"

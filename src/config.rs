@@ -28,6 +28,10 @@ pub struct Config {
     /// VM resource settings.
     pub vm: Option<VmConfig>,
 
+    /// Named modules to include (additive files/setup/provision steps).
+    #[serde(default)]
+    pub include: Vec<String>,
+
     /// Files to copy into the VM before provisioning.
     #[serde(default)]
     pub files: Vec<FileEntry>,
@@ -159,12 +163,25 @@ pub fn resolve(config: Config) -> anyhow::Result<ResolvedConfig> {
 }
 
 fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<ResolvedConfig> {
-    let base = config.base.as_ref();
-    let from = base.and_then(|b| b.from.as_deref());
+    // Extract `from` as an owned value before destructuring config.
+    let from = config
+        .base
+        .as_ref()
+        .and_then(|b| b.from.clone());
+
+    // Destructure config to avoid partial-move issues.
+    let Config {
+        base,
+        vm,
+        include: child_includes,
+        files: child_files,
+        setup: child_setup,
+        provision: child_provision,
+    } = config;
 
     if let Some(parent_name) = from {
         // Circular detection.
-        if !seen.insert(parent_name.to_string()) {
+        if !seen.insert(parent_name.clone()) {
             let chain = seen
                 .iter()
                 .cloned()
@@ -178,16 +195,36 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
 
         // Look up the parent image.
         let parent_config =
-            crate::images::lookup(parent_name)?.ok_or_else(|| Error::ImageNotFound {
-                name: parent_name.to_string(),
+            crate::images::lookup(&parent_name)?.ok_or_else(|| Error::ImageNotFound {
+                name: parent_name.clone(),
                 dir: dirs::images_dir().unwrap_or_default(),
             })?;
 
         // Resolve parent recursively.
         let parent_resolved = resolve_inner(parent_config, seen)?;
 
-        // Merge child on top of resolved parent.
-        Ok(merge(parent_resolved, config))
+        // Build a child config with only scalars (no lists) for merging.
+        let scalars_only = Config {
+            base,
+            vm,
+            include: vec![],
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+        };
+
+        // Merge child scalars on top of resolved parent.
+        let mut resolved = merge(parent_resolved, scalars_only);
+
+        // Apply includes (their steps come after parent, before child).
+        apply_includes(&mut resolved, &child_includes, &mut HashSet::new())?;
+
+        // Append the child's own steps last.
+        resolved.files.extend(child_files);
+        resolved.setup.extend(child_setup);
+        resolved.provision.extend(child_provision);
+
+        Ok(resolved)
     } else {
         // Root image — pick arch-specific URL.
         let base = base.context("root image config must have a [base] section")?;
@@ -205,27 +242,94 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             _ => bail!("unsupported architecture: {arch}"),
         };
 
-        let vm = config.vm.as_ref();
-
-        Ok(ResolvedConfig {
+        let mut resolved = ResolvedConfig {
             base_url: arch_image.url.clone(),
             base_checksum: arch_image.checksum.clone(),
             skip_checksum: false,
             memory: vm
+                .as_ref()
                 .and_then(|v| v.memory.clone())
                 .unwrap_or_else(|| "2G".to_string()),
-            cpus: vm.and_then(|v| v.cpus).unwrap_or(2),
+            cpus: vm.as_ref().and_then(|v| v.cpus).unwrap_or(2),
             disk: vm
+                .as_ref()
                 .and_then(|v| v.disk.clone())
                 .unwrap_or_else(|| "20G".to_string()),
             user: vm
+                .as_ref()
                 .and_then(|v| v.user.clone())
                 .unwrap_or_else(|| "agent".to_string()),
-            files: config.files,
-            setup: config.setup,
-            provision: config.provision,
-        })
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+        };
+
+        // Apply includes before the config's own steps.
+        apply_includes(&mut resolved, &child_includes, &mut HashSet::new())?;
+
+        // Append the config's own steps last.
+        resolved.files.extend(child_files);
+        resolved.setup.extend(child_setup);
+        resolved.provision.extend(child_provision);
+
+        Ok(resolved)
     }
+}
+
+/// Apply include modules to a resolved config.
+///
+/// Each include is looked up via `images::lookup()`. Includes contribute only
+/// `files`, `setup`, and `provision` steps — they must NOT set `base.from`,
+/// `base.aarch64/x86_64`, or `[vm]`. Include resolution is recursive
+/// (includes can themselves have includes), with circular detection.
+fn apply_includes(
+    resolved: &mut ResolvedConfig,
+    includes: &[String],
+    seen: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    for name in includes {
+        // Circular include detection.
+        if !seen.insert(name.clone()) {
+            let chain = seen
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            return Err(Error::CircularInclude {
+                chain: format!("{chain} -> {name}"),
+            }
+            .into());
+        }
+
+        let include_config =
+            crate::images::lookup(name)?.ok_or_else(|| Error::InvalidInclude {
+                name: name.clone(),
+            })?;
+
+        // Validate: includes must not set base.from, arch images, or vm settings.
+        if let Some(ref base) = include_config.base {
+            if base.from.is_some() || base.aarch64.is_some() || base.x86_64.is_some() {
+                bail!(
+                    "include '{name}' must not set base.from, base.aarch64, or base.x86_64 — includes contribute only files, setup, and provision steps"
+                );
+            }
+        }
+        if include_config.vm.is_some() {
+            bail!(
+                "include '{name}' must not set [vm] — includes contribute only files, setup, and provision steps"
+            );
+        }
+
+        // Recursively resolve nested includes first.
+        apply_includes(resolved, &include_config.include, seen)?;
+
+        // Append this include's steps.
+        resolved.files.extend(include_config.files);
+        resolved.setup.extend(include_config.setup);
+        resolved.provision.extend(include_config.provision);
+    }
+
+    Ok(())
 }
 
 /// Merge a resolved parent config with a child `Config`.
@@ -381,10 +485,18 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         });
     }
 
-    // 8. Resolve the full inheritance chain.
+    // 8. Append CLI --include flags to config includes.
+    config.include.extend(args.includes.clone());
+
+    // 9. Resolve the full inheritance chain.
     let mut resolved = resolve(config)?;
 
-    // 9. Apply --no-checksum flag.
+    // 10. Expand template variables ({{VAR}} and {{VAR:-default}}).
+    let mut vars = crate::template::load_variables();
+    vars.insert("AGV_USER".to_string(), resolved.user.clone());
+    crate::template::expand_config(&mut resolved, &vars)?;
+
+    // 11. Apply --no-checksum flag.
     if args.no_checksum {
         resolved.skip_checksum = true;
     }
@@ -404,6 +516,7 @@ mod tests {
             cpus: None,
             disk: None,
             image: None,
+            includes: vec![],
             files: vec![],
             setups: vec![],
             setup_scripts: vec![],
@@ -434,6 +547,7 @@ mod tests {
                 disk: Some("30G".to_string()),
                 user: Some("testuser".to_string()),
             }),
+            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -473,6 +587,7 @@ mod tests {
                 }),
             }),
             vm: None,
+            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -499,6 +614,7 @@ mod tests {
                 disk: None,
                 user: None,
             }),
+            include: vec![],
             files: vec![FileEntry {
                 source: "./child-file".to_string(),
                 dest: "/home/agent/child".to_string(),
@@ -520,11 +636,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_three_layers() {
-        // project -> claude -> ubuntu-24.04
+    fn resolve_with_include() {
+        // project inherits ubuntu-24.04 and includes claude mixin.
         let project = Config {
             base: Some(BaseConfig {
-                from: Some("claude".to_string()),
+                from: Some("ubuntu-24.04".to_string()),
                 ..Default::default()
             }),
             vm: Some(VmConfig {
@@ -533,6 +649,7 @@ mod tests {
                 disk: None,
                 user: None,
             }),
+            include: vec!["devtools".to_string(), "claude".to_string()],
             files: vec![],
             setup: vec![],
             provision: vec![ProvisionStep {
@@ -543,13 +660,21 @@ mod tests {
 
         let resolved = resolve(project).unwrap();
         assert_eq!(resolved.memory, "16G"); // from project
-        assert_eq!(resolved.cpus, 4); // from claude
+        assert_eq!(resolved.cpus, 2); // from ubuntu default
         assert_eq!(resolved.disk, "20G"); // from ubuntu
         assert_eq!(resolved.user, "agent"); // from ubuntu
 
-        // claude has 1 setup step and 1 provision step, project adds 1 more provision.
+        // devtools mixin has 1 setup step.
         assert_eq!(resolved.setup.len(), 1);
+        // claude mixin has 1 provision step, project adds 1 more.
         assert_eq!(resolved.provision.len(), 2);
+        // Include steps come before project steps.
+        assert!(resolved.provision[0]
+            .run
+            .as_deref()
+            .unwrap()
+            .contains("claude.ai"));
+        assert_eq!(resolved.provision[1].run.as_deref(), Some("echo project"));
     }
 
     #[test]
@@ -594,6 +719,7 @@ mod tests {
                 disk: None,
                 user: None,
             }),
+            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -634,6 +760,7 @@ mod tests {
         let child = Config {
             base: None,
             vm: None,
+            include: vec![],
             files: vec![FileEntry {
                 source: "child-src".to_string(),
                 dest: "child-dst".to_string(),
@@ -681,12 +808,13 @@ mod tests {
     #[test]
     fn build_from_cli_image_flag() {
         let args = CreateArgs {
-            image: Some("claude".to_string()),
+            image: Some("ubuntu-24.04".to_string()),
+            memory: Some("8G".to_string()),
             ..minimal_args()
         };
         let resolved = build_from_cli(&args).unwrap();
-        assert_eq!(resolved.cpus, 4); // claude defaults
-        assert_eq!(resolved.memory, "4G"); // claude defaults
+        assert_eq!(resolved.cpus, 2); // ubuntu defaults
+        assert_eq!(resolved.memory, "8G"); // CLI override
     }
 
     #[test]

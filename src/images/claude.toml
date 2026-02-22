@@ -1,16 +1,6 @@
-# Claude AI coding agent image.
-# Inherits from ubuntu-24.04 and adds development tools.
-
-[base]
-from = "ubuntu-24.04"
-
-[vm]
-memory = "4G"
-cpus = 4
-disk = "20G"
-
-[[setup]]
-run = "apt-get update && apt-get install -y git curl build-essential"
+# Claude CLI mixin.
+# Installs the Claude AI coding agent CLI.
+# Requires curl — pair with devtools: include = ["devtools", "claude"]
 
 [[provision]]
 run = "curl -fsSL https://claude.ai/install.sh | bash"
