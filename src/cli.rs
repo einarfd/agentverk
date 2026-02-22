@@ -33,7 +33,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Create a new VM.
-    Create(CreateArgs),
+    Create(Box<CreateArgs>),
 
     /// Start a stopped VM.
     Start(StartArgs),
@@ -61,9 +61,6 @@ pub enum Command {
 
     /// Restore a VM from a snapshot.
     Restore(RestoreArgs),
-
-    /// Re-run provisioning on a running VM.
-    Provision(ProvisionArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -182,32 +179,3 @@ pub struct RestoreArgs {
     pub label: Option<String>,
 }
 
-#[derive(Debug, clap::Args)]
-pub struct ProvisionArgs {
-    /// Name of the VM to provision.
-    pub name: String,
-
-    /// Path to .toml config file.
-    #[arg(long, value_name = "PATH")]
-    pub config: Option<String>,
-
-    /// Copy a file or directory into the VM. Repeatable. Format: source:dest.
-    #[arg(long = "file", value_name = "SRC:DEST")]
-    pub files: Vec<String>,
-
-    /// Run an inline shell script as root during setup. Repeatable.
-    #[arg(long = "setup", value_name = "SCRIPT")]
-    pub setups: Vec<String>,
-
-    /// Run a script file as root during setup. Repeatable.
-    #[arg(long = "setup-script", value_name = "PATH")]
-    pub setup_scripts: Vec<String>,
-
-    /// Run an inline shell script. Repeatable.
-    #[arg(long = "provision", value_name = "SCRIPT")]
-    pub provisions: Vec<String>,
-
-    /// Run a script file. Repeatable.
-    #[arg(long = "provision-script", value_name = "PATH")]
-    pub provision_scripts: Vec<String>,
-}

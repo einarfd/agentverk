@@ -100,10 +100,5 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             eprintln!("agv restore: not yet implemented");
             Ok(())
         }
-        Command::Provision(args) => {
-            tracing::info!(name = %args.name, "provisioning VM");
-            eprintln!("agv provision: not yet implemented");
-            Ok(())
-        }
     }
 }
