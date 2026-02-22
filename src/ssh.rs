@@ -87,6 +87,58 @@ pub async fn session(
     Ok(())
 }
 
+/// Run a command over SSH, capturing stdout and stderr.
+///
+/// Returns the combined output as a string. Fails with context if the
+/// command exits non-zero. Use this instead of `session()` when the
+/// output should be captured rather than forwarded to the terminal.
+pub async fn run_cmd(
+    instance: &Instance,
+    user: &str,
+    command: &[String],
+) -> anyhow::Result<String> {
+    let port = ssh_port(instance).await?;
+    let key_path = instance.ssh_key_path();
+    let args = base_ssh_args(&key_path, port);
+
+    let destination = format!("{user}@localhost");
+
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(&args).arg(&destination);
+
+    if !command.is_empty() {
+        cmd.arg("--");
+        cmd.args(command);
+    }
+
+    let output = cmd.output().await.map_err(|source| Error::Ssh {
+        name: instance.name.clone(),
+        source,
+    })?;
+
+    let combined = {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.is_empty() {
+            stdout.into_owned()
+        } else if stdout.is_empty() {
+            stderr.into_owned()
+        } else {
+            format!("{stdout}{stderr}")
+        }
+    };
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "SSH command exited with {}: {}",
+            output.status,
+            combined.trim()
+        );
+    }
+
+    Ok(combined)
+}
+
 /// Copy a file into the VM using scp.
 pub async fn copy_to(
     instance: &Instance,

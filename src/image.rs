@@ -10,16 +10,20 @@ use anyhow::{bail, Context as _};
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::dirs;
 use crate::error::Error;
 
 /// Ensure the base image is available in the local cache.
 ///
-/// If the image is already cached, verify its checksum (if provided) and
-/// return the cached path. Otherwise, download it.
-pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<PathBuf> {
+/// If the image is already cached, returns immediately — the checksum was
+/// verified at download time and we trust the file hasn't changed. If the
+/// file is missing, downloads it, verifies the checksum, then caches it.
+///
+/// Returns `(path, downloaded)` where `downloaded` is `true` if a network
+/// fetch was required, `false` if the file was already cached.
+pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<(PathBuf, bool)> {
     let expected_hex = parse_checksum(checksum)?;
     let filename = filename_from_url(url);
     let cache_dir = dirs::image_cache_dir()?;
@@ -29,24 +33,10 @@ pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<
 
     let cached_path = cache_dir.join(&filename);
 
-    // Check if already cached.
+    // Already cached — trust it. Checksum was verified on download.
     if cached_path.exists() {
-        if let Some(expected) = expected_hex {
-            let actual = sha256_file(&cached_path).await?;
-            if actual == expected {
-                info!(path = %cached_path.display(), "image already cached, checksum OK");
-                return Ok(cached_path);
-            }
-            warn!(
-                path = %cached_path.display(),
-                expected = expected,
-                actual = actual,
-                "cached image checksum mismatch — re-downloading"
-            );
-        } else {
-            info!(path = %cached_path.display(), "image already cached (no checksum to verify)");
-            return Ok(cached_path);
-        }
+        info!(path = %cached_path.display(), "image already cached");
+        return Ok((cached_path, false));
     }
 
     // Download to a unique temp file, then atomically rename.
@@ -61,11 +51,10 @@ pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<
     let part_path = cache_dir.join(part_name);
     download(url, &part_path).await?;
 
-    // Verify checksum if provided.
+    // Verify checksum after download.
     if let Some(expected) = expected_hex {
         let actual = sha256_file(&part_path).await?;
         if actual != expected {
-            // Clean up the bad download.
             let _ = tokio::fs::remove_file(&part_path).await;
             return Err(Error::ImageChecksum {
                 path: part_path,
@@ -86,7 +75,7 @@ pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<
     })?;
 
     info!(path = %cached_path.display(), "image cached successfully");
-    Ok(cached_path)
+    Ok((cached_path, true))
 }
 
 /// Create a qcow2 overlay disk backed by the given base image.

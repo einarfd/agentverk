@@ -123,7 +123,7 @@ async fn create_without_start() {
     cleanup(name).await;
 
     let config = test_config(&image_url);
-    vm::create(name, &config, false).await.unwrap();
+    vm::create(name, &config, false, false, true).await.unwrap();
 
     // Verify instance directory and files exist.
     let inst_dir = dirs::instance_dir(name).unwrap();
@@ -181,10 +181,10 @@ async fn create_duplicate_name_fails() {
     let config = test_config(&image_url);
 
     // First create should succeed.
-    vm::create(name, &config, false).await.unwrap();
+    vm::create(name, &config, false, false, true).await.unwrap();
 
     // Second create with same name should fail with VmAlreadyExists.
-    let result = vm::create(name, &config, false).await;
+    let result = vm::create(name, &config, false, false, true).await;
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(
@@ -218,7 +218,7 @@ async fn create_marks_broken_on_failure() {
     };
 
     // Create should fail (unreachable image URL).
-    let result = vm::create(name, &config, false).await;
+    let result = vm::create(name, &config, false, false, true).await;
     assert!(result.is_err(), "create should fail with bad image URL");
 
     // Instance dir should still exist.
@@ -275,6 +275,7 @@ async fn create_with_start_and_provision() {
         files: vec![],
         setup: vec![],
         provision: vec![config::ProvisionStep {
+            source: None,
             run: Some("echo 'provisioning complete' > /tmp/agv-test-marker".to_string()),
             script: None,
         }],
@@ -284,7 +285,7 @@ async fn create_with_start_and_provision() {
     // Ensure we have the provision step.
     assert!(!config.provision.is_empty());
 
-    vm::create(name, &config, true).await.unwrap();
+    vm::create(name, &config, true, false, true).await.unwrap();
 
     let inst_dir = dirs::instance_dir(name).unwrap();
     let inst = Instance {

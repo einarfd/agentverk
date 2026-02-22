@@ -269,15 +269,18 @@ EMPTY=
                 dest: "/home/agent/.ssh/id_ed25519".to_string(),
             }],
             setup: vec![ProvisionStep {
+                source: None,
                 run: Some("echo {{API_KEY}}".to_string()),
                 script: None,
             }],
             provision: vec![
                 ProvisionStep {
+                    source: None,
                     run: Some("export KEY={{API_KEY}}".to_string()),
                     script: None,
                 },
                 ProvisionStep {
+                    source: None,
                     run: None,
                     script: Some("{{HOME}}/scripts/setup.sh".to_string()),
                 },

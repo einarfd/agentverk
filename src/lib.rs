@@ -22,17 +22,20 @@ use comfy_table::{ContentArrangement, Table};
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     dirs::ensure_dirs().await?;
 
+    let verbose = cli.verbose;
+    let quiet = cli.quiet;
+
     match cli.command {
         Command::Create(args) => {
             let start = args.start;
             let name = args.name.clone();
             let config = config::build_from_cli(&args)?;
             tracing::info!(name = %name, "creating VM");
-            vm::create(&name, &config, start).await
+            vm::create(&name, &config, start, verbose, quiet).await
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, "starting VM");
-            vm::start(&args.name).await
+            vm::start(&args.name, verbose, quiet).await
         }
         Command::Stop(args) => {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");

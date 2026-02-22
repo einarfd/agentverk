@@ -97,6 +97,14 @@ pub struct FileEntry {
 /// A single provisioning step: either an inline script or a script file.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProvisionStep {
+    /// Which module/include contributed this step.
+    ///
+    /// Auto-populated during resolution — users never write this.
+    /// Preserved in the saved resolved config so `agv start` first-boot
+    /// can still display the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
     /// Inline shell script to execute inside the VM.
     pub run: Option<String>,
 
@@ -301,7 +309,7 @@ fn apply_includes(
             .into());
         }
 
-        let include_config =
+        let mut include_config =
             crate::images::lookup(name)?.ok_or_else(|| Error::InvalidInclude {
                 name: name.clone(),
             })?;
@@ -322,6 +330,18 @@ fn apply_includes(
 
         // Recursively resolve nested includes first.
         apply_includes(resolved, &include_config.include, seen)?;
+
+        // Tag steps with the source module so status output can show origin.
+        for step in &mut include_config.setup {
+            if step.source.is_none() {
+                step.source = Some(name.clone());
+            }
+        }
+        for step in &mut include_config.provision {
+            if step.source.is_none() {
+                step.source = Some(name.clone());
+            }
+        }
 
         // Append this include's steps.
         resolved.files.extend(include_config.files);
@@ -456,6 +476,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 4. Parse --setup inline scripts.
     for script in &args.setups {
         config.setup.push(ProvisionStep {
+            source: None,
             run: Some(script.clone()),
             script: None,
         });
@@ -464,6 +485,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 5. Parse --setup-script file paths.
     for path in &args.setup_scripts {
         config.setup.push(ProvisionStep {
+            source: None,
             run: None,
             script: Some(path.clone()),
         });
@@ -472,6 +494,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 6. Parse --provision inline scripts.
     for script in &args.provisions {
         config.provision.push(ProvisionStep {
+            source: None,
             run: Some(script.clone()),
             script: None,
         });
@@ -480,6 +503,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 7. Parse --provision-script file paths.
     for path in &args.provision_scripts {
         config.provision.push(ProvisionStep {
+            source: None,
             run: None,
             script: Some(path.clone()),
         });
@@ -621,6 +645,7 @@ mod tests {
             }],
             setup: vec![],
             provision: vec![ProvisionStep {
+                source: None,
                 run: Some("echo child".to_string()),
                 script: None,
             }],
@@ -653,6 +678,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![ProvisionStep {
+                source: None,
                 run: Some("echo project".to_string()),
                 script: None,
             }],
@@ -748,10 +774,12 @@ mod tests {
                 dest: "parent-dst".to_string(),
             }],
             setup: vec![ProvisionStep {
+                source: None,
                 run: Some("echo parent-setup".to_string()),
                 script: None,
             }],
             provision: vec![ProvisionStep {
+                source: None,
                 run: Some("echo parent".to_string()),
                 script: None,
             }],
@@ -766,10 +794,12 @@ mod tests {
                 dest: "child-dst".to_string(),
             }],
             setup: vec![ProvisionStep {
+                source: None,
                 run: Some("echo child-setup".to_string()),
                 script: None,
             }],
             provision: vec![ProvisionStep {
+                source: None,
                 run: Some("echo child".to_string()),
                 script: None,
             }],
@@ -943,6 +973,7 @@ cpus = 4
             }],
             setup: vec![],
             provision: vec![ProvisionStep {
+                source: None,
                 run: Some("echo hello".to_string()),
                 script: None,
             }],

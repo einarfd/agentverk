@@ -145,6 +145,12 @@ impl Instance {
         self.dir.join("config.toml")
     }
 
+    /// Path to the provisioning log file.
+    #[must_use]
+    pub fn provision_log_path(&self) -> PathBuf {
+        self.dir.join("provision.log")
+    }
+
     /// Path to the provisioned marker file.
     #[must_use]
     pub fn provisioned_path(&self) -> PathBuf {
