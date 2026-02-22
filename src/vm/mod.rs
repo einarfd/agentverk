@@ -371,6 +371,26 @@ pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Wait for SSH with a live elapsed-time counter in the spinner message.
+async fn wait_for_ssh(inst: &Instance, user: &str, spinner: &ProgressBar) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+    spinner.set_message("Waiting for SSH...");
+    let result = tokio::select! {
+        result = ssh::wait_for_ready(inst, user) => result,
+        _ = async {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                spinner.set_message(format!(
+                    "Waiting for SSH... ({}s)",
+                    start.elapsed().as_secs()
+                ));
+            }
+        } => unreachable!(),
+    };
+    result
+}
+
 /// Run the full first-boot provisioning flow: wait for SSH, setup, provision.
 ///
 /// Called by both `create()` (with `--start`) and `start()` (first boot).
@@ -381,8 +401,7 @@ async fn run_first_boot(
     _quiet: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
-    spinner.set_message("Waiting for SSH...");
-    ssh::wait_for_ready(inst, &config.user).await?;
+    wait_for_ssh(inst, &config.user, spinner).await?;
     step_done(spinner, "SSH is ready");
 
     if !config.setup.is_empty() {
@@ -645,8 +664,7 @@ pub async fn create_template(
                 config.memory, config.cpus
             ),
         );
-        spinner.set_message("Waiting for SSH...");
-        ssh::wait_for_ready(&inst, &config.user).await?;
+        wait_for_ssh(&inst, &config.user, &spinner).await?;
         step_done(&spinner, "SSH is ready");
     }
 
@@ -885,8 +903,7 @@ async fn create_from_template_inner(
     );
 
     // Wait for SSH (cloud-init will run to apply hostname + SSH key).
-    spinner.set_message("Waiting for SSH (cloud-init applying settings)...");
-    ssh::wait_for_ready(inst, &meta.user).await?;
+    wait_for_ssh(inst, &meta.user, &spinner).await?;
     step_done(&spinner, "SSH is ready");
 
     spinner.finish_with_message(format!("  ✓ VM '{vm_name}' is running"));
