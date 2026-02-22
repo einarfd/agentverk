@@ -28,6 +28,8 @@ The binary is at `./target/debug/agv` (or `./target/release/agv`).
 - **Cloud-init**: `src/vm/cloud_init.rs` — seed image generation
 - **SSH**: `src/ssh.rs` — shells out to system `ssh`/`scp`
 - **Images**: `src/image.rs` — download, cache, checksum, qcow2 overlays
+- **Image registry**: `src/images.rs` — built-in and user-defined image/mixin catalogue
+- **Templates**: `src/template.rs` — `{{VAR}}` expansion in config values
 - **Directories**: `src/dirs.rs` — platform-specific paths (macOS/Linux)
 
 ## Conventions
@@ -43,7 +45,9 @@ The binary is at `./target/debug/agv` (or `./target/release/agv`).
 - macOS: `~/Library/Application Support/agv/`
 - Linux: `~/.local/share/agv/`
 
-Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `config.toml`, `status`, `pid`, `qmp.sock`, `error.log`.
+Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `efi-vars.fd` (aarch64 only).
+
+VM templates live in `templates/` as paired `<name>.qcow2` + `<name>.toml` files.
 
 ## VM statuses
 

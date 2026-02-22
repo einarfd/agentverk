@@ -4,10 +4,6 @@ Create and manage QEMU VMs for AI coding agents.
 
 `agv` gives each AI coding agent its own isolated Linux VM — a full development environment with SSH access, provisioned from a simple TOML config file.
 
-## Status
-
-Early development. The CLI scaffold is in place but commands are not yet functional.
-
 ## Requirements
 
 - macOS (Apple Silicon) or Linux
@@ -30,16 +26,15 @@ Early development. The CLI scaffold is in place but commands are not yet functio
 agv [OPTIONS] <COMMAND>
 
 Commands:
-  create     Create a new VM
-  start      Start a stopped VM
-  stop       Stop a running VM
-  destroy    Destroy a VM and delete all its data
-  ssh        Open an SSH session to a running VM
-  ls         List all VMs
-  inspect    Show detailed information about a VM
-  snapshot   Take a snapshot of a VM
-  restore    Restore a VM from a snapshot
-  provision  Re-run provisioning on a running VM
+  create    Create a new VM
+  start     Start a stopped VM
+  stop      Stop a running VM
+  destroy   Destroy a VM and delete all its data
+  ssh       Open an SSH session to a running VM
+  ls        List all VMs
+  images    List available images
+  inspect   Show detailed information about a VM
+  template  Create and manage VM templates
 
 Options:
   -v, --verbose  Enable verbose output
@@ -53,8 +48,10 @@ Options:
 VMs are configured with a TOML file (defaults to `agv.toml` in the current directory):
 
 ```toml
+[base]
+from = "ubuntu-24.04"
+
 [vm]
-name = "myenv"
 memory = "4G"
 cpus = 2
 disk = "20G"
@@ -63,14 +60,24 @@ disk = "20G"
 source = "~/.ssh/config"
 dest = "~/.ssh/config"
 
+[[setup]]
+run = "sudo apt-get update && sudo apt-get install -y build-essential"
+
 [[provision]]
-run = """
-sudo apt-get update && sudo apt-get install -y build-essential
-git clone git@github.com:org/repo.git ~/repo
-"""
+run = "git clone git@github.com:org/repo.git ~/repo"
 
 [[provision]]
 script = "./setup.sh"
+```
+
+## Templates
+
+Convert a provisioned VM into a reusable base image, then stamp out thin clones:
+
+```bash
+agv template create myvm mytemplate   # create template from VM
+agv template ls                        # list templates
+agv create --from mytemplate newvm     # create thin clone
 ```
 
 ## Building
