@@ -56,12 +56,6 @@ pub enum Command {
     /// Show detailed information about a VM.
     Inspect(InspectArgs),
 
-    /// Take a snapshot of a VM.
-    Snapshot(SnapshotArgs),
-
-    /// Restore a VM from a snapshot.
-    Restore(RestoreArgs),
-
     /// Create and manage VM templates.
     Template(Box<TemplateArgs>),
 }
@@ -164,26 +158,6 @@ pub struct SshArgs {
 pub struct InspectArgs {
     /// Name of the VM to inspect.
     pub name: String,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct SnapshotArgs {
-    /// Name of the VM to snapshot.
-    pub name: String,
-
-    /// Label for the snapshot.
-    #[arg(long)]
-    pub label: Option<String>,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct RestoreArgs {
-    /// Name of the VM to restore.
-    pub name: String,
-
-    /// Label of the snapshot to restore.
-    #[arg(long)]
-    pub label: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

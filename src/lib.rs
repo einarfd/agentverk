@@ -120,16 +120,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Inspect(args) => {
             vm::inspect(&args.name).await
         }
-        Command::Snapshot(args) => {
-            tracing::info!(name = %args.name, label = ?args.label, "taking snapshot");
-            eprintln!("agv snapshot: not yet implemented");
-            Ok(())
-        }
-        Command::Restore(args) => {
-            tracing::info!(name = %args.name, label = ?args.label, "restoring snapshot");
-            eprintln!("agv restore: not yet implemented");
-            Ok(())
-        }
         Command::Template(args) => match args.command {
             TemplateCommand::Create(targs) => {
                 tracing::info!(
