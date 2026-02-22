@@ -16,7 +16,7 @@ pub mod template;
 pub mod vm;
 
 use cli::{Cli, Command};
-use comfy_table::{ContentArrangement, Table};
+use images::ImageType;
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
@@ -56,36 +56,49 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 eprintln!("No VMs found. Create one with: agv create <name>");
                 return Ok(());
             }
-            let mut table = Table::new();
-            table.set_content_arrangement(ContentArrangement::Dynamic);
-            table.set_header(["NAME", "STATUS"]);
+            let col_width = instances.iter().map(|i| i.name.len()).max().unwrap_or(0);
             for inst in &instances {
                 let status = inst
                     .reconcile_status()
                     .await
                     .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
-                table.add_row([&inst.name, &status]);
+                println!("  {:<col_width$}  {status}", inst.name);
             }
-            println!("{table}");
             Ok(())
         }
         Command::Images => {
-            let images = images::list_all()?;
-            if images.is_empty() {
+            let all = images::list_all()?;
+            if all.is_empty() {
                 eprintln!("No images found.");
                 return Ok(());
             }
-            let mut table = Table::new();
-            table.set_content_arrangement(ContentArrangement::Dynamic);
-            table.set_header(["NAME", "TYPE", "SOURCE"]);
-            for img in &images {
-                table.add_row([
-                    &img.name,
-                    &img.image_type.to_string(),
-                    &img.source.to_string(),
-                ]);
+            let (base_images, mixins): (Vec<_>, Vec<_>) = all
+                .into_iter()
+                .partition(|i| i.image_type == ImageType::Image);
+
+            if !base_images.is_empty() {
+                println!("Images");
+                for img in &base_images {
+                    print!("  {}", img.name);
+                    if let images::ImageSource::User(path) = &img.source {
+                        print!("  ({})", path.display());
+                    }
+                    println!();
+                }
             }
-            println!("{table}");
+            if !mixins.is_empty() {
+                if !base_images.is_empty() {
+                    println!();
+                }
+                println!("Mixins");
+                for img in &mixins {
+                    print!("  {}", img.name);
+                    if let images::ImageSource::User(path) = &img.source {
+                        print!("  ({})", path.display());
+                    }
+                    println!();
+                }
+            }
             Ok(())
         }
         Command::Inspect(args) => {

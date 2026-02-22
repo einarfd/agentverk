@@ -28,7 +28,7 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
 ];
 
 /// Whether an image definition is a full image or a mixin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageType {
     /// A full image with a base image URL or parent reference.
     Image,
@@ -161,7 +161,12 @@ pub fn list_all() -> anyhow::Result<Vec<ImageInfo>> {
         }
     }
 
-    images.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort: images before mixins, then alphabetically within each group.
+    images.sort_by(|a, b| {
+        a.image_type
+            .cmp(&b.image_type)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(images)
 }
 
