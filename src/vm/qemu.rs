@@ -421,12 +421,22 @@ fn build_qemu_args(
 
     // Memory and CPUs.
     args.extend(["-m".to_string(), memory.to_string()]);
-    args.extend(["-smp".to_string(), cpus.to_string()]);
+    args.extend([
+        "-smp".to_string(),
+        format!("cpus={cpus},cores={cpus},threads=1"),
+    ]);
 
     // Disk drives.
+    //
+    // cache=writeback: uses host page cache, good balance of performance and
+    // safety for ephemeral coding agent VMs.
+    //
+    // On Linux, aio=native with cache=none would be faster but requires
+    // O_DIRECT support on the underlying filesystem. writeback is safe
+    // everywhere and still much better than the default writethrough.
     args.extend([
         "-drive".to_string(),
-        format!("file={disk_str},if=virtio,format=qcow2"),
+        format!("file={disk_str},if=virtio,format=qcow2,cache=writeback"),
     ]);
     args.extend([
         "-drive".to_string(),
@@ -442,6 +452,10 @@ fn build_qemu_args(
         "-device".to_string(),
         "virtio-net-pci,netdev=net0".to_string(),
     ]);
+
+    // Hardware RNG — avoids guest stalls waiting for entropy during boot
+    // and SSH key generation.
+    args.extend(["-device".to_string(), "virtio-rng-pci".to_string()]);
 
     // QMP socket.
     args.extend([
@@ -567,7 +581,10 @@ mod tests {
 
         let joined = args.join(" ");
         assert!(joined.contains("-m 2G"), "missing -m flag: {joined}");
-        assert!(joined.contains("-smp 4"), "missing -smp flag: {joined}");
+        assert!(
+            joined.contains("-smp cpus=4,cores=4,threads=1"),
+            "missing -smp flag: {joined}"
+        );
         assert!(
             joined.contains("hostfwd=tcp::2222-:22"),
             "missing hostfwd: {joined}"
