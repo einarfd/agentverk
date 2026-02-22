@@ -96,6 +96,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         disk: "2G".to_string(),
         user: "agent".to_string(),
         files: vec![],
+        setup: vec![],
         provision: vec![],
     }
 }
@@ -212,6 +213,7 @@ async fn create_marks_broken_on_failure() {
         disk: "2G".to_string(),
         user: "agent".to_string(),
         files: vec![],
+        setup: vec![],
         provision: vec![],
     };
 
@@ -270,6 +272,7 @@ async fn create_with_start_and_provision() {
             user: Some("agent".to_string()),
         }),
         files: vec![],
+        setup: vec![],
         provision: vec![config::ProvisionStep {
             run: Some("echo 'provisioning complete' > /tmp/agv-test-marker".to_string()),
             script: None,

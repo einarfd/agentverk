@@ -95,6 +95,14 @@ pub struct CreateArgs {
     #[arg(long = "file", value_name = "SRC:DEST")]
     pub files: Vec<String>,
 
+    /// Run an inline shell script as root during setup. Repeatable.
+    #[arg(long = "setup", value_name = "SCRIPT")]
+    pub setups: Vec<String>,
+
+    /// Run a script file as root during setup. Repeatable.
+    #[arg(long = "setup-script", value_name = "PATH")]
+    pub setup_scripts: Vec<String>,
+
     /// Run an inline shell script during provisioning. Repeatable.
     #[arg(long = "provision", value_name = "SCRIPT")]
     pub provisions: Vec<String>,
@@ -182,6 +190,14 @@ pub struct ProvisionArgs {
     /// Copy a file or directory into the VM. Repeatable. Format: source:dest.
     #[arg(long = "file", value_name = "SRC:DEST")]
     pub files: Vec<String>,
+
+    /// Run an inline shell script as root during setup. Repeatable.
+    #[arg(long = "setup", value_name = "SCRIPT")]
+    pub setups: Vec<String>,
+
+    /// Run a script file as root during setup. Repeatable.
+    #[arg(long = "setup-script", value_name = "PATH")]
+    pub setup_scripts: Vec<String>,
 
     /// Run an inline shell script. Repeatable.
     #[arg(long = "provision", value_name = "SCRIPT")]

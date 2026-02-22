@@ -9,5 +9,8 @@ memory = "4G"
 cpus = 4
 disk = "20G"
 
-[[provision]]
+[[setup]]
 run = "apt-get update && apt-get install -y git curl build-essential"
+
+[[provision]]
+run = "curl -fsSL https://claude.ai/install.sh | bash"

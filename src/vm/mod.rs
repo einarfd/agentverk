@@ -100,9 +100,9 @@ async fn create_inner(
     // If not starting, we're done — write stopped status.
     if !start_after {
         inst.write_status(Status::Stopped).await?;
-        if !config.provision.is_empty() {
+        if !config.setup.is_empty() || !config.provision.is_empty() {
             warn!(
-                "provisioning steps defined but --start not specified — \
+                "setup/provisioning steps defined but --start not specified — \
                  run `agv start {name}` then `agv provision {name}` to provision"
             );
         }
@@ -118,12 +118,76 @@ async fn create_inner(
     // Wait for SSH to become ready.
     ssh::wait_for_ready(inst, &config.user).await?;
 
-    // Run provisioning steps (if any).
+    // Run setup steps as root (if any).
+    if !config.setup.is_empty() {
+        run_setup(inst, &config.user, &config.setup).await?;
+    }
+
+    // Run provisioning steps as user (if any).
     if !config.provision.is_empty() {
         run_provisioning(inst, &config.user, &config.provision).await?;
     }
 
     info!(name, "VM created and running");
+    Ok(())
+}
+
+/// Execute setup steps as root via `sudo`. First failure aborts remaining steps.
+///
+/// SSH connects as the configured user (the only user with an authorized key)
+/// and wraps each command with `sudo` to gain root privileges.
+async fn run_setup(
+    instance: &Instance,
+    user: &str,
+    steps: &[ProvisionStep],
+) -> anyhow::Result<()> {
+    for (i, step) in steps.iter().enumerate() {
+        if let Some(ref script) = step.run {
+            info!(step = i + 1, "running inline setup script (as root)");
+            // Pass as a single string so SSH sends it intact to the remote
+            // shell. Multiple args get joined with spaces, which breaks
+            // "bash -c" (it only takes the first word after -c as the script).
+            ssh::session(
+                instance,
+                user,
+                &[format!("sudo bash -c {}", shell_escape(script))],
+            )
+            .await
+            .with_context(|| format!("setup step {}: inline script failed", i + 1))?;
+        } else if let Some(ref script_path) = step.script {
+            info!(step = i + 1, path = script_path, "running setup script file (as root)");
+            let remote_path = format!("/tmp/agv-setup-{i}.sh");
+
+            // Copy the script file to the VM as the user.
+            ssh::copy_to(instance, user, Path::new(script_path), &remote_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "setup step {}: failed to copy script {script_path}",
+                        i + 1
+                    )
+                })?;
+
+            // Make executable and run as root.
+            ssh::session(
+                instance,
+                user,
+                &[format!(
+                    "sudo bash -c {}",
+                    shell_escape(&format!("chmod +x {remote_path} && {remote_path}"))
+                )],
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "setup step {}: script {script_path} failed",
+                    i + 1
+                )
+            })?;
+        }
+    }
+
+    info!("setup complete");
     Ok(())
 }
 
@@ -136,10 +200,12 @@ async fn run_provisioning(
     for (i, step) in steps.iter().enumerate() {
         if let Some(ref script) = step.run {
             info!(step = i + 1, "running inline provisioning script");
+            // Pass as a single string — SSH joins multiple args with spaces,
+            // which breaks "bash -c" (it only uses the first word after -c).
             ssh::session(
                 instance,
                 user,
-                &["bash".to_string(), "-c".to_string(), script.clone()],
+                &[format!("bash -c {}", shell_escape(script))],
             )
             .await
             .with_context(|| format!("provisioning step {}: inline script failed", i + 1))?;
@@ -161,11 +227,7 @@ async fn run_provisioning(
             ssh::session(
                 instance,
                 user,
-                &[
-                    "bash".to_string(),
-                    "-c".to_string(),
-                    format!("chmod +x {remote_path} && {remote_path}"),
-                ],
+                &[format!("chmod +x {remote_path} && {remote_path}")],
             )
             .await
             .with_context(|| {
@@ -233,6 +295,15 @@ pub async fn destroy(name: &str) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to remove instance directory for VM '{name}'"))?;
     Ok(())
+}
+
+/// Single-quote a string for safe embedding in a shell command.
+///
+/// Wraps the value in single quotes and escapes any embedded single quotes
+/// using the `'\''` idiom (end quote, escaped quote, reopen quote).
+fn shell_escape(s: &str) -> String {
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 /// List all known VM instances.

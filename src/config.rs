@@ -32,6 +32,10 @@ pub struct Config {
     #[serde(default)]
     pub files: Vec<FileEntry>,
 
+    /// Setup steps, executed as root before provisioning.
+    #[serde(default)]
+    pub setup: Vec<ProvisionStep>,
+
     /// Provisioning steps, executed in order after files are copied.
     #[serde(default)]
     pub provision: Vec<ProvisionStep>,
@@ -132,6 +136,10 @@ pub struct ResolvedConfig {
     #[serde(default)]
     pub files: Vec<FileEntry>,
 
+    /// Setup steps run as root (accumulated from full chain).
+    #[serde(default)]
+    pub setup: Vec<ProvisionStep>,
+
     /// Provisioning steps (accumulated from full chain).
     #[serde(default)]
     pub provision: Vec<ProvisionStep>,
@@ -214,6 +222,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
                 .and_then(|v| v.user.clone())
                 .unwrap_or_else(|| "agent".to_string()),
             files: config.files,
+            setup: config.setup,
             provision: config.provision,
         })
     }
@@ -230,6 +239,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
     let mut files = parent.files;
     files.extend(child.files);
 
+    let mut setup = parent.setup;
+    setup.extend(child.setup);
+
     let mut provision = parent.provision;
     provision.extend(child.provision);
 
@@ -244,6 +256,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         disk: vm.and_then(|v| v.disk.clone()).unwrap_or(parent.disk),
         user: vm.and_then(|v| v.user.clone()).unwrap_or(parent.user),
         files,
+        setup,
         provision,
     }
 }
@@ -336,7 +349,23 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         });
     }
 
-    // 4. Parse --provision inline scripts.
+    // 4. Parse --setup inline scripts.
+    for script in &args.setups {
+        config.setup.push(ProvisionStep {
+            run: Some(script.clone()),
+            script: None,
+        });
+    }
+
+    // 5. Parse --setup-script file paths.
+    for path in &args.setup_scripts {
+        config.setup.push(ProvisionStep {
+            run: None,
+            script: Some(path.clone()),
+        });
+    }
+
+    // 6. Parse --provision inline scripts.
     for script in &args.provisions {
         config.provision.push(ProvisionStep {
             run: Some(script.clone()),
@@ -344,7 +373,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         });
     }
 
-    // 5. Parse --provision-script file paths.
+    // 7. Parse --provision-script file paths.
     for path in &args.provision_scripts {
         config.provision.push(ProvisionStep {
             run: None,
@@ -352,10 +381,10 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         });
     }
 
-    // 6. Resolve the full inheritance chain.
+    // 8. Resolve the full inheritance chain.
     let mut resolved = resolve(config)?;
 
-    // 7. Apply --no-checksum flag.
+    // 9. Apply --no-checksum flag.
     if args.no_checksum {
         resolved.skip_checksum = true;
     }
@@ -376,6 +405,8 @@ mod tests {
             disk: None,
             image: None,
             files: vec![],
+            setups: vec![],
+            setup_scripts: vec![],
             provisions: vec![],
             provision_scripts: vec![],
             no_checksum: false,
@@ -404,6 +435,7 @@ mod tests {
                 user: Some("testuser".to_string()),
             }),
             files: vec![],
+            setup: vec![],
             provision: vec![],
         };
 
@@ -442,6 +474,7 @@ mod tests {
             }),
             vm: None,
             files: vec![],
+            setup: vec![],
             provision: vec![],
         };
 
@@ -470,6 +503,7 @@ mod tests {
                 source: "./child-file".to_string(),
                 dest: "/home/agent/child".to_string(),
             }],
+            setup: vec![],
             provision: vec![ProvisionStep {
                 run: Some("echo child".to_string()),
                 script: None,
@@ -500,6 +534,7 @@ mod tests {
                 user: None,
             }),
             files: vec![],
+            setup: vec![],
             provision: vec![ProvisionStep {
                 run: Some("echo project".to_string()),
                 script: None,
@@ -512,8 +547,9 @@ mod tests {
         assert_eq!(resolved.disk, "20G"); // from ubuntu
         assert_eq!(resolved.user, "agent"); // from ubuntu
 
-        // claude has 1 provision step, project adds 1 more.
-        assert!(resolved.provision.len() >= 2);
+        // claude has 1 setup step and 1 provision step, project adds 1 more provision.
+        assert_eq!(resolved.setup.len(), 1);
+        assert_eq!(resolved.provision.len(), 2);
     }
 
     #[test]
@@ -546,6 +582,7 @@ mod tests {
             disk: "20G".to_string(),
             user: "agent".to_string(),
             files: vec![],
+            setup: vec![],
             provision: vec![],
         };
 
@@ -558,6 +595,7 @@ mod tests {
                 user: None,
             }),
             files: vec![],
+            setup: vec![],
             provision: vec![],
         };
 
@@ -583,6 +621,10 @@ mod tests {
                 source: "parent-src".to_string(),
                 dest: "parent-dst".to_string(),
             }],
+            setup: vec![ProvisionStep {
+                run: Some("echo parent-setup".to_string()),
+                script: None,
+            }],
             provision: vec![ProvisionStep {
                 run: Some("echo parent".to_string()),
                 script: None,
@@ -596,6 +638,10 @@ mod tests {
                 source: "child-src".to_string(),
                 dest: "child-dst".to_string(),
             }],
+            setup: vec![ProvisionStep {
+                run: Some("echo child-setup".to_string()),
+                script: None,
+            }],
             provision: vec![ProvisionStep {
                 run: Some("echo child".to_string()),
                 script: None,
@@ -606,6 +652,15 @@ mod tests {
         assert_eq!(result.files.len(), 2);
         assert_eq!(result.files[0].source, "parent-src");
         assert_eq!(result.files[1].source, "child-src");
+        assert_eq!(result.setup.len(), 2);
+        assert_eq!(
+            result.setup[0].run.as_deref(),
+            Some("echo parent-setup")
+        );
+        assert_eq!(
+            result.setup[1].run.as_deref(),
+            Some("echo child-setup")
+        );
         assert_eq!(result.provision.len(), 2);
         assert_eq!(result.provision[0].run.as_deref(), Some("echo parent"));
         assert_eq!(result.provision[1].run.as_deref(), Some("echo child"));
@@ -758,6 +813,7 @@ cpus = 4
                 source: "/tmp/src".to_string(),
                 dest: "/home/agent/dst".to_string(),
             }],
+            setup: vec![],
             provision: vec![ProvisionStep {
                 run: Some("echo hello".to_string()),
                 script: None,
