@@ -173,6 +173,15 @@ pub enum TemplateCommand {
 
     /// List available templates.
     Ls,
+
+    /// Delete a template.
+    Rm(TemplateRmArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TemplateRmArgs {
+    /// Name of the template to delete.
+    pub name: String,
 }
 
 #[derive(Debug, clap::Args)]

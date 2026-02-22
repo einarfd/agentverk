@@ -747,6 +747,75 @@ pub fn list_templates() -> anyhow::Result<Vec<TemplateInfo>> {
     Ok(templates)
 }
 
+/// Delete a template by name.
+///
+/// Fails with [`Error::TemplateNotFound`] if the template does not exist, and
+/// with [`Error::TemplateHasDependents`] if any VM instance was created from
+/// the template (deleting it would break their overlay disks).
+pub async fn remove_template(name: &str) -> anyhow::Result<()> {
+    let templates_dir = dirs::templates_dir()?;
+    let disk_path = templates_dir.join(format!("{name}.qcow2"));
+    let meta_path = templates_dir.join(format!("{name}.toml"));
+
+    if !disk_path.exists() {
+        return Err(Error::TemplateNotFound {
+            name: name.to_string(),
+        }
+        .into());
+    }
+
+    // Find any instances that were cloned from this template.
+    let dependents = find_template_dependents(name).await?;
+    if !dependents.is_empty() {
+        return Err(Error::TemplateHasDependents {
+            name: name.to_string(),
+            dependents: dependents.join(", "),
+        }
+        .into());
+    }
+
+    tokio::fs::remove_file(&disk_path)
+        .await
+        .with_context(|| format!("failed to delete template disk '{name}'"))?;
+    // Best-effort: metadata file may not exist for hand-created templates.
+    let _ = tokio::fs::remove_file(&meta_path).await;
+
+    Ok(())
+}
+
+/// Return the names of all VM instances whose config references the given template.
+async fn find_template_dependents(template_name: &str) -> anyhow::Result<Vec<String>> {
+    let instances_dir = dirs::instances_dir()?;
+    if !instances_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut dependents = Vec::new();
+    let mut entries = tokio::fs::read_dir(&instances_dir)
+        .await
+        .with_context(|| format!("failed to read instances directory {}", instances_dir.display()))?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let config_path = entry.path().join("config.toml");
+        if !config_path.exists() {
+            continue;
+        }
+        let Ok(contents) = tokio::fs::read_to_string(&config_path).await else {
+            continue;
+        };
+        let Ok(config) = toml::from_str::<crate::config::ResolvedConfig>(&contents) else {
+            continue;
+        };
+        if config.template_name.as_deref() == Some(template_name) {
+            let vm_name = entry.file_name().to_string_lossy().into_owned();
+            dependents.push(vm_name);
+        }
+    }
+
+    dependents.sort();
+    Ok(dependents)
+}
+
 /// Create a new VM as a thin clone of an existing template.
 ///
 /// The clone shares the template's disk via a qcow2 overlay (copy-on-write),

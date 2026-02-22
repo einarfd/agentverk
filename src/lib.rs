@@ -15,7 +15,7 @@ pub mod ssh;
 pub mod template;
 pub mod vm;
 
-use cli::{Cli, Command, TemplateCommand};
+use cli::{Cli, Command, TemplateCommand, TemplateRmArgs};
 use images::ImageType;
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
@@ -142,6 +142,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         t.name, t.memory, t.cpus, t.disk, t.source_vm
                     );
                 }
+                Ok(())
+            }
+            TemplateCommand::Rm(TemplateRmArgs { name }) => {
+                tracing::info!(template = %name, "removing template");
+                vm::remove_template(&name).await?;
+                println!("  ✓ Template '{name}' deleted");
                 Ok(())
             }
         },

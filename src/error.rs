@@ -107,4 +107,7 @@ pub enum Error {
 
     #[error("template '{name}' already exists")]
     TemplateAlreadyExists { name: String },
+
+    #[error("template '{name}' is in use by VMs: {dependents}")]
+    TemplateHasDependents { name: String, dependents: String },
 }
