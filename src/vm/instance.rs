@@ -145,6 +145,25 @@ impl Instance {
         self.dir.join("config.toml")
     }
 
+    /// Path to the provisioned marker file.
+    #[must_use]
+    pub fn provisioned_path(&self) -> PathBuf {
+        self.dir.join("provisioned")
+    }
+
+    /// Check whether this instance has been provisioned.
+    #[must_use]
+    pub fn is_provisioned(&self) -> bool {
+        self.provisioned_path().exists()
+    }
+
+    /// Mark this instance as provisioned by writing a marker file.
+    pub async fn mark_provisioned(&self) -> anyhow::Result<()> {
+        tokio::fs::write(self.provisioned_path(), "")
+            .await
+            .with_context(|| format!("failed to write provisioned marker for VM '{}'", self.name))
+    }
+
     /// Read the current status from disk.
     pub async fn read_status(&self) -> anyhow::Result<Status> {
         let raw = tokio::fs::read_to_string(self.status_path())

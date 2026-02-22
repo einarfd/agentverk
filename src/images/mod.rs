@@ -27,11 +27,47 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("uv", UV_TOML),
 ];
 
+/// Whether an image definition is a full image or a mixin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageType {
+    /// A full image with a base image URL or parent reference.
+    Image,
+    /// A mixin that only contributes files, setup, and/or provision steps.
+    Mixin,
+}
+
+impl std::fmt::Display for ImageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Image => write!(f, "image"),
+            Self::Mixin => write!(f, "mixin"),
+        }
+    }
+}
+
+/// Classify a config as either a full image or a mixin.
+///
+/// A config is an image if it has `base.from`, `base.aarch64`, `base.x86_64`,
+/// or a `[vm]` section. Otherwise it's a mixin.
+fn classify(config: &Config) -> ImageType {
+    if let Some(ref base) = config.base {
+        if base.from.is_some() || base.aarch64.is_some() || base.x86_64.is_some() {
+            return ImageType::Image;
+        }
+    }
+    if config.vm.is_some() {
+        return ImageType::Image;
+    }
+    ImageType::Mixin
+}
+
 /// Information about an available image.
 #[derive(Debug)]
 pub struct ImageInfo {
     /// Image name (derived from filename or built-in key).
     pub name: String,
+    /// Whether this is a full image or a mixin.
+    pub image_type: ImageType,
     /// Where this image comes from.
     pub source: ImageSource,
 }
@@ -93,8 +129,17 @@ pub fn list_all() -> anyhow::Result<Vec<ImageInfo>> {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         let name = stem.to_string();
                         seen.insert(name.clone());
+                        let config: Config = toml::from_str(
+                            &std::fs::read_to_string(&path).with_context(|| {
+                                format!("failed to read image file {}", path.display())
+                            })?,
+                        )
+                        .with_context(|| {
+                            format!("failed to parse image file {}", path.display())
+                        })?;
                         images.push(ImageInfo {
                             name,
+                            image_type: classify(&config),
                             source: ImageSource::User(path),
                         });
                     }
@@ -104,10 +149,13 @@ pub fn list_all() -> anyhow::Result<Vec<ImageInfo>> {
     }
 
     // Built-in images (skip if shadowed by user image).
-    for &(name, _) in BUILTIN_IMAGES {
+    for &(name, toml_str) in BUILTIN_IMAGES {
         if !seen.contains(name) {
+            let config: Config = toml::from_str(toml_str)
+                .with_context(|| format!("failed to parse built-in image '{name}'"))?;
             images.push(ImageInfo {
                 name: name.to_string(),
+                image_type: classify(&config),
                 source: ImageSource::BuiltIn,
             });
         }

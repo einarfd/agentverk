@@ -55,13 +55,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             let mut table = Table::new();
             table.set_content_arrangement(ContentArrangement::Dynamic);
-            table.set_header(["NAME", "STATUS", "IMAGE", "SSH"]);
+            table.set_header(["NAME", "STATUS"]);
             for inst in &instances {
                 let status = inst
                     .reconcile_status()
                     .await
                     .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
-                table.add_row([&inst.name, &status, "", ""]);
+                table.add_row([&inst.name, &status]);
             }
             println!("{table}");
             Ok(())
@@ -74,9 +74,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             let mut table = Table::new();
             table.set_content_arrangement(ContentArrangement::Dynamic);
-            table.set_header(["NAME", "SOURCE"]);
+            table.set_header(["NAME", "TYPE", "SOURCE"]);
             for img in &images {
-                table.add_row([&img.name, &img.source.to_string()]);
+                table.add_row([
+                    &img.name,
+                    &img.image_type.to_string(),
+                    &img.source.to_string(),
+                ]);
             }
             println!("{table}");
             Ok(())

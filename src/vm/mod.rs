@@ -10,7 +10,7 @@ pub mod qemu;
 use std::path::Path;
 
 use anyhow::Context as _;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::{ProvisionStep, ResolvedConfig};
 use crate::error::Error;
@@ -100,12 +100,6 @@ async fn create_inner(
     // If not starting, we're done — write stopped status.
     if !start_after {
         inst.write_status(Status::Stopped).await?;
-        if !config.setup.is_empty() || !config.provision.is_empty() {
-            warn!(
-                "setup/provisioning steps defined but --start not specified — \
-                 run `agv start {name}` then `agv provision {name}` to provision"
-            );
-        }
         info!(name, "VM created (stopped)");
         return Ok(());
     }
@@ -115,18 +109,8 @@ async fn create_inner(
     qemu::start(inst, &config.memory, config.cpus).await?;
     inst.write_status(Status::Running).await?;
 
-    // Wait for SSH to become ready.
-    ssh::wait_for_ready(inst, &config.user).await?;
-
-    // Run setup steps as root (if any).
-    if !config.setup.is_empty() {
-        run_setup(inst, &config.user, &config.setup).await?;
-    }
-
-    // Run provisioning steps as user (if any).
-    if !config.provision.is_empty() {
-        run_provisioning(inst, &config.user, &config.provision).await?;
-    }
+    // Run first-boot provisioning (wait for SSH, setup, provision).
+    run_first_boot(inst, config).await?;
 
     info!(name, "VM created and running");
     Ok(())
@@ -192,7 +176,7 @@ async fn run_setup(
 }
 
 /// Execute provisioning steps in order. First failure aborts remaining steps.
-async fn run_provisioning(
+async fn run_provision_steps(
     instance: &Instance,
     user: &str,
     steps: &[ProvisionStep],
@@ -244,6 +228,9 @@ async fn run_provisioning(
 }
 
 /// Start an existing stopped VM.
+///
+/// If the VM has never been provisioned, runs the full provisioning flow
+/// (wait for SSH, setup steps, provision steps) after starting QEMU.
 pub async fn start(name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
@@ -260,6 +247,32 @@ pub async fn start(name: &str) -> anyhow::Result<()> {
 
     qemu::start(&inst, &config.memory, config.cpus).await?;
     inst.write_status(Status::Running).await?;
+
+    if !inst.is_provisioned() {
+        run_first_boot(&inst, &config).await?;
+    }
+
+    Ok(())
+}
+
+/// Run the full first-boot provisioning flow: wait for SSH, setup, provision.
+///
+/// Called by both `create()` (with `--start`) and `start()` (first boot).
+async fn run_first_boot(
+    inst: &Instance,
+    config: &crate::config::ResolvedConfig,
+) -> anyhow::Result<()> {
+    ssh::wait_for_ready(inst, &config.user).await?;
+
+    if !config.setup.is_empty() {
+        run_setup(inst, &config.user, &config.setup).await?;
+    }
+
+    if !config.provision.is_empty() {
+        run_provision_steps(inst, &config.user, &config.provision).await?;
+    }
+
+    inst.mark_provisioned().await?;
     Ok(())
 }
 
