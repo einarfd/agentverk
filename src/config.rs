@@ -155,6 +155,13 @@ pub struct ResolvedConfig {
     /// Provisioning steps (accumulated from full chain).
     #[serde(default)]
     pub provision: Vec<ProvisionStep>,
+
+    /// Name of the template this VM was cloned from, if any.
+    ///
+    /// Set when a VM is created with `agv create --from <template>`.
+    /// Used by `inspect` to show template origin instead of a base image URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +277,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             files: vec![],
             setup: vec![],
             provision: vec![],
+            template_name: None,
         };
 
         // Apply includes before the config's own steps.
@@ -382,6 +390,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         files,
         setup,
         provision,
+        template_name: None,
     }
 }
 
@@ -548,6 +557,7 @@ mod tests {
             provision_scripts: vec![],
             no_checksum: false,
             start: false,
+            from: None,
         }
     }
 
@@ -735,6 +745,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![],
+            template_name: None,
         };
 
         let child = Config {
@@ -783,6 +794,7 @@ mod tests {
                 run: Some("echo parent".to_string()),
                 script: None,
             }],
+            template_name: None,
         };
 
         let child = Config {
@@ -977,6 +989,7 @@ cpus = 4
                 run: Some("echo hello".to_string()),
                 script: None,
             }],
+            template_name: None,
         };
 
         save(&config, &path).await.unwrap();

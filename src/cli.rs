@@ -61,6 +61,9 @@ pub enum Command {
 
     /// Restore a VM from a snapshot.
     Restore(RestoreArgs),
+
+    /// Create and manage VM templates.
+    Template(Box<TemplateArgs>),
 }
 
 #[derive(Debug, clap::Args)]
@@ -119,6 +122,10 @@ pub struct CreateArgs {
     /// Start the VM after creation.
     #[arg(long)]
     pub start: bool,
+
+    /// Create VM as a thin clone of this template instead of building from scratch.
+    #[arg(long, value_name = "TEMPLATE", conflicts_with_all = ["config", "image"])]
+    pub from: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -177,5 +184,33 @@ pub struct RestoreArgs {
     /// Label of the snapshot to restore.
     #[arg(long)]
     pub label: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TemplateArgs {
+    #[command(subcommand)]
+    pub command: TemplateCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TemplateCommand {
+    /// Create a template from an existing VM.
+    Create(TemplateCreateArgs),
+
+    /// List available templates.
+    Ls,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TemplateCreateArgs {
+    /// Name of the VM to convert into a template.
+    pub vm: String,
+
+    /// Name for the new template.
+    pub name: String,
+
+    /// Stop the VM first if it is currently running.
+    #[arg(long)]
+    pub stop: bool,
 }
 

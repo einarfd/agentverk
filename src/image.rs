@@ -107,6 +107,37 @@ pub async fn create_overlay(base_image: &Path, output: &Path, size: &str) -> any
     }
 }
 
+/// Flatten a qcow2 overlay (and all its backing files) into a standalone template image.
+///
+/// This reads the full contents of `source` (resolving the backing chain) and writes
+/// a self-contained qcow2 at `dest`. The resulting file can be used as a backing image
+/// for thin overlay clones.
+pub async fn convert_to_template(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    let source_str = source
+        .to_str()
+        .context("source disk path is not valid UTF-8")?;
+    let dest_str = dest
+        .to_str()
+        .context("destination template path is not valid UTF-8")?;
+
+    let result = tokio::process::Command::new("qemu-img")
+        .args(["convert", "-f", "qcow2", "-O", "qcow2", source_str, dest_str])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("qemu-img convert failed (exit {}): {stderr}", output.status);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("qemu-img not found — is QEMU installed?");
+        }
+        Err(e) => Err(e).context("failed to run qemu-img convert"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------

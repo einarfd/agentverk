@@ -98,6 +98,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         files: vec![],
         setup: vec![],
         provision: vec![],
+        template_name: None,
     }
 }
 
@@ -215,6 +216,7 @@ async fn create_marks_broken_on_failure() {
         files: vec![],
         setup: vec![],
         provision: vec![],
+        template_name: None,
     };
 
     // Create should fail (unreachable image URL).

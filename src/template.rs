@@ -285,6 +285,7 @@ EMPTY=
                     script: Some("{{HOME}}/scripts/setup.sh".to_string()),
                 },
             ],
+            template_name: None,
         };
 
         expand_config(&mut config, &vars).unwrap();

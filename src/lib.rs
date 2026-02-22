@@ -15,10 +15,11 @@ pub mod ssh;
 pub mod template;
 pub mod vm;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, TemplateCommand};
 use images::ImageType;
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
+#[allow(clippy::too_many_lines)]
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     dirs::ensure_dirs().await?;
 
@@ -29,9 +30,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Create(args) => {
             let start = args.start;
             let name = args.name.clone();
-            let config = config::build_from_cli(&args)?;
-            tracing::info!(name = %name, "creating VM");
-            vm::create(&name, &config, start, verbose, quiet).await
+            if let Some(ref template_name) = args.from.clone() {
+                tracing::info!(name = %name, template = %template_name, "creating VM from template");
+                vm::create_from_template(
+                    template_name,
+                    &name,
+                    args.memory.as_deref(),
+                    args.cpus,
+                    args.disk.as_deref(),
+                    start,
+                    verbose,
+                    quiet,
+                )
+                .await
+            } else {
+                let config = config::build_from_cli(&args)?;
+                tracing::info!(name = %name, "creating VM");
+                vm::create(&name, &config, start, verbose, quiet).await
+            }
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, "starting VM");
@@ -114,5 +130,30 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             eprintln!("agv restore: not yet implemented");
             Ok(())
         }
+        Command::Template(args) => match args.command {
+            TemplateCommand::Create(targs) => {
+                tracing::info!(
+                    vm = %targs.vm,
+                    template = %targs.name,
+                    "creating template"
+                );
+                vm::create_template(&targs.vm, &targs.name, targs.stop, verbose, quiet).await
+            }
+            TemplateCommand::Ls => {
+                let templates = vm::list_templates()?;
+                if templates.is_empty() {
+                    eprintln!("No templates found. Create one with: agv template create <vm> <name>");
+                    return Ok(());
+                }
+                let col_width = templates.iter().map(|t| t.name.len()).max().unwrap_or(0);
+                for t in &templates {
+                    println!(
+                        "  {:<col_width$}  {}  {} vCPUs  {} disk  (from {})",
+                        t.name, t.memory, t.cpus, t.disk, t.source_vm
+                    );
+                }
+                Ok(())
+            }
+        },
     }
 }

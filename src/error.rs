@@ -100,4 +100,11 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    // -- Template errors --
+    #[error("template '{name}' not found")]
+    TemplateNotFound { name: String },
+
+    #[error("template '{name}' already exists")]
+    TemplateAlreadyExists { name: String },
 }
