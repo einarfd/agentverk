@@ -395,6 +395,68 @@ async fn run_first_boot(
     Ok(())
 }
 
+/// Print detailed information about a VM instance.
+pub async fn inspect(name: &str) -> anyhow::Result<()> {
+    let inst = Instance::open(name).await?;
+    let status = inst.reconcile_status().await?;
+    let config = crate::config::load_resolved(&inst.config_path())?;
+
+    // Header: name and status.
+    println!("{name}  {status}");
+
+    // Extract a short label from the base image URL.
+    let image_label = config
+        .base_url
+        .rsplit('/')
+        .next()
+        .unwrap_or(&config.base_url);
+
+    println!();
+    let w = 11; // label column width
+    println!("  {:<w$}  {}", "Memory", config.memory);
+    println!("  {:<w$}  {}", "CPUs", config.cpus);
+    println!("  {:<w$}  {}", "Disk", config.disk);
+    println!("  {:<w$}  {}", "User", config.user);
+    println!("  {:<w$}  {image_label}", "Base image");
+
+    // SSH connection command — only meaningful when running.
+    if status == Status::Running {
+        let port_raw = tokio::fs::read_to_string(inst.ssh_port_path())
+            .await
+            .unwrap_or_default();
+        let port = port_raw.trim();
+        if !port.is_empty() {
+            let key = inst.ssh_key_path();
+            let key_str = key.display();
+            println!(
+                "  {:<w$}  ssh -i \"{key_str}\" -p {port} {}@localhost",
+                "SSH", config.user
+            );
+        }
+    }
+
+    let provisioned = if inst.is_provisioned() { "yes" } else { "no" };
+    println!("  {:<w$}  {provisioned}", "Provisioned");
+    println!("  {:<w$}  {}", "Data dir", inst.dir.display());
+
+    // Show error log for broken VMs.
+    if status == Status::Broken {
+        let error_log = inst.error_log_path();
+        if error_log.exists() {
+            let content = tokio::fs::read_to_string(&error_log)
+                .await
+                .unwrap_or_default();
+            println!();
+            println!("  Error");
+            for line in content.trim().lines() {
+                println!("    {line}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Stop a running VM. If `force` is true, kill the process immediately.
 pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;

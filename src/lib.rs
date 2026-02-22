@@ -102,9 +102,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Inspect(args) => {
-            tracing::info!(name = %args.name, "inspecting VM");
-            eprintln!("agv inspect: not yet implemented");
-            Ok(())
+            vm::inspect(&args.name).await
         }
         Command::Snapshot(args) => {
             tracing::info!(name = %args.name, label = ?args.label, "taking snapshot");
