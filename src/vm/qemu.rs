@@ -222,6 +222,41 @@ async fn allocate_free_port() -> anyhow::Result<u16> {
     Ok(port)
 }
 
+/// Check whether the host supports nested virtualization for guests.
+///
+/// On Linux `x86_64`: checks the KVM kernel module `nested` parameter.
+/// On Linux aarch64: checks if KVM is available (virt extensions are
+///   hardware-level; if KVM works, the CPU supports EL2).
+/// On macOS: not called (HVF doesn't support it yet in released QEMU).
+#[cfg(target_os = "linux")]
+fn nested_virt_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        for path in &[
+            "/sys/module/kvm_intel/parameters/nested",
+            "/sys/module/kvm_amd/parameters/nested",
+        ] {
+            if let Ok(val) = std::fs::read_to_string(path) {
+                let trimmed = val.trim();
+                if trimmed == "1" || trimmed == "Y" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM has no kernel module parameter for nested virt — EL2 support is
+        // a hardware capability, not a software toggle. If KVM is running, the
+        // CPU has EL2. This check is imperfect: /dev/kvm can exist inside a VM
+        // (L1) that doesn't support nesting, which would cause QEMU to fail
+        // when we set virtualization=on. The error message is clear in that case.
+        Path::new("/dev/kvm").exists()
+    }
+}
+
 /// Return the QEMU binary name and platform-specific machine/accel args.
 #[allow(clippy::unnecessary_wraps)] // Returns Err on unsupported platforms (compile-time).
 fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
@@ -242,6 +277,10 @@ fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        let nested = nested_virt_available();
+        if nested {
+            info!("nested virtualization: enabled (host KVM module supports it)");
+        }
         Ok((
             "qemu-system-x86_64".to_string(),
             vec![
@@ -257,11 +296,18 @@ fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
+        let nested = nested_virt_available();
+        let machine = if nested {
+            info!("nested virtualization: enabled (virtualization=on)");
+            "virt,virtualization=on"
+        } else {
+            "virt"
+        };
         Ok((
             "qemu-system-aarch64".to_string(),
             vec![
                 "-machine".to_string(),
-                "virt".to_string(),
+                machine.to_string(),
                 "-accel".to_string(),
                 "kvm".to_string(),
                 "-cpu".to_string(),
