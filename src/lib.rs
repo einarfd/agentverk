@@ -121,6 +121,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             vm::inspect(&args.name).await
         }
         Command::Cache(args) => match args.command {
+            CacheCommand::Ls => {
+                let entries = image::list_cache().await?;
+                if entries.is_empty() {
+                    eprintln!("No cached images.");
+                    return Ok(());
+                }
+                let col_width = entries.iter().map(|e| e.filename.len()).max().unwrap_or(0);
+                for e in &entries {
+                    let status = if e.in_use { "in use" } else { "unused" };
+                    println!(
+                        "  {:<col_width$}  {:>10}  {}",
+                        e.filename,
+                        indicatif::HumanBytes(e.size).to_string(),
+                        status,
+                    );
+                }
+                Ok(())
+            }
             CacheCommand::Clean => {
                 let deleted = image::clean_cache().await?;
                 if deleted.is_empty() {

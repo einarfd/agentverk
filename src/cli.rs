@@ -171,6 +171,9 @@ pub struct CacheArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum CacheCommand {
+    /// List cached images and their disk usage.
+    Ls,
+
     /// Remove cached images that are no longer referenced by any VM.
     Clean,
 }

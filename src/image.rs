@@ -274,6 +274,45 @@ async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// An entry in the image cache.
+pub struct CacheEntry {
+    pub filename: String,
+    pub size: u64,
+    pub in_use: bool,
+}
+
+/// List all files in the image cache with their sizes and usage status.
+pub async fn list_cache() -> anyhow::Result<Vec<CacheEntry>> {
+    let cache_dir = dirs::image_cache_dir()?;
+    if !cache_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let referenced = referenced_cache_files().await?;
+
+    let mut entries = Vec::new();
+    let mut dir = tokio::fs::read_dir(&cache_dir)
+        .await
+        .with_context(|| format!("failed to read cache directory {}", cache_dir.display()))?;
+
+    while let Some(entry) = dir.next_entry().await? {
+        if entry.path().extension().is_some_and(|e| e == "part") {
+            continue;
+        }
+        let filename = entry.file_name().to_string_lossy().into_owned();
+        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        let in_use = referenced.contains(&filename);
+        entries.push(CacheEntry {
+            filename,
+            size,
+            in_use,
+        });
+    }
+
+    entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+    Ok(entries)
+}
+
 /// Delete cached images that are no longer referenced by any VM.
 ///
 /// Returns a list of `(filename, bytes_freed)` for each deleted file.
