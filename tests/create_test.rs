@@ -246,11 +246,20 @@ async fn create_marks_broken_on_failure() {
     cleanup(name).await;
 }
 
-/// Full create-start-provision lifecycle test. Marked `#[ignore]` because it
-/// downloads a real cloud image and boots a VM — slow and requires all tools.
+/// Full create-start-provision lifecycle test using debian-12 (smaller image,
+/// faster download than Ubuntu).
+///
+/// Gated behind `AGV_INTEGRATION_TESTS=1` because it downloads a real cloud
+/// image and boots a VM — requires QEMU, qemu-img, and mkisofs/genisoimage.
+///
+/// Run with:
+///   AGV_INTEGRATION_TESTS=1 cargo test create_with_start_and_provision -- --nocapture
 #[tokio::test]
-#[ignore = "requires real cloud image download and full QEMU boot — slow"]
 async fn create_with_start_and_provision() {
+    if std::env::var("AGV_INTEGRATION_TESTS").as_deref() != Ok("1") {
+        eprintln!("skipping create_with_start_and_provision — set AGV_INTEGRATION_TESTS=1 to run");
+        return;
+    }
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping create_with_start_and_provision");
         return;
@@ -261,10 +270,10 @@ async fn create_with_start_and_provision() {
     let name = "_test-create-full";
     cleanup(name).await;
 
-    // Resolve ubuntu-24.04 as the base, add a provision step.
+    // Use debian-12: smaller image (~330 MB) and fully apt-compatible.
     let config = config::resolve(config::Config {
         base: Some(config::BaseConfig {
-            from: Some("ubuntu-24.04".to_string()),
+            from: Some("debian-12".to_string()),
             ..Default::default()
         }),
         vm: Some(config::VmConfig {
@@ -283,7 +292,6 @@ async fn create_with_start_and_provision() {
     })
     .unwrap();
 
-    // Ensure we have the provision step.
     assert!(!config.provision.is_empty());
 
     vm::create(name, &config, true, false, true).await.unwrap();
@@ -298,6 +306,14 @@ async fn create_with_start_and_provision() {
     assert_eq!(status, Status::Running);
     assert!(inst.pid_path().exists());
     assert!(inst.ssh_port_path().exists());
+
+    // Verify provision.log was written and contains output.
+    assert!(inst.provision_log_path().exists(), "provision.log should exist");
+    let log = tokio::fs::read_to_string(inst.provision_log_path()).await.unwrap();
+    assert!(!log.is_empty(), "provision.log should have content");
+
+    // Verify the provisioned marker was set.
+    assert!(inst.is_provisioned(), "instance should be marked provisioned");
 
     cleanup(name).await;
 }
