@@ -58,6 +58,9 @@ pub enum Command {
 
     /// Create and manage VM templates.
     Template(Box<TemplateArgs>),
+
+    /// Manage the image download cache.
+    Cache(CacheArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -158,6 +161,18 @@ pub struct SshArgs {
 pub struct InspectArgs {
     /// Name of the VM to inspect.
     pub name: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub command: CacheCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CacheCommand {
+    /// Remove cached images that are no longer referenced by any VM.
+    Clean,
 }
 
 #[derive(Debug, clap::Args)]

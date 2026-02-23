@@ -35,6 +35,7 @@ Commands:
   images    List available images
   inspect   Show detailed information about a VM
   template  Create and manage VM templates
+  cache     Manage the image download cache
 
 Options:
   -v, --verbose  Enable verbose output

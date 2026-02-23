@@ -15,7 +15,7 @@ pub mod ssh;
 pub mod template;
 pub mod vm;
 
-use cli::{Cli, Command, TemplateCommand, TemplateRmArgs};
+use cli::{CacheCommand, Cli, Command, TemplateCommand, TemplateRmArgs};
 use images::ImageType;
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
@@ -120,6 +120,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Inspect(args) => {
             vm::inspect(&args.name).await
         }
+        Command::Cache(args) => match args.command {
+            CacheCommand::Clean => {
+                let deleted = image::clean_cache().await?;
+                if deleted.is_empty() {
+                    println!("  Nothing to clean — all cached images are in use.");
+                    return Ok(());
+                }
+                let total: u64 = deleted.iter().map(|(_, size)| size).sum();
+                for (name, size) in &deleted {
+                    println!(
+                        "  Deleted {}  ({})",
+                        name,
+                        indicatif::HumanBytes(*size)
+                    );
+                }
+                println!("  Freed {}", indicatif::HumanBytes(total));
+                Ok(())
+            }
+        },
         Command::Template(args) => match args.command {
             TemplateCommand::Create(targs) => {
                 tracing::info!(

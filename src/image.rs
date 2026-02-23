@@ -164,7 +164,7 @@ fn parse_checksum(raw: Option<&str>) -> anyhow::Result<Option<&str>> {
 /// Extract a filename from a URL's last path segment.
 ///
 /// Falls back to a SHA256 hash of the URL if no clean filename is available.
-fn filename_from_url(url: &str) -> String {
+pub(crate) fn filename_from_url(url: &str) -> String {
     url.rsplit('/')
         .next()
         .filter(|s| !s.is_empty() && s.contains('.'))
@@ -272,6 +272,78 @@ async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Delete cached images that are no longer referenced by any VM.
+///
+/// Returns a list of `(filename, bytes_freed)` for each deleted file.
+pub async fn clean_cache() -> anyhow::Result<Vec<(String, u64)>> {
+    let cache_dir = dirs::image_cache_dir()?;
+    if !cache_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Collect filenames referenced by existing VM configs.
+    let referenced = referenced_cache_files().await?;
+
+    // Walk the cache dir and delete anything not referenced.
+    let mut deleted = Vec::new();
+    let mut entries = tokio::fs::read_dir(&cache_dir)
+        .await
+        .with_context(|| format!("failed to read cache directory {}", cache_dir.display()))?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        // Only consider regular files, skip partial downloads (*.part).
+        if path.extension().is_some_and(|e| e == "part") {
+            continue;
+        }
+        let filename = entry.file_name().to_string_lossy().into_owned();
+        if referenced.contains(&filename) {
+            continue;
+        }
+        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        tokio::fs::remove_file(&path)
+            .await
+            .with_context(|| format!("failed to delete cached image {}", path.display()))?;
+        deleted.push((filename, size));
+    }
+
+    Ok(deleted)
+}
+
+/// Collect the set of cache filenames currently referenced by VM configs.
+async fn referenced_cache_files() -> anyhow::Result<std::collections::HashSet<String>> {
+    let instances_dir = dirs::instances_dir()?;
+    let mut referenced = std::collections::HashSet::new();
+
+    if !instances_dir.exists() {
+        return Ok(referenced);
+    }
+
+    let mut entries = tokio::fs::read_dir(&instances_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to read instances directory {}",
+                instances_dir.display()
+            )
+        })?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let config_path = entry.path().join("config.toml");
+        let Ok(contents) = tokio::fs::read_to_string(&config_path).await else {
+            continue;
+        };
+        let Ok(config) = toml::from_str::<crate::config::ResolvedConfig>(&contents) else {
+            continue;
+        };
+        if !config.base_url.is_empty() {
+            referenced.insert(filename_from_url(&config.base_url));
+        }
+    }
+
+    Ok(referenced)
 }
 
 #[cfg(test)]
