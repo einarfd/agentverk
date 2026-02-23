@@ -48,12 +48,27 @@ pub fn load_dotenv(path: &Path) -> anyhow::Result<HashMap<String, String>> {
 
 /// Load template variables from `.env` (if present) and host environment.
 ///
-/// Host environment variables take priority over `.env` values.
+/// Search order (highest priority last, so later values win):
+/// 1. `.env` in `config_dir` (the directory containing the `agv.toml`)
+/// 2. `.env` in the current working directory
+/// 3. Host environment variables
+///
+/// Passing `config_dir = None` skips step 1.
 #[must_use]
-pub fn load_variables() -> HashMap<String, String> {
+pub fn load_variables(config_dir: Option<&Path>) -> HashMap<String, String> {
     let mut vars = HashMap::new();
 
-    // Load .env first (lower priority).
+    // Load .env from the config file's directory first (lowest priority).
+    if let Some(dir) = config_dir {
+        let dotenv_path = dir.join(".env");
+        if dotenv_path.exists() {
+            if let Ok(dotenv_vars) = load_dotenv(&dotenv_path) {
+                vars.extend(dotenv_vars);
+            }
+        }
+    }
+
+    // .env in cwd overrides the config-dir one.
     let dotenv_path = Path::new(".env");
     if dotenv_path.exists() {
         if let Ok(dotenv_vars) = load_dotenv(dotenv_path) {
@@ -61,7 +76,7 @@ pub fn load_variables() -> HashMap<String, String> {
         }
     }
 
-    // Host env vars override .env.
+    // Host env vars override everything.
     for (key, value) in std::env::vars() {
         vars.insert(key, value);
     }

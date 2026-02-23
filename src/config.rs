@@ -435,8 +435,12 @@ pub async fn save(config: &ResolvedConfig, path: &Path) -> anyhow::Result<()> {
 ///   `--config <path>` > `--image <name>` > `agv.toml` (if exists) > `ubuntu-24.04`
 pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 1. Determine the base config source.
+    //    Also record the config file's directory so we can look for .env there.
+    let mut config_dir: Option<std::path::PathBuf> = None;
     let mut config = if let Some(ref path) = args.config {
-        load(Path::new(path))?
+        let p = Path::new(path);
+        config_dir = p.parent().map(std::path::Path::to_path_buf);
+        load(p)?
     } else if let Some(ref image_name) = args.image {
         Config {
             base: Some(BaseConfig {
@@ -446,6 +450,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
             ..Default::default()
         }
     } else if Path::new("agv.toml").exists() {
+        // agv.toml is in cwd — .env next to it is already handled by cwd lookup.
         load(Path::new("agv.toml"))?
     } else {
         Config {
@@ -525,7 +530,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     let mut resolved = resolve(config)?;
 
     // 10. Expand template variables ({{VAR}} and {{VAR:-default}}).
-    let mut vars = crate::template::load_variables();
+    let mut vars = crate::template::load_variables(config_dir.as_deref());
     vars.insert("AGV_USER".to_string(), resolved.user.clone());
     crate::template::expand_config(&mut resolved, &vars)?;
 
