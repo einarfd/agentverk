@@ -62,3 +62,82 @@ pub async fn ensure_dirs() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ends_with_components(path: &std::path::Path, suffix: &str) -> bool {
+        let suffix_path = std::path::Path::new(suffix);
+        path.ends_with(suffix_path)
+    }
+
+    #[test]
+    fn data_dir_ends_with_agv() {
+        let dir = data_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "agv"),
+            "data_dir should end with 'agv', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn image_cache_dir_ends_with_expected_path() {
+        let dir = image_cache_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "cache/images"),
+            "image_cache_dir should end with 'cache/images', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn instances_dir_ends_with_instances() {
+        let dir = instances_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "instances"),
+            "instances_dir should end with 'instances', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn images_dir_ends_with_images() {
+        let dir = images_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "images"),
+            "images_dir should end with 'images', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn templates_dir_ends_with_templates() {
+        let dir = templates_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "templates"),
+            "templates_dir should end with 'templates', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn instance_dir_appends_name() {
+        let dir = instance_dir("myvm").unwrap();
+        assert!(
+            ends_with_components(&dir, "instances/myvm"),
+            "instance_dir('myvm') should end with 'instances/myvm', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn all_dirs_are_under_data_dir() {
+        let base = data_dir().unwrap();
+        assert!(image_cache_dir().unwrap().starts_with(&base));
+        assert!(instances_dir().unwrap().starts_with(&base));
+        assert!(images_dir().unwrap().starts_with(&base));
+        assert!(templates_dir().unwrap().starts_with(&base));
+    }
+}
