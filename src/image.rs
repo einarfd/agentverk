@@ -296,12 +296,12 @@ pub async fn list_cache() -> anyhow::Result<Vec<CacheEntry>> {
         .with_context(|| format!("failed to read cache directory {}", cache_dir.display()))?;
 
     while let Some(entry) = dir.next_entry().await? {
-        if entry.path().extension().is_some_and(|e| e == "part") {
-            continue;
-        }
         let filename = entry.file_name().to_string_lossy().into_owned();
         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-        let in_use = referenced.contains(&filename);
+        // Partial downloads are always shown as unused so cache ls reflects
+        // the true state of the cache directory.
+        let in_use = entry.path().extension().is_none_or(|e| e != "part")
+            && referenced.contains(&filename);
         entries.push(CacheEntry {
             filename,
             size,
@@ -333,19 +333,17 @@ pub async fn clean_cache() -> anyhow::Result<Vec<(String, u64)>> {
 
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        // Only consider regular files, skip partial downloads (*.part).
-        if path.extension().is_some_and(|e| e == "part") {
-            continue;
-        }
         let filename = entry.file_name().to_string_lossy().into_owned();
-        if referenced.contains(&filename) {
-            continue;
-        }
         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-        tokio::fs::remove_file(&path)
-            .await
-            .with_context(|| format!("failed to delete cached image {}", path.display()))?;
-        deleted.push((filename, size));
+
+        // Always delete partial downloads — they are never usable.
+        let is_partial = path.extension().is_some_and(|e| e == "part");
+        if is_partial || !referenced.contains(&filename) {
+            tokio::fs::remove_file(&path)
+                .await
+                .with_context(|| format!("failed to delete cached image {}", path.display()))?;
+            deleted.push((filename, size));
+        }
     }
 
     Ok(deleted)
