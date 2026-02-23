@@ -130,16 +130,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 vm::create_template(&targs.vm, &targs.name, targs.stop, verbose, quiet).await
             }
             TemplateCommand::Ls => {
-                let templates = vm::list_templates()?;
+                let templates = vm::list_templates().await?;
                 if templates.is_empty() {
                     eprintln!("No templates found. Create one with: agv template create <vm> <name>");
                     return Ok(());
                 }
                 let col_width = templates.iter().map(|t| t.name.len()).max().unwrap_or(0);
                 for t in &templates {
+                    let deps = if t.dependents.is_empty() {
+                        "unused".to_string()
+                    } else {
+                        format!("used by: {}", t.dependents.join(", "))
+                    };
                     println!(
-                        "  {:<col_width$}  {}  {} vCPUs  {} disk  (from {})",
-                        t.name, t.memory, t.cpus, t.disk, t.source_vm
+                        "  {:<col_width$}  {}  {} vCPUs  {} disk  (from {})  {}",
+                        t.name, t.memory, t.cpus, t.disk, t.source_vm, deps
                     );
                 }
                 Ok(())

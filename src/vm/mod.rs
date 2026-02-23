@@ -581,6 +581,8 @@ pub struct TemplateInfo {
     pub memory: String,
     pub cpus: u32,
     pub disk: String,
+    /// Names of VM instances currently using this template as a backing image.
+    pub dependents: Vec<String>,
 }
 
 /// Create a reusable template from an existing VM.
@@ -714,8 +716,8 @@ pub async fn create_template(
     Ok(())
 }
 
-/// List all available templates.
-pub fn list_templates() -> anyhow::Result<Vec<TemplateInfo>> {
+/// List all available templates, including which VMs depend on each.
+pub async fn list_templates() -> anyhow::Result<Vec<TemplateInfo>> {
     let templates_dir = dirs::templates_dir()?;
     if !templates_dir.exists() {
         return Ok(Vec::new());
@@ -733,12 +735,14 @@ pub fn list_templates() -> anyhow::Result<Vec<TemplateInfo>> {
                 .with_context(|| format!("failed to read template metadata {}", path.display()))?;
             let meta: TemplateMetadata = toml::from_str(&contents)
                 .with_context(|| format!("failed to parse template metadata {}", path.display()))?;
+            let dependents = find_template_dependents(&meta.name).await?;
             templates.push(TemplateInfo {
                 name: meta.name,
                 source_vm: meta.source_vm,
                 memory: meta.memory,
                 cpus: meta.cpus,
                 disk: meta.disk,
+                dependents,
             });
         }
     }
