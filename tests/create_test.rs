@@ -273,7 +273,6 @@ async fn create_with_start_and_provision() {
             disk: Some("10G".to_string()),
             user: Some("agent".to_string()),
         }),
-        include: vec![],
         files: vec![],
         setup: vec![],
         provision: vec![config::ProvisionStep {

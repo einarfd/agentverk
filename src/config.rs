@@ -28,10 +28,6 @@ pub struct Config {
     /// VM resource settings.
     pub vm: Option<VmConfig>,
 
-    /// Named modules to include (additive files/setup/provision steps).
-    #[serde(default)]
-    pub include: Vec<String>,
-
     /// Files to copy into the VM before provisioning.
     #[serde(default)]
     pub files: Vec<FileEntry>,
@@ -51,6 +47,11 @@ pub struct Config {
 pub struct BaseConfig {
     /// Parent image name to inherit from (derived images).
     pub from: Option<String>,
+
+    /// Named modules to include (additive files/setup/provision steps).
+    /// Placed here so `include` can sit naturally inside `[base]` in TOML.
+    #[serde(default)]
+    pub include: Vec<String>,
 
     /// ARM64 cloud image (root images only).
     pub aarch64: Option<ArchImage>,
@@ -187,10 +188,15 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         .and_then(|b| b.from.clone());
 
     // Destructure config to avoid partial-move issues.
+    // `include` lives in `base` now; extract it before moving base.
+    let child_includes = config
+        .base
+        .as_ref()
+        .map(|b| b.include.clone())
+        .unwrap_or_default();
     let Config {
         base,
         vm,
-        include: child_includes,
         files: child_files,
         setup: child_setup,
         provision: child_provision,
@@ -221,10 +227,10 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         let parent_resolved = resolve_inner(parent_config, seen)?;
 
         // Build a child config with only scalars (no lists) for merging.
+        // include was already extracted into child_includes above.
         let scalars_only = Config {
             base,
             vm,
-            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -339,7 +345,12 @@ fn apply_includes(
         }
 
         // Recursively resolve nested includes first.
-        apply_includes(resolved, &include_config.include, seen)?;
+        let nested_includes = include_config
+            .base
+            .as_ref()
+            .map(|b| b.include.clone())
+            .unwrap_or_default();
+        apply_includes(resolved, &nested_includes, seen)?;
 
         // Tag steps with the source module so status output can show origin.
         for step in &mut include_config.setup {
@@ -525,8 +536,12 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         });
     }
 
-    // 8. Append CLI --include flags to config includes.
-    config.include.extend(args.includes.clone());
+    // 8. Append CLI --include flags to config includes (via base).
+    config
+        .base
+        .get_or_insert_with(BaseConfig::default)
+        .include
+        .extend(args.includes.clone());
 
     // 9. Resolve the full inheritance chain.
     let mut resolved = resolve(config)?;
@@ -573,6 +588,7 @@ mod tests {
         let config = Config {
             base: Some(BaseConfig {
                 from: None,
+                include: vec![],
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:abc123".to_string(),
@@ -588,7 +604,6 @@ mod tests {
                 disk: Some("30G".to_string()),
                 user: Some("testuser".to_string()),
             }),
-            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -618,6 +633,7 @@ mod tests {
         let config = Config {
             base: Some(BaseConfig {
                 from: None,
+                include: vec![],
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:aaa".to_string(),
@@ -628,7 +644,6 @@ mod tests {
                 }),
             }),
             vm: None,
-            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -655,7 +670,6 @@ mod tests {
                 disk: None,
                 user: None,
             }),
-            include: vec![],
             files: vec![FileEntry {
                 source: "./child-file".to_string(),
                 dest: "/home/agent/child".to_string(),
@@ -683,6 +697,7 @@ mod tests {
         let project = Config {
             base: Some(BaseConfig {
                 from: Some("ubuntu-24.04".to_string()),
+                include: vec!["devtools".to_string(), "claude".to_string()],
                 ..Default::default()
             }),
             vm: Some(VmConfig {
@@ -691,7 +706,6 @@ mod tests {
                 disk: None,
                 user: None,
             }),
-            include: vec!["devtools".to_string(), "claude".to_string()],
             files: vec![],
             setup: vec![],
             provision: vec![ProvisionStep {
@@ -763,7 +777,6 @@ mod tests {
                 disk: None,
                 user: None,
             }),
-            include: vec![],
             files: vec![],
             setup: vec![],
             provision: vec![],
@@ -807,7 +820,6 @@ mod tests {
         let child = Config {
             base: None,
             vm: None,
-            include: vec![],
             files: vec![FileEntry {
                 source: "child-src".to_string(),
                 dest: "child-dst".to_string(),
