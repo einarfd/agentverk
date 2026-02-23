@@ -19,6 +19,7 @@ const GH_TOML: &str = include_str!("gh.toml");
 const RUST_TOML: &str = include_str!("rust.toml");
 const UV_TOML: &str = include_str!("uv.toml");
 const ZSH_TOML: &str = include_str!("zsh.toml");
+const OH_MY_ZSH_TOML: &str = include_str!("oh-my-zsh.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
@@ -26,6 +27,7 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("devtools", DEVTOOLS_TOML),
     ("docker", DOCKER_TOML),
     ("gh", GH_TOML),
+    ("oh-my-zsh", OH_MY_ZSH_TOML),
     ("rust", RUST_TOML),
     ("uv", UV_TOML),
     ("zsh", ZSH_TOML),
@@ -273,7 +275,18 @@ mod tests {
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
         assert!(!config.setup.is_empty(), "zsh should have setup steps");
-        assert!(!config.provision.is_empty(), "zsh should have provision steps");
+        assert!(config.provision.is_empty(), "zsh should have no provision steps");
+    }
+
+    #[test]
+    fn lookup_builtin_oh_my_zsh() {
+        let config = lookup("oh-my-zsh").unwrap();
+        assert!(config.is_some(), "oh-my-zsh should be a built-in image");
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "oh-my-zsh should have setup steps");
+        assert!(!config.provision.is_empty(), "oh-my-zsh should have provision steps");
     }
 
     #[test]
@@ -292,6 +305,7 @@ mod tests {
         assert!(names.contains(&"docker"));
         assert!(names.contains(&"gh"));
         assert!(names.contains(&"rust"));
+        assert!(names.contains(&"oh-my-zsh"));
         assert!(names.contains(&"uv"));
         assert!(names.contains(&"zsh"));
     }
