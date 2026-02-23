@@ -6,7 +6,10 @@ Create and manage QEMU VMs for AI coding agents.
 
 ## Requirements
 
-- macOS (Apple Silicon) or Linux
+Supported platforms: macOS (Apple Silicon) or Linux (x86_64 or aarch64).
+
+**Runtime dependencies** (needed to run `agv`):
+
 - QEMU
   - macOS: `brew install qemu`
   - Ubuntu/Debian: `sudo apt install qemu-system`
@@ -17,8 +20,7 @@ Create and manage QEMU VMs for AI coding agents.
   - Fedora: `sudo dnf install genisoimage`
 - OpenSSH (for SSH access to VMs)
   - macOS: included with the OS
-  - Linux: `sudo apt install openssh-client` (usually pre-installed)
-- Rust 1.85+ (build only)
+  - Linux: usually pre-installed; `sudo apt install openssh-client` if missing
 
 ## Usage
 
@@ -83,12 +85,31 @@ agv template ls                        # list templates
 agv create --from mytemplate newvm     # create thin clone
 ```
 
-## Building
+## Building from source
+
+**Build dependencies:**
+
+- Rust 1.85 or later — install via [rustup](https://rustup.rs):
+  ```
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+- A C linker (usually already present)
+  - macOS: install Xcode Command Line Tools: `xcode-select --install`
+  - Ubuntu/Debian: `sudo apt install build-essential`
+  - Fedora: `sudo dnf install gcc`
+
+**Build:**
 
 ```
-cargo build
-cargo clippy
-cargo test
+cargo build           # debug binary → ./target/debug/agv
+cargo build --release # release binary → ./target/release/agv
+```
+
+**Lint and test:**
+
+```
+cargo clippy          # must pass with zero warnings
+cargo test            # unit and integration tests
 ```
 
 ## License
