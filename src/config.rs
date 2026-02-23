@@ -70,6 +70,7 @@ pub struct ArchImage {
 
 /// VM resource configuration — all fields optional for merging.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VmConfig {
     /// Memory allocation, e.g. "4G", "512M".
     pub memory: Option<String>,

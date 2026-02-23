@@ -52,6 +52,8 @@ VMs are configured with a TOML file (defaults to `agv.toml` in the current direc
 [base]
 from = "ubuntu-24.04"
 
+include = ["devtools"]
+
 [vm]
 memory = "4G"
 cpus = 2
