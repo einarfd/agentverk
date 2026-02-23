@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _};
 use futures_util::StreamExt as _;
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256, Sha512};
 use tokio::io::AsyncWriteExt as _;
 use tracing::info;
 
@@ -52,13 +52,16 @@ pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<
     download(url, &part_path).await?;
 
     // Verify checksum after download.
-    if let Some(expected) = expected_hex {
-        let actual = sha256_file(&part_path).await?;
-        if actual != expected {
+    if let Some(ref expected) = expected_hex {
+        let actual = match expected {
+            Checksum::Sha256(_) => sha256_file(&part_path).await?,
+            Checksum::Sha512(_) => sha512_file(&part_path).await?,
+        };
+        if actual != expected.hex() {
             let _ = tokio::fs::remove_file(&part_path).await;
             return Err(Error::ImageChecksum {
                 path: part_path,
-                expected: expected.to_string(),
+                expected: expected.hex().to_string(),
                 actual,
             }
             .into());
@@ -142,23 +145,43 @@ pub async fn convert_to_template(source: &Path, dest: &Path) -> anyhow::Result<(
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Parse a `sha256:<hex>` checksum string, returning the hex portion.
+/// A parsed checksum — either SHA-256 (64 hex chars) or SHA-512 (128 hex chars).
+enum Checksum<'a> {
+    Sha256(&'a str),
+    Sha512(&'a str),
+}
+
+impl Checksum<'_> {
+    fn hex(&self) -> &str {
+        match self {
+            Self::Sha256(h) | Self::Sha512(h) => h,
+        }
+    }
+}
+
+/// Parse a `sha256:<hex>` or `sha512:<hex>` checksum string.
 ///
 /// Returns `None` if `raw` is `None`. Errors on invalid format.
-fn parse_checksum(raw: Option<&str>) -> anyhow::Result<Option<&str>> {
+fn parse_checksum(raw: Option<&str>) -> anyhow::Result<Option<Checksum<'_>>> {
     let Some(raw) = raw else {
         return Ok(None);
     };
 
-    let hex = raw
-        .strip_prefix("sha256:")
-        .context("checksum must start with 'sha256:' (e.g. sha256:abc123...)")?;
-
-    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("checksum must be exactly 64 hex characters after 'sha256:' prefix");
+    if let Some(hex) = raw.strip_prefix("sha256:") {
+        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("sha256 checksum must be exactly 64 hex characters");
+        }
+        return Ok(Some(Checksum::Sha256(hex)));
     }
 
-    Ok(Some(hex))
+    if let Some(hex) = raw.strip_prefix("sha512:") {
+        if hex.len() != 128 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("sha512 checksum must be exactly 128 hex characters");
+        }
+        return Ok(Some(Checksum::Sha512(hex)));
+    }
+
+    bail!("checksum must start with 'sha256:' or 'sha512:'")
 }
 
 /// Extract a filename from a URL's last path segment.
@@ -187,6 +210,31 @@ async fn sha256_file(path: &Path) -> anyhow::Result<String> {
         .with_context(|| format!("failed to open {} for checksum", path.display()))?;
 
     let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+
+    loop {
+        let n = file
+            .read(&mut buf)
+            .await
+            .with_context(|| format!("failed to read {} for checksum", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Compute the SHA512 digest of a file, reading in 64 KiB chunks.
+async fn sha512_file(path: &Path) -> anyhow::Result<String> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open {} for checksum", path.display()))?;
+
+    let mut hasher = Sha512::new();
     let mut buf = vec![0u8; 64 * 1024];
 
     loop {
@@ -388,16 +436,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_checksum_valid() {
-        let hex = "a" .repeat(64);
+    fn parse_checksum_sha256_valid() {
+        let hex = "a".repeat(64);
         let input = format!("sha256:{hex}");
-        let result = parse_checksum(Some(&input)).unwrap();
-        assert_eq!(result, Some(hex.as_str()));
+        let result = parse_checksum(Some(&input)).unwrap().unwrap();
+        assert!(matches!(result, Checksum::Sha256(h) if h == hex));
+    }
+
+    #[test]
+    fn parse_checksum_sha512_valid() {
+        let hex = "b".repeat(128);
+        let input = format!("sha512:{hex}");
+        let result = parse_checksum(Some(&input)).unwrap().unwrap();
+        assert!(matches!(result, Checksum::Sha512(h) if h == hex));
     }
 
     #[test]
     fn parse_checksum_none() {
-        assert_eq!(parse_checksum(None).unwrap(), None);
+        assert!(parse_checksum(None).unwrap().is_none());
     }
 
     #[test]
@@ -408,9 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_checksum_short_hex() {
-        let input = "sha256:abcdef";
-        assert!(parse_checksum(Some(input)).is_err());
+    fn parse_checksum_sha256_short_hex() {
+        assert!(parse_checksum(Some("sha256:abcdef")).is_err());
+    }
+
+    #[test]
+    fn parse_checksum_sha512_short_hex() {
+        assert!(parse_checksum(Some("sha512:abcdef")).is_err());
     }
 
     #[test]
@@ -460,6 +520,19 @@ mod tests {
         assert_eq!(
             digest,
             "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+        );
+    }
+
+    #[tokio::test]
+    async fn sha512_file_known_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        tokio::fs::write(&path, b"hello world\n").await.unwrap();
+        let digest = sha512_file(&path).await.unwrap();
+        assert_eq!(
+            digest,
+            "db3974a97f2407b7cae1ae637c0030687a11913274d578492558e39c16c017de\
+             84eacdc8c62fe34ee4e12b4b1428817f09b6a2760c3f8a664ceae94d2434a593"
         );
     }
 }

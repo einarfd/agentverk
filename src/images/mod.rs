@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::dirs;
 
 const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
+const DEBIAN_12_TOML: &str = include_str!("debian-12.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
 const DOCKER_TOML: &str = include_str!("docker.toml");
@@ -23,6 +24,7 @@ const OH_MY_ZSH_TOML: &str = include_str!("oh-my-zsh.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
+    ("debian-12", DEBIAN_12_TOML),
     ("claude", CLAUDE_TOML),
     ("devtools", DEVTOOLS_TOML),
     ("docker", DOCKER_TOML),
@@ -202,6 +204,18 @@ mod tests {
     }
 
     #[test]
+    fn lookup_builtin_debian_12() {
+        let config = lookup("debian-12").unwrap();
+        assert!(config.is_some(), "debian-12 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "debian-12 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+    }
+
+    #[test]
     fn lookup_builtin_claude() {
         let config = lookup("claude").unwrap();
         assert!(config.is_some(), "claude should be a built-in image");
@@ -300,6 +314,7 @@ mod tests {
         let images = list_all().unwrap();
         let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
         assert!(names.contains(&"ubuntu-24.04"));
+        assert!(names.contains(&"debian-12"));
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"devtools"));
         assert!(names.contains(&"docker"));

@@ -1,0 +1,18 @@
+# Base Debian 12 (Bookworm) genericcloud image.
+# Smaller than Ubuntu (~330 MB vs ~600 MB), apt-compatible — all Ubuntu/Debian
+# mixins work unchanged.
+# Pinned to the 20260210-2384 release for reproducible builds.
+
+[base.aarch64]
+url = "https://cloud.debian.org/images/cloud/bookworm/20260210-2384/debian-12-genericcloud-arm64-20260210-2384.qcow2"
+checksum = "sha512:b524402dfe66a7e7000af03415052ddc6fdfbde898562325b8f8e05fb39d600ce8eb3902dee027df691b0e8f4e5147c9513e75496f09591e7816f37354939ea5"
+
+[base.x86_64]
+url = "https://cloud.debian.org/images/cloud/bookworm/20260210-2384/debian-12-genericcloud-amd64-20260210-2384.qcow2"
+checksum = "sha512:e5d776b9de352c89fbad4baec8bfd38a35c5905114a5f3b108946348cb44d869396d22e4a837a43afee4b11363d4759c358fb3e8a7cd07fa743ed6b663784fed"
+
+[vm]
+memory = "2G"
+cpus = 2
+disk = "20G"
+user = "agent"
