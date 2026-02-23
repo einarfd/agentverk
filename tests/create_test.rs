@@ -249,17 +249,14 @@ async fn create_marks_broken_on_failure() {
 /// Full create-start-provision lifecycle test using debian-12 (smaller image,
 /// faster download than Ubuntu).
 ///
-/// Gated behind `AGV_INTEGRATION_TESTS=1` because it downloads a real cloud
-/// image and boots a VM — requires QEMU, qemu-img, and mkisofs/genisoimage.
+/// Ignored by default because it downloads a real cloud image and boots a VM.
+/// Requires QEMU, qemu-img, and mkisofs/genisoimage.
 ///
 /// Run with:
-///   AGV_INTEGRATION_TESTS=1 cargo test create_with_start_and_provision -- --nocapture
+///   cargo test create_with_start_and_provision -- --include-ignored --nocapture
 #[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
 async fn create_with_start_and_provision() {
-    if std::env::var("AGV_INTEGRATION_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping create_with_start_and_provision — set AGV_INTEGRATION_TESTS=1 to run");
-        return;
-    }
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping create_with_start_and_provision");
         return;

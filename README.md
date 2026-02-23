@@ -109,7 +109,14 @@ cargo build --release # release binary → ./target/release/agv
 
 ```
 cargo clippy          # must pass with zero warnings
-cargo test            # unit and integration tests
+cargo test            # unit and integration tests (fast, no QEMU required)
+```
+
+Some tests boot a real VM and are skipped by default. To run them (requires
+QEMU and a network connection to download the base image):
+
+```
+cargo test -- --include-ignored --nocapture
 ```
 
 ## License
