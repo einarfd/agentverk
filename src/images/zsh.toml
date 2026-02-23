@@ -1,0 +1,11 @@
+# Zsh and oh-my-zsh mixin.
+# Installs zsh, sets it as the default shell for the VM user, and
+# installs oh-my-zsh. If you provide dotfiles via [[provision]], run
+# this mixin first so oh-my-zsh's ~/.zshrc can be overwritten by yours.
+# Use via: include = ["zsh"]
+
+[[setup]]
+run = "apt-get update && apt-get install -y zsh && chsh -s $(which zsh) {{AGV_USER}}"
+
+[[provision]]
+run = """sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended"""

@@ -15,16 +15,20 @@ const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
 const DOCKER_TOML: &str = include_str!("docker.toml");
+const GH_TOML: &str = include_str!("gh.toml");
 const RUST_TOML: &str = include_str!("rust.toml");
 const UV_TOML: &str = include_str!("uv.toml");
+const ZSH_TOML: &str = include_str!("zsh.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
     ("claude", CLAUDE_TOML),
     ("devtools", DEVTOOLS_TOML),
     ("docker", DOCKER_TOML),
+    ("gh", GH_TOML),
     ("rust", RUST_TOML),
     ("uv", UV_TOML),
+    ("zsh", ZSH_TOML),
 ];
 
 /// Whether an image definition is a full image or a mixin.
@@ -252,6 +256,27 @@ mod tests {
     }
 
     #[test]
+    fn lookup_builtin_gh() {
+        let config = lookup("gh").unwrap();
+        assert!(config.is_some(), "gh should be a built-in image");
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "gh should have setup steps");
+    }
+
+    #[test]
+    fn lookup_builtin_zsh() {
+        let config = lookup("zsh").unwrap();
+        assert!(config.is_some(), "zsh should be a built-in image");
+        let config = config.unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "zsh should have setup steps");
+        assert!(!config.provision.is_empty(), "zsh should have provision steps");
+    }
+
+    #[test]
     fn lookup_nonexistent() {
         let config = lookup("does-not-exist-12345").unwrap();
         assert!(config.is_none());
@@ -265,7 +290,9 @@ mod tests {
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"devtools"));
         assert!(names.contains(&"docker"));
+        assert!(names.contains(&"gh"));
         assert!(names.contains(&"rust"));
         assert!(names.contains(&"uv"));
+        assert!(names.contains(&"zsh"));
     }
 }
