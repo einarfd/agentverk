@@ -3,7 +3,9 @@
 //! Handles starting QEMU as a background process, communicating over the
 //! QMP JSON socket for lifecycle management, and graceful/forceful shutdown.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_arch = "aarch64")]
+use std::path::PathBuf;
 
 use anyhow::{bail, Context as _};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
