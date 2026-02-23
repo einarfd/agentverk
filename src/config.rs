@@ -47,6 +47,7 @@ pub struct Config {
 
 /// Image source — either a parent image name or arch-specific cloud image URLs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BaseConfig {
     /// Parent image name to inherit from (derived images).
     pub from: Option<String>,
