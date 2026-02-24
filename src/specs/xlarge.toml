@@ -1,0 +1,3 @@
+memory = "16G"
+cpus = 8
+disk = "80G"

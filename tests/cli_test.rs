@@ -33,7 +33,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("images"))
         .stdout(contains("inspect"))
         .stdout(contains("template"))
-        .stdout(contains("cache"));
+        .stdout(contains("cache"))
+        .stdout(contains("specs"));
 }
 
 #[test]
@@ -95,6 +96,18 @@ fn cache_ls_succeeds() {
 #[test]
 fn template_ls_succeeds_with_no_templates() {
     agv().args(["template", "ls"]).assert().success();
+}
+
+#[test]
+fn specs_succeeds_and_lists_builtins() {
+    agv()
+        .arg("specs")
+        .assert()
+        .success()
+        .stdout(contains("small"))
+        .stdout(contains("medium"))
+        .stdout(contains("large"))
+        .stdout(contains("xlarge"));
 }
 
 // ── Subcommand help ───────────────────────────────────────────────────────────

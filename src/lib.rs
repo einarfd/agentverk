@@ -11,11 +11,13 @@ pub mod dirs;
 pub mod error;
 pub mod image;
 pub mod images;
+pub mod specs;
 pub mod ssh;
 pub mod template;
 pub mod vm;
 
 use cli::{CacheCommand, Cli, Command, TemplateCommand, TemplateRmArgs};
+use specs::SpecSource;
 use images::ImageType;
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
@@ -157,6 +159,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Specs => {
+            let all = specs::list_all()?;
+            if all.is_empty() {
+                eprintln!("No specs found.");
+                return Ok(());
+            }
+            for s in &all {
+                print!(
+                    "  {:<8}  {:>4} RAM  {:>2} vCPU  {:>5} disk",
+                    s.name, s.spec.memory, s.spec.cpus, s.spec.disk
+                );
+                if let SpecSource::User(path) = &s.source {
+                    print!("  ({})", path.display());
+                }
+                println!();
+            }
+            Ok(())
+        }
         Command::Template(args) => match args.command {
             TemplateCommand::Create(targs) => {
                 tracing::info!(

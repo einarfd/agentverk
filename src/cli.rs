@@ -61,6 +61,9 @@ pub enum Command {
 
     /// Manage the image download cache.
     Cache(CacheArgs),
+
+    /// List available VM hardware specs.
+    Specs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -75,6 +78,10 @@ pub struct CreateArgs {
     /// Image to base the VM on [default: ubuntu-24.04].
     #[arg(long)]
     pub image: Option<String>,
+
+    /// Hardware spec to use [default: medium].
+    #[arg(long)]
+    pub spec: Option<String>,
 
     /// Memory allocation, e.g. 2G, 512M.
     #[arg(long)]

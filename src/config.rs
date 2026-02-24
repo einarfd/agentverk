@@ -53,6 +53,11 @@ pub struct BaseConfig {
     #[serde(default)]
     pub include: Vec<String>,
 
+    /// Named hardware spec to use (e.g. "small", "medium", "large", "xlarge").
+    /// Overridden by explicit `[vm]` fields or CLI flags.
+    /// Defaults to "medium" if not specified.
+    pub spec: Option<String>,
+
     /// ARM64 cloud image (root images only).
     pub aarch64: Option<ArchImage>,
 
@@ -71,7 +76,7 @@ pub struct ArchImage {
 }
 
 /// VM resource configuration — all fields optional for merging.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
     /// Memory allocation, e.g. "4G", "512M".
@@ -176,8 +181,34 @@ pub struct ResolvedConfig {
 /// If the config has `base.from`, looks up the parent image, resolves it
 /// recursively, and merges the child on top. Root images (no `from`) must
 /// have an arch-specific URL for the current architecture.
+///
+/// Hardware settings (memory, cpus, disk) are filled from the named spec
+/// (`base.spec`, defaulting to "medium") for any field the user did not
+/// explicitly set in `[vm]`.
 pub fn resolve(config: Config) -> anyhow::Result<ResolvedConfig> {
-    resolve_inner(config, &mut HashSet::new())
+    // Capture what the user explicitly set before resolution fills in defaults.
+    let spec_name = config.base.as_ref().and_then(|b| b.spec.clone());
+    let user_vm = config.vm.clone();
+
+    let mut resolved = resolve_inner(config, &mut HashSet::new())?;
+
+    // Look up the named spec (default: "medium").
+    let spec_name = spec_name.as_deref().unwrap_or("medium");
+    let spec = crate::specs::lookup(spec_name)?
+        .ok_or_else(|| anyhow::anyhow!("spec '{spec_name}' not found"))?;
+
+    // Apply spec values only for fields the user did not explicitly set.
+    if user_vm.as_ref().and_then(|v| v.memory.as_ref()).is_none() {
+        resolved.memory = spec.memory;
+    }
+    if user_vm.as_ref().and_then(|v| v.cpus).is_none() {
+        resolved.cpus = spec.cpus;
+    }
+    if user_vm.as_ref().and_then(|v| v.disk.as_ref()).is_none() {
+        resolved.disk = spec.disk;
+    }
+
+    Ok(resolved)
 }
 
 fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<ResolvedConfig> {
@@ -330,11 +361,11 @@ fn apply_includes(
                 name: name.clone(),
             })?;
 
-        // Validate: includes must not set base.from, arch images, or vm settings.
+        // Validate: includes must not set base.from, arch images, spec, or vm settings.
         if let Some(ref base) = include_config.base {
-            if base.from.is_some() || base.aarch64.is_some() || base.x86_64.is_some() {
+            if base.from.is_some() || base.aarch64.is_some() || base.x86_64.is_some() || base.spec.is_some() {
                 bail!(
-                    "include '{name}' must not set base.from, base.aarch64, or base.x86_64 — includes contribute only files, setup, and provision steps"
+                    "include '{name}' must not set base.from, base.aarch64, base.x86_64, or base.spec — includes contribute only files, setup, and provision steps"
                 );
             }
         }
@@ -543,6 +574,14 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         .include
         .extend(args.includes.clone());
 
+    // 8b. Apply CLI --spec flag (overrides any spec in the config file).
+    if let Some(ref spec_name) = args.spec {
+        config
+            .base
+            .get_or_insert_with(BaseConfig::default)
+            .spec = Some(spec_name.clone());
+    }
+
     // 9. Resolve the full inheritance chain.
     let mut resolved = resolve(config)?;
 
@@ -571,6 +610,7 @@ mod tests {
             cpus: None,
             disk: None,
             image: None,
+            spec: None,
             includes: vec![],
             files: vec![],
             setups: vec![],
@@ -589,6 +629,7 @@ mod tests {
             base: Some(BaseConfig {
                 from: None,
                 include: vec![],
+                spec: None,
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:abc123".to_string(),
@@ -634,6 +675,7 @@ mod tests {
             base: Some(BaseConfig {
                 from: None,
                 include: vec![],
+                spec: None,
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:aaa".to_string(),

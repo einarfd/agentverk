@@ -42,6 +42,11 @@ pub fn templates_dir() -> anyhow::Result<PathBuf> {
     Ok(data_dir()?.join("templates"))
 }
 
+/// Return the directory where user-provided spec definitions are stored.
+pub fn specs_dir() -> anyhow::Result<PathBuf> {
+    Ok(data_dir()?.join("specs"))
+}
+
 /// Return the state directory for a specific VM instance.
 pub fn instance_dir(name: &str) -> anyhow::Result<PathBuf> {
     Ok(instances_dir()?.join(name))
@@ -54,7 +59,7 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 
 /// Ensure the core directory structure exists.
 pub async fn ensure_dirs() -> anyhow::Result<()> {
-    let dirs = [image_cache_dir()?, instances_dir()?, images_dir()?, templates_dir()?];
+    let dirs = [image_cache_dir()?, instances_dir()?, images_dir()?, templates_dir()?, specs_dir()?];
     for dir in &dirs {
         tokio::fs::create_dir_all(dir)
             .await
@@ -123,6 +128,16 @@ mod tests {
     }
 
     #[test]
+    fn specs_dir_ends_with_specs() {
+        let dir = specs_dir().unwrap();
+        assert!(
+            ends_with_components(&dir, "specs"),
+            "specs_dir should end with 'specs', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
     fn instance_dir_appends_name() {
         let dir = instance_dir("myvm").unwrap();
         assert!(
@@ -139,5 +154,6 @@ mod tests {
         assert!(instances_dir().unwrap().starts_with(&base));
         assert!(images_dir().unwrap().starts_with(&base));
         assert!(templates_dir().unwrap().starts_with(&base));
+        assert!(specs_dir().unwrap().starts_with(&base));
     }
 }
