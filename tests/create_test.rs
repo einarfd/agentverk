@@ -277,7 +277,6 @@ async fn create_with_start_and_provision() {
             memory: Some("1G".to_string()),
             cpus: Some(2),
             disk: Some("10G".to_string()),
-            user: Some("agent".to_string()),
         }),
         files: vec![],
         setup: vec![],

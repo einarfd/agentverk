@@ -58,6 +58,9 @@ pub struct BaseConfig {
     /// Defaults to "medium" if not specified.
     pub spec: Option<String>,
 
+    /// Username for the VM's default user. Defaults to "agent".
+    pub user: Option<String>,
+
     /// ARM64 cloud image (root images only).
     pub aarch64: Option<ArchImage>,
 
@@ -87,9 +90,6 @@ pub struct VmConfig {
 
     /// Disk size, e.g. "20G".
     pub disk: Option<String>,
-
-    /// Username for the VM's default user. Defaults to "agent".
-    pub user: Option<String>,
 }
 
 /// A file or directory to copy into the VM.
@@ -309,9 +309,9 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
                 .as_ref()
                 .and_then(|v| v.disk.clone())
                 .unwrap_or_else(|| "20G".to_string()),
-            user: vm
-                .as_ref()
-                .and_then(|v| v.user.clone())
+            user: base
+                .user
+                .clone()
                 .unwrap_or_else(|| "agent".to_string()),
             files: vec![],
             setup: vec![],
@@ -361,11 +361,16 @@ fn apply_includes(
                 name: name.clone(),
             })?;
 
-        // Validate: includes must not set base.from, arch images, spec, or vm settings.
+        // Validate: includes must not set base.from, arch images, spec, user, or vm settings.
         if let Some(ref base) = include_config.base {
-            if base.from.is_some() || base.aarch64.is_some() || base.x86_64.is_some() || base.spec.is_some() {
+            if base.from.is_some()
+                || base.aarch64.is_some()
+                || base.x86_64.is_some()
+                || base.spec.is_some()
+                || base.user.is_some()
+            {
                 bail!(
-                    "include '{name}' must not set base.from, base.aarch64, base.x86_64, or base.spec — includes contribute only files, setup, and provision steps"
+                    "include '{name}' must not set base.from, base.aarch64, base.x86_64, base.spec, or base.user — includes contribute only files, setup, and provision steps"
                 );
             }
         }
@@ -430,7 +435,11 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
             .unwrap_or(parent.memory),
         cpus: vm.and_then(|v| v.cpus).unwrap_or(parent.cpus),
         disk: vm.and_then(|v| v.disk.clone()).unwrap_or(parent.disk),
-        user: vm.and_then(|v| v.user.clone()).unwrap_or(parent.user),
+        user: child
+            .base
+            .as_ref()
+            .and_then(|b| b.user.clone())
+            .unwrap_or(parent.user),
         files,
         setup,
         provision,
@@ -630,6 +639,7 @@ mod tests {
                 from: None,
                 include: vec![],
                 spec: None,
+                user: Some("testuser".to_string()),
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:abc123".to_string(),
@@ -643,7 +653,6 @@ mod tests {
                 memory: Some("4G".to_string()),
                 cpus: Some(4),
                 disk: Some("30G".to_string()),
-                user: Some("testuser".to_string()),
             }),
             files: vec![],
             setup: vec![],
@@ -676,6 +685,7 @@ mod tests {
                 from: None,
                 include: vec![],
                 spec: None,
+                user: None,
                 aarch64: Some(ArchImage {
                     url: "https://example.com/arm64.img".to_string(),
                     checksum: "sha256:aaa".to_string(),
@@ -710,7 +720,6 @@ mod tests {
                 memory: Some("8G".to_string()),
                 cpus: Some(4),
                 disk: None,
-                user: None,
             }),
             files: vec![FileEntry {
                 source: "./child-file".to_string(),
@@ -746,7 +755,6 @@ mod tests {
                 memory: Some("16G".to_string()),
                 cpus: None,
                 disk: None,
-                user: None,
             }),
             files: vec![],
             setup: vec![],
@@ -817,7 +825,6 @@ mod tests {
                 memory: Some("8G".to_string()),
                 cpus: Some(4),
                 disk: None,
-                user: None,
             }),
             files: vec![],
             setup: vec![],
