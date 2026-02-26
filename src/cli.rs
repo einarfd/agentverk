@@ -152,6 +152,10 @@ pub struct StopArgs {
 pub struct DestroyArgs {
     /// Name of the VM to destroy.
     pub name: String,
+
+    /// Destroy even if the VM is currently running (force-stops it first).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, clap::Args)]

@@ -60,8 +60,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             vm::stop(&args.name, args.force).await
         }
         Command::Destroy(args) => {
-            tracing::info!(name = %args.name, "destroying VM");
-            vm::destroy(&args.name).await
+            tracing::info!(name = %args.name, force = args.force, "destroying VM");
+            vm::destroy(&args.name, args.force).await?;
+            println!("  ✓ VM '{}' destroyed", args.name);
+            Ok(())
         }
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;

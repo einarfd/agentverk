@@ -104,7 +104,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
 
 /// Force-destroy a VM, ignoring errors (best-effort cleanup).
 async fn cleanup(name: &str) {
-    let _ = vm::destroy(name).await;
+    let _ = vm::destroy(name, true).await;
 }
 
 #[tokio::test]

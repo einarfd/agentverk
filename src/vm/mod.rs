@@ -506,13 +506,22 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Destroy a VM — remove all its state regardless of current status.
-pub async fn destroy(name: &str) -> anyhow::Result<()> {
+/// Destroy a VM — stop it if needed, then delete all its state.
+///
+/// Refuses to destroy a running VM unless `force` is set, to prevent
+/// accidental data loss.
+pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
-    // If running, stop first.
-    if inst.reconcile_status().await? == Status::Running {
+    let status = inst.reconcile_status().await?;
+
+    if status == Status::Running {
+        anyhow::ensure!(
+            force,
+            "VM '{name}' is running — stop it first, or pass --force to destroy it anyway"
+        );
         let _ = qemu::force_stop(&inst).await;
     }
+
     tokio::fs::remove_dir_all(&inst.dir)
         .await
         .with_context(|| format!("failed to remove instance directory for VM '{name}'"))?;
