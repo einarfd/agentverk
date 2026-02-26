@@ -332,6 +332,80 @@ async fn run_provision_steps(
     Ok(())
 }
 
+/// Change hardware settings of a stopped (or broken) VM.
+///
+/// Sets the VM to `configuring` status for the duration of the operation so
+/// that concurrent `start` calls are safely rejected. Disk resize (grow-only)
+/// is performed via `qemu-img resize`; the guest filesystem is not touched.
+pub async fn config_set(
+    name: &str,
+    memory: Option<&str>,
+    cpus: Option<u32>,
+    disk: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        memory.is_some() || cpus.is_some() || disk.is_some(),
+        "no changes specified — provide at least one of --memory, --cpus, --disk"
+    );
+
+    let inst = Instance::open(name).await?;
+    let status = inst.reconcile_status().await?;
+
+    anyhow::ensure!(
+        matches!(status, Status::Stopped | Status::Broken),
+        Error::VmBadState {
+            name: name.to_string(),
+            status: status.to_string(),
+            expected: "stopped or broken".to_string(),
+        }
+    );
+
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
+
+    // Validate disk grow-only before touching anything.
+    if let Some(new_disk) = disk {
+        let current_bytes = image::parse_disk_size(&config.disk)?;
+        let new_bytes = image::parse_disk_size(new_disk)?;
+        anyhow::ensure!(
+            new_bytes > current_bytes,
+            "disk can only be grown, not shrunk (current: {}, requested: {})",
+            config.disk,
+            new_disk
+        );
+    }
+
+    inst.write_status(Status::Configuring).await?;
+
+    // Resize disk first — qemu-img is atomic; on failure the disk is unchanged.
+    if let Some(new_disk) = disk {
+        if let Err(e) = image::resize_disk(&inst.disk_path(), new_disk).await {
+            let _ = inst.write_status(status).await;
+            return Err(e);
+        }
+        config.disk = new_disk.to_string();
+    }
+
+    if let Some(mem) = memory {
+        config.memory = mem.to_string();
+    }
+    if let Some(n) = cpus {
+        config.cpus = n;
+    }
+
+    // Save config; if this fails after a disk resize the state is inconsistent.
+    if let Err(e) = crate::config::save(&config, &inst.config_path()).await {
+        if disk.is_some() {
+            let _ = inst.write_status(Status::Broken).await;
+        } else {
+            let _ = inst.write_status(status).await;
+        }
+        return Err(e);
+    }
+
+    inst.write_status(Status::Stopped).await?;
+    Ok(())
+}
+
 /// Start an existing stopped VM.
 ///
 /// If the VM has never been provisioned, runs the full provisioning flow

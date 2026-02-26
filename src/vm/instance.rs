@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub enum Status {
     /// `agv create` is currently in progress.
     Creating,
+    /// `agv config set` is currently applying hardware changes.
+    Configuring,
     /// QEMU process is active.
     Running,
     /// VM exists but is not running.
@@ -27,6 +29,7 @@ impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Creating => write!(f, "creating"),
+            Self::Configuring => write!(f, "configuring"),
             Self::Running => write!(f, "running"),
             Self::Stopped => write!(f, "stopped"),
             Self::Broken => write!(f, "broken"),
@@ -40,6 +43,7 @@ impl std::str::FromStr for Status {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim() {
             "creating" => Ok(Self::Creating),
+            "configuring" => Ok(Self::Configuring),
             "running" => Ok(Self::Running),
             "stopped" => Ok(Self::Stopped),
             "broken" => Ok(Self::Broken),
@@ -235,6 +239,7 @@ mod tests {
     #[test]
     fn status_display() {
         assert_eq!(Status::Creating.to_string(), "creating");
+        assert_eq!(Status::Configuring.to_string(), "configuring");
         assert_eq!(Status::Running.to_string(), "running");
         assert_eq!(Status::Stopped.to_string(), "stopped");
         assert_eq!(Status::Broken.to_string(), "broken");
@@ -243,6 +248,7 @@ mod tests {
     #[test]
     fn status_from_str_all_variants() {
         assert_eq!("creating".parse::<Status>().unwrap(), Status::Creating);
+        assert_eq!("configuring".parse::<Status>().unwrap(), Status::Configuring);
         assert_eq!("running".parse::<Status>().unwrap(), Status::Running);
         assert_eq!("stopped".parse::<Status>().unwrap(), Status::Stopped);
         assert_eq!("broken".parse::<Status>().unwrap(), Status::Broken);
@@ -284,7 +290,7 @@ mod tests {
     async fn write_and_read_status_roundtrip() {
         let dir = tempdir().unwrap();
         let inst = test_instance(dir.path());
-        for status in [Status::Creating, Status::Running, Status::Stopped, Status::Broken] {
+        for status in [Status::Creating, Status::Configuring, Status::Running, Status::Stopped, Status::Broken] {
             inst.write_status(status).await.unwrap();
             assert_eq!(inst.read_status().await.unwrap(), status);
         }

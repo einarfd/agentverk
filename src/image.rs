@@ -110,6 +110,61 @@ pub async fn create_overlay(base_image: &Path, output: &Path, size: &str) -> any
     }
 }
 
+/// Grow a VM's qcow2 disk to a new (larger) virtual size.
+///
+/// Only growing is supported — callers must validate that `new_size` is larger
+/// than the current size before calling this. The guest filesystem is not
+/// resized; the user must do that inside the VM after the next start.
+pub async fn resize_disk(path: &Path, new_size: &str) -> anyhow::Result<()> {
+    let path_str = path.to_str().context("disk path is not valid UTF-8")?;
+
+    let result = tokio::process::Command::new("qemu-img")
+        .args(["resize", path_str, new_size])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("qemu-img resize failed (exit {}): {stderr}", output.status);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("qemu-img not found — is QEMU installed?");
+        }
+        Err(e) => Err(e).context("failed to run qemu-img resize"),
+    }
+}
+
+/// Parse a human-readable disk size string into bytes.
+///
+/// Accepts suffixes K, M, G, T (case-insensitive, with optional trailing B).
+/// Uses binary units: 1G = 1024³ bytes.
+///
+/// Examples: `"20G"` → `21_474_836_480`, `"512M"` → `536_870_912`.
+pub fn parse_disk_size(s: &str) -> anyhow::Result<u64> {
+    let s = s.trim();
+    let split_pos = s
+        .find(|c: char| c.is_alphabetic())
+        .ok_or_else(|| anyhow::anyhow!("disk size must include a unit (K, M, G, T): {s:?}"))?;
+    let (num_str, suffix) = s.split_at(split_pos);
+
+    let num: u64 = num_str
+        .parse()
+        .with_context(|| format!("invalid number in disk size {s:?}"))?;
+
+    // Accept "G", "GB", "GiB", etc. — only the first letter matters.
+    let multiplier: u64 = match suffix.chars().next().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => 1024,
+        Some('M') => 1024 * 1024,
+        Some('G') => 1024 * 1024 * 1024,
+        Some('T') => 1024 * 1024 * 1024 * 1024,
+        _ => anyhow::bail!("unknown unit {suffix:?} in disk size {s:?} — use K, M, G, or T"),
+    };
+
+    Ok(num * multiplier)
+}
+
 /// Flatten a qcow2 overlay (and all its backing files) into a standalone template image.
 ///
 /// This reads the full contents of `source` (resolving the backing chain) and writes
@@ -521,6 +576,36 @@ mod tests {
             digest,
             "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
         );
+    }
+
+    #[test]
+    fn parse_disk_size_units() {
+        assert_eq!(parse_disk_size("1K").unwrap(), 1024);
+        assert_eq!(parse_disk_size("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_disk_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_disk_size("1T").unwrap(), 1024u64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_disk_size_case_insensitive() {
+        assert_eq!(parse_disk_size("20g").unwrap(), parse_disk_size("20G").unwrap());
+        assert_eq!(parse_disk_size("512m").unwrap(), parse_disk_size("512M").unwrap());
+    }
+
+    #[test]
+    fn parse_disk_size_with_b_suffix() {
+        assert_eq!(parse_disk_size("20GB").unwrap(), parse_disk_size("20G").unwrap());
+        assert_eq!(parse_disk_size("20GiB").unwrap(), parse_disk_size("20G").unwrap());
+    }
+
+    #[test]
+    fn parse_disk_size_no_unit_fails() {
+        assert!(parse_disk_size("20").is_err());
+    }
+
+    #[test]
+    fn parse_disk_size_unknown_unit_fails() {
+        assert!(parse_disk_size("20X").is_err());
     }
 
     #[tokio::test]

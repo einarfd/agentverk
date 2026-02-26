@@ -34,7 +34,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("inspect"))
         .stdout(contains("template"))
         .stdout(contains("cache"))
-        .stdout(contains("specs"));
+        .stdout(contains("specs"))
+        .stdout(contains("config"));
 }
 
 #[test]
@@ -108,6 +109,23 @@ fn specs_succeeds_and_lists_builtins() {
         .stdout(contains("medium"))
         .stdout(contains("large"))
         .stdout(contains("xlarge"));
+}
+
+// ── Config command ────────────────────────────────────────────────────────────
+
+#[test]
+fn config_set_without_name_fails() {
+    agv().args(["config", "set"]).assert().failure();
+}
+
+#[test]
+fn config_help_succeeds() {
+    agv().args(["config", "--help"]).assert().success();
+}
+
+#[test]
+fn config_set_help_succeeds() {
+    agv().args(["config", "set", "--help"]).assert().success();
 }
 
 // ── Subcommand help ───────────────────────────────────────────────────────────

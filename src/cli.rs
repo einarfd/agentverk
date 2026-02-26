@@ -64,6 +64,9 @@ pub enum Command {
 
     /// List available VM hardware specs.
     Specs,
+
+    /// View or change VM configuration.
+    Config(Box<ConfigArgs>),
 }
 
 #[derive(Debug, clap::Args)]
@@ -205,6 +208,40 @@ pub enum TemplateCommand {
 
     /// Delete a template.
     Rm(TemplateRmArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Change hardware settings of a stopped VM (memory, CPUs, disk).
+    ///
+    /// The VM must be stopped or broken. Disk can only be grown, not shrunk.
+    /// The guest filesystem is not resized automatically — run growpart/resize2fs
+    /// inside the VM after the next start to use the extra disk space.
+    Set(ConfigSetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ConfigSetArgs {
+    /// Name of the VM to reconfigure.
+    pub name: String,
+
+    /// New memory allocation, e.g. 4G, 8G.
+    #[arg(long)]
+    pub memory: Option<String>,
+
+    /// New number of virtual CPUs.
+    #[arg(long)]
+    pub cpus: Option<u32>,
+
+    /// New disk size (must be larger than current), e.g. 40G.
+    #[arg(long)]
+    pub disk: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

@@ -16,7 +16,7 @@ pub mod ssh;
 pub mod template;
 pub mod vm;
 
-use cli::{CacheCommand, Cli, Command, TemplateCommand, TemplateRmArgs};
+use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs};
 use specs::SpecSource;
 use images::ImageType;
 
@@ -158,6 +158,42 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     );
                 }
                 println!("  Freed {}", indicatif::HumanBytes(total));
+                Ok(())
+            }
+        },
+        Command::Config(args) => match args.command {
+            ConfigCommand::Set(s) => {
+                let inst_config = {
+                    let inst = vm::instance::Instance::open(&s.name).await?;
+                    config::load_resolved(&inst.config_path())?
+                };
+                let old_memory = inst_config.memory.clone();
+                let old_cpus = inst_config.cpus;
+                let old_disk = inst_config.disk.clone();
+
+                vm::config_set(
+                    &s.name,
+                    s.memory.as_deref(),
+                    s.cpus,
+                    s.disk.as_deref(),
+                )
+                .await?;
+
+                // Report what changed.
+                if let Some(ref m) = s.memory {
+                    println!("  memory:  {old_memory} → {m}");
+                }
+                if let Some(n) = s.cpus {
+                    println!("  cpus:    {old_cpus} → {n}");
+                }
+                if let Some(ref d) = s.disk {
+                    println!("  disk:    {old_disk} → {d}");
+                    println!(
+                        "  Note: guest filesystem not resized — run growpart/resize2fs \
+                         inside the VM to use the extra space."
+                    );
+                }
+                println!("  ✓ VM '{}' updated", s.name);
                 Ok(())
             }
         },
