@@ -4,6 +4,20 @@ Create and manage QEMU VMs for AI coding agents.
 
 `agv` gives each AI coding agent its own isolated Linux VM — a full development environment with SSH access, provisioned from a simple TOML config file.
 
+## Installation
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh
+```
+
+The script detects your OS and architecture, downloads the right binary, and runs `agv doctor` to check all runtime dependencies.
+
+To install to a custom location:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --dest ~/.local/bin
+```
+
 ## Requirements
 
 Supported platforms: macOS (Apple Silicon) or Linux (x86_64 or aarch64).
@@ -14,13 +28,14 @@ Supported platforms: macOS (Apple Silicon) or Linux (x86_64 or aarch64).
   - macOS: `brew install qemu`
   - Ubuntu/Debian: `sudo apt install qemu-system`
   - Fedora: `sudo dnf install qemu-system-x86` (or `qemu-system-aarch64`)
-- mkisofs or genisoimage (for cloud-init seed image generation)
-  - macOS: `brew install cdrtools`
+- mkisofs or genisoimage (Linux only — macOS uses the built-in `hdiutil`)
   - Ubuntu/Debian: `sudo apt install genisoimage`
   - Fedora: `sudo dnf install genisoimage`
 - OpenSSH (for SSH access to VMs)
   - macOS: included with the OS
   - Linux: usually pre-installed; `sudo apt install openssh-client` if missing
+
+Run `agv doctor` at any time to check which dependencies are present and get install instructions.
 
 ## Usage
 
