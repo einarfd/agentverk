@@ -35,7 +35,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("template"))
         .stdout(contains("cache"))
         .stdout(contains("specs"))
-        .stdout(contains("config"));
+        .stdout(contains("config"))
+        .stdout(contains("doctor"));
 }
 
 #[test]
@@ -114,6 +115,16 @@ fn specs_succeeds_and_lists_builtins() {
 // ── Config command ────────────────────────────────────────────────────────────
 
 #[test]
+fn config_show_without_name_fails() {
+    agv().args(["config", "show"]).assert().failure();
+}
+
+#[test]
+fn config_show_help_succeeds() {
+    agv().args(["config", "show", "--help"]).assert().success();
+}
+
+#[test]
 fn config_set_without_name_fails() {
     agv().args(["config", "set"]).assert().failure();
 }
@@ -185,6 +196,13 @@ fn template_create_without_args_fails() {
 #[test]
 fn template_rm_without_name_fails() {
     agv().args(["template", "rm"]).assert().failure();
+}
+
+// ── Doctor ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn doctor_succeeds() {
+    agv().arg("doctor").assert().success();
 }
 
 // ── Conflicting flags ─────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ pub async fn start(instance: &Instance, memory: &str, cpus: u32) -> anyhow::Resu
             bail!("QEMU failed to start (exit {}): {stderr}", output.status);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("{binary} not found — is QEMU installed?");
+            bail!("{binary} not found — run 'agv doctor' to check all dependencies");
         }
         Err(e) => {
             return Err(e).with_context(|| format!("failed to run {binary}"));

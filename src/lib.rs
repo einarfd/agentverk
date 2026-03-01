@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod config;
 pub mod dirs;
+pub mod doctor;
 pub mod error;
 pub mod image;
 pub mod images;
@@ -19,6 +20,24 @@ pub mod vm;
 use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs};
 use specs::SpecSource;
 use images::ImageType;
+
+fn config_step_label(step: &config::ProvisionStep) -> String {
+    if let Some(ref source) = step.source {
+        return source.clone();
+    }
+    if let Some(ref path) = step.script {
+        return path.clone();
+    }
+    if let Some(ref script) = step.run {
+        let first_line = script.lines().next().unwrap_or(script).trim();
+        return if first_line.len() > 40 {
+            format!("{}...", &first_line[..40])
+        } else {
+            first_line.to_string()
+        };
+    }
+    "unknown".to_string()
+}
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
 #[allow(clippy::too_many_lines)]
@@ -162,6 +181,61 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
         Command::Config(args) => match args.command {
+            ConfigCommand::Show(s) => {
+                const W: usize = 10;
+                let inst = vm::instance::Instance::open(&s.name).await?;
+                let cfg = config::load_resolved(&inst.config_path())?;
+
+                println!("Hardware");
+                println!("  {:<W$}  {}", "memory", cfg.memory);
+                println!("  {:<W$}  {}", "cpus", cfg.cpus);
+                println!("  {:<W$}  {}", "disk", cfg.disk);
+                println!("  {:<W$}  {}", "user", cfg.user);
+
+                println!();
+                println!("Image");
+                if let Some(ref tname) = cfg.template_name {
+                    println!("  from template: {tname}");
+                } else {
+                    println!("  {}", cfg.base_url);
+                    if !cfg.skip_checksum {
+                        let short = &cfg.base_checksum[..cfg.base_checksum.len().min(20)];
+                        println!("  checksum: {short}...");
+                    }
+                }
+
+                if !cfg.files.is_empty() {
+                    println!();
+                    println!("Files  ({} entries)", cfg.files.len());
+                    for f in &cfg.files {
+                        println!("  {} → {}", f.source, f.dest);
+                    }
+                }
+
+                println!();
+                if cfg.setup.is_empty() {
+                    println!("Setup        none");
+                } else {
+                    println!("Setup  ({} steps)", cfg.setup.len());
+                    for (i, step) in cfg.setup.iter().enumerate() {
+                        let label = config_step_label(step);
+                        println!("  {}. {label}", i + 1);
+                    }
+                }
+
+                println!();
+                if cfg.provision.is_empty() {
+                    println!("Provision    none");
+                } else {
+                    println!("Provision  ({} steps)", cfg.provision.len());
+                    for (i, step) in cfg.provision.iter().enumerate() {
+                        let label = config_step_label(step);
+                        println!("  {}. {label}", i + 1);
+                    }
+                }
+
+                Ok(())
+            }
             ConfigCommand::Set(s) => {
                 let inst_config = {
                     let inst = vm::instance::Instance::open(&s.name).await?;
@@ -251,5 +325,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Doctor => doctor::run(),
     }
 }

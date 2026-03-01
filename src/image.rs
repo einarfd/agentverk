@@ -102,7 +102,7 @@ pub async fn create_overlay(base_image: &Path, output: &Path, size: &str) -> any
             bail!("qemu-img create failed (exit {}): {stderr}", output.status);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("qemu-img not found — is QEMU installed?");
+            bail!("qemu-img not found — run 'agv doctor' to check all dependencies");
         }
         Err(e) => {
             Err(e).context("failed to run qemu-img")?
@@ -130,7 +130,7 @@ pub async fn resize_disk(path: &Path, new_size: &str) -> anyhow::Result<()> {
             anyhow::bail!("qemu-img resize failed (exit {}): {stderr}", output.status);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("qemu-img not found — is QEMU installed?");
+            anyhow::bail!("qemu-img not found — run 'agv doctor' to check all dependencies");
         }
         Err(e) => Err(e).context("failed to run qemu-img resize"),
     }
@@ -190,7 +190,7 @@ pub async fn convert_to_template(source: &Path, dest: &Path) -> anyhow::Result<(
             anyhow::bail!("qemu-img convert failed (exit {}): {stderr}", output.status);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("qemu-img not found — is QEMU installed?");
+            anyhow::bail!("qemu-img not found — run 'agv doctor' to check all dependencies");
         }
         Err(e) => Err(e).context("failed to run qemu-img convert"),
     }

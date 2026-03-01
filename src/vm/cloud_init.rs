@@ -82,9 +82,7 @@ pub async fn generate_seed(
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
-                "neither mkisofs nor genisoimage found — \
-                 install cdrtools (macOS: `brew install cdrtools`) \
-                 or genisoimage (Linux: `apt install genisoimage`)"
+                "ISO creation tool not found — run 'agv doctor' to check all dependencies"
             );
         }
         Err(e) => {

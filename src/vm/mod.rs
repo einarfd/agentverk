@@ -504,22 +504,6 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
 
     println!();
     let w = 11; // label column width
-    println!("  {:<w$}  {}", "Memory", config.memory);
-    println!("  {:<w$}  {}", "CPUs", config.cpus);
-    println!("  {:<w$}  {}", "Disk", config.disk);
-    println!("  {:<w$}  {}", "User", config.user);
-
-    // Show template or base image origin.
-    if let Some(ref tname) = config.template_name {
-        println!("  {:<w$}  {tname}", "Template");
-    } else {
-        let image_label = config
-            .base_url
-            .rsplit('/')
-            .next()
-            .unwrap_or(&config.base_url);
-        println!("  {:<w$}  {image_label}", "Base image");
-    }
 
     // SSH connection command — only meaningful when running.
     if status == Status::Running {

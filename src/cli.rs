@@ -67,6 +67,9 @@ pub enum Command {
 
     /// View or change VM configuration.
     Config(Box<ConfigArgs>),
+
+    /// Check that all required external tools are installed.
+    Doctor,
 }
 
 #[derive(Debug, clap::Args)]
@@ -218,12 +221,21 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// Show the full resolved configuration of a VM.
+    Show(ConfigShowArgs),
+
     /// Change hardware settings of a stopped VM (memory, CPUs, disk).
     ///
     /// The VM must be stopped or broken. Disk can only be grown, not shrunk.
     /// The guest filesystem is not resized automatically — run growpart/resize2fs
     /// inside the VM after the next start to use the extra disk space.
     Set(ConfigSetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ConfigShowArgs {
+    /// Name of the VM to show configuration for.
+    pub name: String,
 }
 
 #[derive(Debug, clap::Args)]

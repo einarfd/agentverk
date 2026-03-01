@@ -37,7 +37,7 @@ pub async fn generate_keypair(instance: &Instance) -> anyhow::Result<String> {
             bail!("ssh-keygen failed (exit {}): {stderr}", output.status);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("ssh-keygen not found — is OpenSSH installed?");
+            bail!("ssh-keygen not found — run 'agv doctor' to check all dependencies");
         }
         Err(e) => {
             return Err(e).context("failed to run ssh-keygen");
@@ -75,16 +75,18 @@ pub async fn session(
         cmd.args(command);
     }
 
-    let status = cmd.status().await.map_err(|source| Error::Ssh {
-        name: instance.name.clone(),
-        source,
-    })?;
-
-    if !status.success() {
-        bail!("SSH session exited with {status}");
+    match cmd.status().await {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => bail!("SSH session exited with {status}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("ssh not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(source) => Err(Error::Ssh {
+            name: instance.name.clone(),
+            source,
+        }
+        .into()),
     }
-
-    Ok(())
 }
 
 /// Run a command over SSH, capturing stdout and stderr.
@@ -111,10 +113,19 @@ pub async fn run_cmd(
         cmd.args(command);
     }
 
-    let output = cmd.output().await.map_err(|source| Error::Ssh {
-        name: instance.name.clone(),
-        source,
-    })?;
+    let output = match cmd.output().await {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("ssh not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(source) => {
+            return Err(Error::Ssh {
+                name: instance.name.clone(),
+                source,
+            }
+            .into());
+        }
+    };
 
     let combined = {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -170,14 +181,23 @@ pub async fn copy_to(
     args.push(local_str.to_string());
     args.push(destination);
 
-    let output = tokio::process::Command::new("scp")
+    let output = match tokio::process::Command::new("scp")
         .args(&args)
         .output()
         .await
-        .map_err(|source| Error::Scp {
-            name: instance.name.clone(),
-            source,
-        })?;
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("scp not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(source) => {
+            return Err(Error::Scp {
+                name: instance.name.clone(),
+                source,
+            }
+            .into());
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -207,6 +227,13 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
             .arg("true")
             .output()
             .await;
+
+        match &output {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                bail!("ssh not found — run 'agv doctor' to check all dependencies");
+            }
+            _ => {}
+        }
 
         if output.is_ok_and(|o| o.status.success()) {
             let elapsed = start.elapsed();
