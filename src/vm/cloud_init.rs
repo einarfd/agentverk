@@ -45,50 +45,20 @@ pub async fn generate_seed(
         .await
         .context("failed to write user-data")?;
 
-    let tool = find_iso_tool().await?;
-
     let output_str = output
         .to_str()
         .context("seed output path is not valid UTF-8")?;
-    let meta_path = staging.join("meta-data");
-    let user_path = staging.join("user-data");
-    let meta_str = meta_path
-        .to_str()
-        .context("meta-data path is not valid UTF-8")?;
-    let user_str = user_path
-        .to_str()
-        .context("user-data path is not valid UTF-8")?;
 
-    info!(tool = tool, output = output_str, "generating seed ISO");
+    info!(output = output_str, "generating seed ISO");
 
-    let result = tokio::process::Command::new(tool)
-        .args([
-            "-output", output_str, "-volid", "cidata", "-joliet", "-rock", meta_str, user_str,
-        ])
-        .output()
-        .await;
+    let result = run_iso_tool(output_str, &staging).await;
 
     // Clean up staging dir regardless of outcome.
     let _ = tokio::fs::remove_dir_all(&staging).await;
 
-    match result {
-        Ok(out) if out.status.success() => {
-            info!(path = output_str, "seed ISO created");
-            Ok(())
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            bail!("{tool} failed (exit {}): {stderr}", out.status);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!(
-                "ISO creation tool not found — run 'agv doctor' to check all dependencies"
-            );
-        }
-        Err(e) => {
-            Err(e).with_context(|| format!("failed to run {tool}"))?
-        }
-    }
+    result?;
+    info!(path = output_str, "seed ISO created");
+    Ok(())
 }
 
 /// Render the cloud-init `meta-data` YAML.
@@ -138,7 +108,79 @@ async fn render_user_data(
     Ok(yaml)
 }
 
+// ---------------------------------------------------------------------------
+// Platform-specific ISO creation
+// ---------------------------------------------------------------------------
+
+/// Create the seed ISO using `hdiutil makehybrid` (macOS built-in).
+#[cfg(target_os = "macos")]
+async fn run_iso_tool(output: &str, staging: &std::path::Path) -> anyhow::Result<()> {
+    let staging_str = staging
+        .to_str()
+        .context("staging path is not valid UTF-8")?;
+
+    let result = tokio::process::Command::new("hdiutil")
+        .args([
+            "makehybrid",
+            "-o", output,
+            "-iso",
+            "-joliet",
+            "-default-volume-name", "cidata",
+            "-ov",
+            "-quiet",
+            staging_str,
+        ])
+        .output()
+        .await;
+
+    match result {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!("hdiutil failed (exit {}): {stderr}", out.status);
+        }
+        Err(e) => Err(e).context("failed to run hdiutil")?,
+    }
+}
+
+/// Create the seed ISO using `mkisofs` or `genisoimage` (Linux).
+#[cfg(not(target_os = "macos"))]
+async fn run_iso_tool(output: &str, staging: &std::path::Path) -> anyhow::Result<()> {
+    let tool = find_iso_tool().await?;
+
+    let meta_str = staging
+        .join("meta-data")
+        .to_str()
+        .context("meta-data path is not valid UTF-8")?
+        .to_string();
+    let user_str = staging
+        .join("user-data")
+        .to_str()
+        .context("user-data path is not valid UTF-8")?
+        .to_string();
+
+    let result = tokio::process::Command::new(tool)
+        .args([
+            "-output", output, "-volid", "cidata", "-joliet", "-rock", &meta_str, &user_str,
+        ])
+        .output()
+        .await;
+
+    match result {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!("{tool} failed (exit {}): {stderr}", out.status);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("ISO creation tool not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(e) => Err(e).with_context(|| format!("failed to run {tool}"))?,
+    }
+}
+
 /// Find an available ISO-generation tool (`mkisofs` or `genisoimage`).
+#[cfg(not(target_os = "macos"))]
 async fn find_iso_tool() -> anyhow::Result<&'static str> {
     for tool in ["mkisofs", "genisoimage"] {
         let result = tokio::process::Command::new(tool)
@@ -150,16 +192,12 @@ async fn find_iso_tool() -> anyhow::Result<&'static str> {
 
         match result {
             Ok(_) => return Ok(tool),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("failed to check for {tool}")),
         }
     }
 
-    bail!(
-        "neither mkisofs nor genisoimage found — \
-         install cdrtools (macOS: `brew install cdrtools`) \
-         or genisoimage (Linux: `apt install genisoimage`)"
-    );
+    bail!("ISO creation tool not found — run 'agv doctor' to check all dependencies");
 }
 
 #[cfg(test)]
@@ -221,6 +259,19 @@ mod tests {
         assert!(err.contains("failed to read file `/nonexistent/file.txt`"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn iso_tool_is_hdiutil_on_macos() {
+        // hdiutil is built into macOS — verify it's present and responsive.
+        let out = tokio::process::Command::new("hdiutil")
+            .arg("help")
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success(), "hdiutil help failed");
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[tokio::test]
     async fn find_iso_tool_returns_known_tool() {
         let tool = find_iso_tool().await.unwrap();

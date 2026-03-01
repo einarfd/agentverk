@@ -36,12 +36,6 @@ const OPENSSH_HINT: &str = "sudo apt install openssh-client   (Debian/Ubuntu)";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const OPENSSH_HINT: &str = "install OpenSSH for your platform";
 
-#[cfg(target_os = "macos")]
-const ISO_HINT: &str = "brew install cdrtools           (Homebrew)\n\
-                          sudo port install cdrtools      (MacPorts)\n\
-                          \n\
-                          No Homebrew? https://brew.sh";
-
 #[cfg(target_os = "linux")]
 const ISO_HINT: &str = "sudo apt install genisoimage   (Debian/Ubuntu)\n\
                          sudo dnf install genisoimage   (Fedora/RHEL)";
@@ -87,6 +81,13 @@ fn all_checks() -> Vec<Check> {
             candidates: vec!["scp"],
             install_hint: OPENSSH_HINT,
         },
+        #[cfg(target_os = "macos")]
+        Check {
+            label: "hdiutil",
+            candidates: vec!["hdiutil"],
+            install_hint: "hdiutil is built into macOS — check your installation",
+        },
+        #[cfg(not(target_os = "macos"))]
         Check {
             label: "mkisofs / genisoimage",
             candidates: vec!["mkisofs", "genisoimage"],
