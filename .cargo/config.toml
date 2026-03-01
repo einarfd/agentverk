@@ -1,0 +1,8 @@
+# Linker configuration for statically-linked musl builds.
+# musl-tools provides musl-gcc on both x86_64 and aarch64 Ubuntu runners.
+
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "musl-gcc"
