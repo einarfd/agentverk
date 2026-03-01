@@ -14,9 +14,13 @@ use crate::dirs;
 const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
 const DEBIAN_12_TOML: &str = include_str!("debian-12.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
+const CODEX_TOML: &str = include_str!("codex.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
 const DOCKER_TOML: &str = include_str!("docker.toml");
+const GEMINI_TOML: &str = include_str!("gemini.toml");
 const GH_TOML: &str = include_str!("gh.toml");
+const NODEJS_TOML: &str = include_str!("nodejs.toml");
+const OPENCLAW_TOML: &str = include_str!("openclaw.toml");
 const RUST_TOML: &str = include_str!("rust.toml");
 const UV_TOML: &str = include_str!("uv.toml");
 const ZSH_TOML: &str = include_str!("zsh.toml");
@@ -26,10 +30,14 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
     ("debian-12", DEBIAN_12_TOML),
     ("claude", CLAUDE_TOML),
+    ("codex", CODEX_TOML),
     ("devtools", DEVTOOLS_TOML),
     ("docker", DOCKER_TOML),
+    ("gemini", GEMINI_TOML),
     ("gh", GH_TOML),
+    ("nodejs", NODEJS_TOML),
     ("oh-my-zsh", OH_MY_ZSH_TOML),
+    ("openclaw", OPENCLAW_TOML),
     ("rust", RUST_TOML),
     ("uv", UV_TOML),
     ("zsh", ZSH_TOML),
@@ -304,6 +312,42 @@ mod tests {
     }
 
     #[test]
+    fn lookup_builtin_nodejs() {
+        let config = lookup("nodejs").unwrap().unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(!config.setup.is_empty(), "nodejs should have setup steps");
+        assert!(config.provision.is_empty(), "nodejs should have no provision steps");
+    }
+
+    #[test]
+    fn lookup_builtin_gemini() {
+        let config = lookup("gemini").unwrap().unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(config.setup.is_empty(), "gemini should have no setup steps");
+        assert!(!config.provision.is_empty(), "gemini should have provision steps");
+    }
+
+    #[test]
+    fn lookup_builtin_openclaw() {
+        let config = lookup("openclaw").unwrap().unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(config.setup.is_empty(), "openclaw should have no setup steps");
+        assert!(!config.provision.is_empty(), "openclaw should have provision steps");
+    }
+
+    #[test]
+    fn lookup_builtin_codex() {
+        let config = lookup("codex").unwrap().unwrap();
+        assert!(config.base.is_none());
+        assert!(config.vm.is_none());
+        assert!(config.setup.is_empty(), "codex should have no setup steps");
+        assert!(!config.provision.is_empty(), "codex should have provision steps");
+    }
+
+    #[test]
     fn lookup_nonexistent() {
         let config = lookup("does-not-exist-12345").unwrap();
         assert!(config.is_none());
@@ -316,11 +360,15 @@ mod tests {
         assert!(names.contains(&"ubuntu-24.04"));
         assert!(names.contains(&"debian-12"));
         assert!(names.contains(&"claude"));
+        assert!(names.contains(&"codex"));
         assert!(names.contains(&"devtools"));
         assert!(names.contains(&"docker"));
+        assert!(names.contains(&"gemini"));
         assert!(names.contains(&"gh"));
-        assert!(names.contains(&"rust"));
+        assert!(names.contains(&"nodejs"));
         assert!(names.contains(&"oh-my-zsh"));
+        assert!(names.contains(&"openclaw"));
+        assert!(names.contains(&"rust"));
         assert!(names.contains(&"uv"));
         assert!(names.contains(&"zsh"));
     }

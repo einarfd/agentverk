@@ -1,0 +1,9 @@
+# OpenClaw mixin.
+# Installs the OpenClaw AI assistant daemon.
+# OpenClaw connects AI models to messaging apps and local tools, and
+# includes a coding-agent skill. Useful for running as a persistent
+# background service inside a dedicated VM.
+# Requires Node.js: include = ["nodejs", "openclaw"]
+
+[[provision]]
+run = "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"

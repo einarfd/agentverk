@@ -1,0 +1,8 @@
+# Node.js 22 LTS mixin.
+# Installs Node.js system-wide via the NodeSource repository.
+# Required by the gemini and openclaw mixins, and useful for any project
+# that needs a modern Node.js runtime.
+# Use via: include = ["nodejs"]
+
+[[setup]]
+run = "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"

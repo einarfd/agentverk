@@ -1,0 +1,14 @@
+# OpenAI Codex CLI mixin.
+# Installs the official Codex CLI from OpenAI GitHub releases.
+# Uses the Rust binary — no Node.js required.
+# Supports x86_64 and aarch64.
+# Use via: include = ["codex"]
+
+[[provision]]
+run = """
+ARCH=$(uname -m)
+TMP=$(mktemp -d)
+curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-${ARCH}-unknown-linux-musl.tar.gz" | tar -xz -C "$TMP"
+sudo install -m 755 "$TMP/codex-${ARCH}-unknown-linux-musl" /usr/local/bin/codex
+rm -rf "$TMP"
+"""

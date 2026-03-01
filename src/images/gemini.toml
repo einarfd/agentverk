@@ -1,0 +1,6 @@
+# Gemini CLI mixin.
+# Installs the Google Gemini CLI coding agent.
+# Requires Node.js: include = ["nodejs", "gemini"]
+
+[[provision]]
+run = "npm install -g @google/gemini-cli"
