@@ -38,17 +38,14 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Rename binary
         shell: bash
-        run: |
-          ARCHIVE="agv-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" agv
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+        run: cp "target/${{ matrix.target }}/release/agv" "agv-${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: agv-${{ matrix.target }}
 
   release:
     name: Create release
@@ -66,7 +63,7 @@ jobs:
       - name: Checksums
         run: |
           cd artifacts
-          sha256sum agv-*.tar.gz > checksums.txt
+          sha256sum agv-* > checksums.txt
 
       - name: Create GitHub release
         run: |
@@ -74,7 +71,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            artifacts/agv-*.tar.gz \
+            artifacts/agv-* \
             artifacts/checksums.txt
         env:
           GH_TOKEN: ${{ github.token }}
