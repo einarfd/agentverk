@@ -1,0 +1,14 @@
+# Gemini CLI AI coding agent VM.
+# Requires Node.js — the nodejs mixin is included automatically.
+#
+# Equivalent command-line:
+#   agv create --include devtools --include nodejs --include gemini <name>
+
+[base]
+from = "ubuntu-24.04"
+include = ["devtools", "nodejs", "gemini"]
+
+[vm]
+memory = "4G"
+cpus = 2
+disk = "20G"

@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod error;
 pub mod image;
 pub mod images;
+pub mod init;
 pub mod specs;
 pub mod ssh;
 pub mod template;
@@ -326,5 +327,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
         Command::Doctor => doctor::run(),
+        Command::Init(args) => init::run(args.template.as_deref(), args.force),
     }
 }

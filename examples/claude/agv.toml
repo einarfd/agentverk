@@ -1,0 +1,13 @@
+# Claude Code AI coding agent VM.
+#
+# Equivalent command-line:
+#   agv create --include devtools --include claude <name>
+
+[base]
+from = "ubuntu-24.04"
+include = ["devtools", "claude"]
+
+[vm]
+memory = "4G"
+cpus = 2
+disk = "20G"

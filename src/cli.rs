@@ -70,6 +70,9 @@ pub enum Command {
 
     /// Check that all required external tools are installed.
     Doctor,
+
+    /// Write a starter agv.toml to the current directory.
+    Init(InitArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -254,6 +257,17 @@ pub struct ConfigSetArgs {
     /// New disk size (must be larger than current), e.g. 40G.
     #[arg(long)]
     pub disk: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Template to use: claude, gemini, codex, openclaw.
+    /// Writes a minimal annotated config if not specified.
+    pub template: Option<String>,
+
+    /// Overwrite an existing agv.toml.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, clap::Args)]

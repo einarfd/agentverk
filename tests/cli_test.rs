@@ -36,7 +36,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("cache"))
         .stdout(contains("specs"))
         .stdout(contains("config"))
-        .stdout(contains("doctor"));
+        .stdout(contains("doctor"))
+        .stdout(contains("init"));
 }
 
 #[test]
@@ -203,6 +204,71 @@ fn template_rm_without_name_fails() {
 #[test]
 fn doctor_succeeds() {
     agv().arg("doctor").assert().success();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn init_help_succeeds() {
+    agv().args(["init", "--help"]).assert().success();
+}
+
+#[test]
+fn init_writes_agv_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    agv()
+        .arg("init")
+        .current_dir(&dir)
+        .assert()
+        .success()
+        .stdout(contains("agv.toml"));
+    assert!(dir.path().join("agv.toml").exists());
+}
+
+#[test]
+fn init_template_claude_writes_agv_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    agv()
+        .args(["init", "claude"])
+        .current_dir(&dir)
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(dir.path().join("agv.toml")).unwrap();
+    assert!(content.contains("claude"));
+}
+
+#[test]
+fn init_fails_if_agv_toml_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("agv.toml"), "# existing").unwrap();
+    agv()
+        .arg("init")
+        .current_dir(&dir)
+        .assert()
+        .failure()
+        .stderr(contains("already exists"));
+}
+
+#[test]
+fn init_force_overwrites() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("agv.toml"), "# existing").unwrap();
+    agv()
+        .args(["init", "--force"])
+        .current_dir(&dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn init_unknown_template_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    agv()
+        .args(["init", "bogus"])
+        .current_dir(&dir)
+        .assert()
+        .failure()
+        .stderr(contains("unknown template"));
 }
 
 // ── Conflicting flags ─────────────────────────────────────────────────────────
