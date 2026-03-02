@@ -1,16 +1,16 @@
 # agv
 
-Create and manage QEMU VMs for AI coding agents.
+Create and manage QEMU VMs for AI agents.
 
-`agv` gives each AI coding agent its own isolated Linux VM — a full development environment with SSH access, provisioned from a simple TOML config file.
+`agv` gives each AI agent its own isolated Linux VM with SSH access, provisioned from a simple TOML config file. Supports macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 ## Installation
+
+**Install script** (recommended — detects OS/arch, installs the binary, runs `agv doctor`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh
 ```
-
-The script detects your OS and architecture, downloads the right binary, and runs `agv doctor` to check all runtime dependencies.
 
 To install to a custom location:
 
@@ -18,11 +18,17 @@ To install to a custom location:
 curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --dest ~/.local/bin
 ```
 
+**From source** (requires Rust 1.85+):
+
+```sh
+git clone https://github.com/einarfd/agentverk.git
+cd agentverk
+cargo install --path .
+```
+
 ## Requirements
 
-Supported platforms: macOS (Apple Silicon) or Linux (x86_64 or aarch64).
-
-**Runtime dependencies** (needed to run `agv`):
+**Runtime dependencies:**
 
 - QEMU
   - macOS: `brew install qemu`
@@ -37,6 +43,18 @@ Supported platforms: macOS (Apple Silicon) or Linux (x86_64 or aarch64).
 
 Run `agv doctor` at any time to check which dependencies are present and get install instructions.
 
+## Getting started
+
+Generate a config file for a specific agent, then create and start a VM:
+
+```sh
+agv init claude        # write agv.toml for Claude Code
+agv create --start myvm
+agv ssh myvm           # open a shell inside the VM
+```
+
+See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex, and OpenClaw.
+
 ## Usage
 
 ```
@@ -49,10 +67,14 @@ Commands:
   destroy   Destroy a VM and delete all its data
   ssh       Open an SSH session to a running VM
   ls        List all VMs
-  images    List available images
-  inspect   Show detailed information about a VM
+  images    List available base images and mixins
+  inspect   Show runtime status of a VM
+  config    View or change VM configuration
   template  Create and manage VM templates
+  specs     List available hardware size presets
   cache     Manage the image download cache
+  init      Write a starter agv.toml to the current directory
+  doctor    Check that all required external tools are installed
 
 Options:
   -v, --verbose  Enable verbose output
@@ -63,38 +85,42 @@ Options:
 
 ## Config file
 
-VMs are configured with a TOML file (defaults to `agv.toml` in the current directory):
+VMs are configured with a TOML file (defaults to `agv.toml` in the current directory).
+Run `agv init` to generate one, or `agv specs` to see available size presets.
 
 ```toml
 [base]
 from = "ubuntu-24.04"
+include = ["devtools", "claude"]
+spec = "large"  # 8G RAM, 4 vCPUs, 40G disk
 
-include = ["devtools"]
+# Override individual resource settings if needed:
+# [vm]
+# memory = "16G"
+# disk = "80G"
 
-[vm]
-memory = "4G"
-cpus = 2
-disk = "20G"
-
+# Copy files into the VM:
 [[files]]
 source = "~/.ssh/config"
 dest = "~/.ssh/config"
 
+# Run as root during OS setup:
 [[setup]]
-run = "sudo apt-get update && sudo apt-get install -y build-essential"
+run = "apt-get install -y ripgrep"
 
+# Run as your user after setup:
 [[provision]]
 run = "git clone git@github.com:org/repo.git ~/repo"
 
 [[provision]]
-script = "./setup.sh"
+script = "./bootstrap.sh"
 ```
 
 ## Templates
 
 Convert a provisioned VM into a reusable base image, then stamp out thin clones:
 
-```bash
+```sh
 agv template create myvm mytemplate   # create template from VM
 agv template ls                        # list templates
 agv create --from mytemplate newvm     # create thin clone
@@ -109,29 +135,17 @@ agv create --from mytemplate newvm     # create thin clone
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
 - A C linker (usually already present)
-  - macOS: install Xcode Command Line Tools: `xcode-select --install`
+  - macOS: `xcode-select --install`
   - Ubuntu/Debian: `sudo apt install build-essential`
   - Fedora: `sudo dnf install gcc`
 
-**Build:**
+**Build and test:**
 
-```
+```sh
 cargo build           # debug binary → ./target/debug/agv
 cargo build --release # release binary → ./target/release/agv
-```
-
-**Lint and test:**
-
-```
-cargo clippy          # must pass with zero warnings
+cargo clippy          # lint — must pass with zero warnings
 cargo test            # unit and integration tests (fast, no QEMU required)
-```
-
-Some tests boot a real VM and are skipped by default. To run them (requires
-QEMU and a network connection to download the base image):
-
-```
-cargo test -- --include-ignored --nocapture
 ```
 
 ## License
