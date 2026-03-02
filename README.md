@@ -45,15 +45,24 @@ Run `agv doctor` at any time to check which dependencies are present and get ins
 
 ## Getting started
 
-Generate a config file for a specific agent, then create and start a VM:
+**With a config file** — `agv init` writes `agv.toml` to the current directory;
+`agv create` picks it up automatically:
 
 ```sh
-agv init claude        # write agv.toml for Claude Code
-agv create --start myvm
-agv ssh myvm           # open a shell inside the VM
+agv init claude          # write agv.toml for Claude Code in the current directory
+agv create --start myvm  # create and start the VM using agv.toml
+agv ssh myvm             # open a shell inside the VM
 ```
 
 See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex, and OpenClaw.
+
+**Without a config file** — pass everything on the command line:
+
+```sh
+agv create --include devtools --include claude --start myvm
+```
+
+Use `agv images` to see all available mixins, and `agv specs` to see size presets.
 
 ## Usage
 
