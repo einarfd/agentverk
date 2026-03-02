@@ -50,7 +50,7 @@ Run `agv doctor` at any time to check which dependencies are present and get ins
 
 ```sh
 agv init claude          # write agv.toml for Claude Code in the current directory
-agv create --start myvm  # create and start the VM using agv.toml
+agv create --start myvm  # create and start the VM using agv.toml (spec = "large" from the template)
 agv ssh myvm             # open a shell inside the VM
 ```
 
@@ -59,7 +59,7 @@ See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex,
 **Without a config file** — pass everything on the command line:
 
 ```sh
-agv create --include devtools --include claude --start myvm
+agv create --include devtools --include claude --start myvm  # uses the default spec (medium: 2G RAM, 2 vCPUs, 20G disk)
 ```
 
 Use `agv images` to see all available mixins, and `agv specs` to see size presets.
