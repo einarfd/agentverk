@@ -7,8 +7,10 @@
 [base]
 from = "ubuntu-24.04"
 include = ["devtools", "codex"]
+spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 
-[vm]
-memory = "4G"
-cpus = 2
-disk = "20G"
+# Override individual resource settings if needed:
+# [vm]
+# memory = "16G"
+# cpus = 8
+# disk = "80G"

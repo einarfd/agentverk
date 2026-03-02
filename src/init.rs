@@ -11,17 +11,20 @@ const TEMPLATES: &[(&str, &str)] = &[
 
 const DEFAULT_CONTENT: &str = r#"# agv VM configuration.
 # Run `agv images` to see available base images and mixins.
+# Run `agv specs` to see available hardware sizes.
 # Templates: agv init claude | gemini | codex | openclaw
 
 [base]
 from = "ubuntu-24.04"
-# include = ["devtools"]          # git, curl, build-essential
+# include = ["devtools"]           # git, curl, build-essential
 # include = ["devtools", "claude"] # + Claude Code AI agent
+spec = "medium"  # 2G RAM, 2 vCPUs, 20G disk
 
-[vm]
-memory = "4G"
-cpus = 2
-disk = "20G"
+# Override individual resource settings if needed:
+# [vm]
+# memory = "8G"
+# cpus = 4
+# disk = "40G"
 
 # Copy files into the VM:
 # [[files]]
