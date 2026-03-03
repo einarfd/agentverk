@@ -96,6 +96,7 @@ Options:
 
 VMs are configured with a TOML file (defaults to `agv.toml` in the current directory).
 Run `agv init` to generate one, or `agv specs` to see available size presets.
+See [`docs/config.md`](docs/config.md) for the full reference including CLI equivalents for every field.
 
 ```toml
 [base]
@@ -156,6 +157,11 @@ cargo build --release # release binary → ./target/release/agv
 cargo clippy          # lint — must pass with zero warnings
 cargo test            # unit and integration tests (fast, no QEMU required)
 ```
+
+## Documentation
+
+- [`docs/config.md`](docs/config.md) — full config file reference with CLI equivalents
+- [`docs/repo-access.md`](docs/repo-access.md) — accessing private repositories (PAT, SSH keys, deploy keys)
 
 ## License
 
