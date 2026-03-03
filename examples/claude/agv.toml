@@ -13,3 +13,17 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # memory = "16G"
 # cpus = 8
 # disk = "80G"
+
+# ── Repo access ──────────────────────────────────────────────────────────────
+# To give the agent access to your repositories, see docs/repo-access.md.
+# Quick start: add "gh" to the include list above, put GITHUB_TOKEN=ghp_...
+# in a .env file next to this one, then uncomment:
+#
+# [[provision]]
+# run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
+#
+# [[provision]]
+# run = "gh repo clone org/myrepo ~/myrepo"
+#
+# [[provision]]
+# run = "gh auth setup-git"  # configure git credential helper
