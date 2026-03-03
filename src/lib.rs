@@ -88,7 +88,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
             let cfg = config::load_resolved(&inst.config_path())?;
-            ssh::session(&inst, &cfg.user, &args.command).await
+            ssh::session(&inst, &cfg.user, args.forward_agent, &args.command).await
         }
         Command::Ls => {
             let instances = vm::list().await?;

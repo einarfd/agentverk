@@ -15,7 +15,7 @@ spec    = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # Copy dotfiles from the host (optional — remove if not needed).
 [[files]]
 source = "{{HOME}}/.gitconfig"
-dest   = "~/.gitconfig"
+dest   = "/home/{{AGV_USER}}/.gitconfig"
 
 # Authenticate with GitHub using a token from .env or the environment.
 # The token is passed via stdin so it does not appear in the process list.

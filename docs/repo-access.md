@@ -17,9 +17,9 @@ when the agent is executing code it may have written itself.
 
 ## 1. PAT token with GitHub CLI (recommended)
 
-Use a [GitHub Personal Access Token](https://github.com/settings/tokens) with the
-`gh` CLI. The token is passed via a template variable so it never appears in the
-config file.
+Use a GitHub [fine-grained personal access token](https://github.com/settings/personal-access-tokens)
+with the `gh` CLI. The token is passed via a template variable so it never appears in
+the config file.
 
 ```toml
 # agv.toml
@@ -35,6 +35,7 @@ run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
 run = "gh repo clone org/myrepo ~/myrepo"
 
 # Configure git credential helper so plain `git` commands work too.
+# Must run after `gh auth login`.
 [[provision]]
 run = "gh auth setup-git"
 ```
@@ -44,13 +45,11 @@ run = "gh auth setup-git"
 GITHUB_TOKEN=ghp_...
 ```
 
-`gh auth setup-git` must run **after** `gh auth login`. It configures git's credential
-helper so that `git clone`, `git push`, etc. all authenticate via the stored token
-without needing further configuration.
-
-**Token scopes:** For read-only access, `Contents: Read` is sufficient. For push access
-or using `gh pr create` and similar, add `Pull requests: Read & Write`.
-Use the minimum scopes needed.
+**Token permissions:** Fine-grained tokens let you select exactly which repositories the
+token can access and what it can do. For read-only cloning, grant `Contents: Read` on
+the target repositories. Add `Pull requests: Read & Write` if the agent needs to open
+PRs. Use the minimum permissions needed — especially important when agents are running
+code autonomously.
 
 ---
 
@@ -62,15 +61,15 @@ use SSH keys for GitHub.
 ```toml
 [[files]]
 source = "{{HOME}}/.ssh/id_ed25519"
-dest   = "/home/agent/.ssh/id_ed25519"
+dest   = "/home/{{AGV_USER}}/.ssh/id_ed25519"
 
 [[files]]
 source = "{{HOME}}/.ssh/id_ed25519.pub"
-dest   = "/home/agent/.ssh/id_ed25519.pub"
+dest   = "/home/{{AGV_USER}}/.ssh/id_ed25519.pub"
 
 [[provision]]
 run = """
-chmod 600 /home/agent/.ssh/id_ed25519
+chmod 600 ~/.ssh/id_ed25519
 ssh-keyscan github.com >> ~/.ssh/known_hosts
 """
 
@@ -92,11 +91,11 @@ scoped to a single repo — ideal for agents that should only access specific re
 agv generates a unique SSH key for each VM. Use that key as the deploy key so no
 secret needs to be passed in at all.
 
-**Step 1 — create the VM first** (provisioning will fail since the repo isn't accessible
-yet, but the key is generated):
+**Step 1 — create the VM:**
 
 ```sh
 agv create myvm
+agv start myvm
 ```
 
 **Step 2 — get the VM's public key:**
@@ -108,13 +107,7 @@ agv ssh myvm -- cat ~/.ssh/id_ed25519.pub
 **Step 3 — add it as a deploy key** in the repo's GitHub Settings → Deploy keys.
 Tick "Allow write access" if the agent needs to push.
 
-**Step 4 — provision:**
-
-```sh
-agv ssh myvm -- git clone git@github.com:org/myrepo.git ~/myrepo
-```
-
-Or re-create the VM with a `[[provision]]` block now that the key is authorised:
+**Step 4 — use it in provisioning:**
 
 ```toml
 [[provision]]
@@ -130,38 +123,53 @@ Each VM gets its own key, so revoking one VM's access does not affect others.
 
 ## 4. SSH agent forwarding (interactive sessions only)
 
-Forward your local SSH agent into the VM with `ssh -A`. The key never touches the
+Forward your local SSH agent into the VM with `agv ssh -A`. The key never touches the
 VM's disk — it stays on your machine.
 
 ```sh
-ssh -A -p $(cat ~/Library/Application\ Support/agv/instances/myvm/ssh_port) \
-    agent@localhost
+agv ssh -A myvm
 ```
 
-**Limitation:** Agent forwarding only works for your interactive session. It is not
-available during `[[provision]]` steps, which run before you connect. Use a different
-approach if you need to clone repos during provisioning.
+Once inside the VM, git operations will authenticate via your forwarded agent as normal.
+
+**Limitation:** Agent forwarding only works for your interactive shell session. It is
+not available during `[[provision]]` steps, which run before you connect. Use a
+different approach if you need to clone repos during provisioning.
 
 ---
 
-## Dotfiles and git identity
+## Dotfiles
 
-Agents typically need a git identity for commits. Set it in a `[[provision]]` step, or
-copy a `.gitconfig` from the host:
+Dotfiles are a natural fit for VM provisioning — the same config you maintain for your
+own machines works equally well inside an agent VM.
+
+**Option A — clone a dotfiles repo:**
 
 ```toml
-# Option A — copy from host
+[[provision]]
+run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
+
+[[provision]]
+run = "gh repo clone org/dotfiles ~/dotfiles && ~/dotfiles/install.sh"
+```
+
+This is the most flexible option: the install script can set up shell config, git
+config, editor settings, and anything else the agent needs.
+
+**Option B — copy files directly:**
+
+```toml
 [[files]]
 source = "{{HOME}}/.gitconfig"
-dest   = "~/.gitconfig"
+dest   = "/home/{{AGV_USER}}/.gitconfig"
 
-# Option B — set inline
-[[provision]]
-run = """
-git config --global user.name  "My Agent"
-git config --global user.email "agent@example.com"
-"""
+[[files]]
+source = "{{HOME}}/.config/gh"
+dest   = "/home/{{AGV_USER}}/.config/gh"
 ```
+
+Simpler, but requires listing each file individually. Works well for a small set of
+config files that don't need an install step.
 
 ---
 
@@ -172,12 +180,12 @@ run something that reads credentials from the filesystem or environment.
 
 **Prefer:**
 - Deploy keys over personal SSH keys (scoped to one repo, separately revocable)
-- Minimal PAT scopes (only the permissions actually needed)
+- Fine-grained PATs with minimal repository and permission scope
 - Read-only access where possible — agents rarely need to push
 
 **Avoid:**
 - Copying your primary SSH key into a VM that runs untrusted code
-- Full-access PATs when a scoped token would do
+- Broad PATs when a scoped token would do
 - Storing credentials in the config file itself (use `.env` or environment variables)
 
 Destroying a VM with `agv destroy` removes the disk, the generated SSH key, and all

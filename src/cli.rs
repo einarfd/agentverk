@@ -172,6 +172,10 @@ pub struct SshArgs {
     /// Name of the VM to connect to.
     pub name: String,
 
+    /// Forward the local SSH agent into the VM.
+    #[arg(short = 'A', long = "forward-agent")]
+    pub forward_agent: bool,
+
     /// Command to run over SSH instead of an interactive session.
     #[arg(last = true)]
     pub command: Vec<String>,

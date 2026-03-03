@@ -59,6 +59,7 @@ pub async fn generate_keypair(instance: &Instance) -> anyhow::Result<String> {
 pub async fn session(
     instance: &Instance,
     user: &str,
+    forward_agent: bool,
     command: &[String],
 ) -> anyhow::Result<()> {
     let port = ssh_port(instance).await?;
@@ -68,7 +69,11 @@ pub async fn session(
     let destination = format!("{user}@localhost");
 
     let mut cmd = tokio::process::Command::new("ssh");
-    cmd.args(&args).arg(&destination);
+    cmd.args(&args);
+    if forward_agent {
+        cmd.arg("-A");
+    }
+    cmd.arg(&destination);
 
     if !command.is_empty() {
         cmd.arg("--");

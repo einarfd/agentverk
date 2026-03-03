@@ -27,8 +27,8 @@ the order listed. Sections from mixins (`include`) run before your own.
 [base]
 from    = "ubuntu-24.04"           # base image  (run `agv images` to list all)
 include = ["devtools", "claude"]   # mixins       (run `agv images` to list all)
-spec    = "large"                  # hardware preset (run `agv specs` to list all)
-user    = "agent"                  # VM username (default: "agent")
+spec    = "large"                  # hardware preset — optional, default: "medium"
+user    = "agent"                  # VM username — optional, default: "agent"
 ```
 
 CLI equivalents:
@@ -44,7 +44,8 @@ steps before your own.
 
 ## `[vm]`
 
-Override individual resource settings on top of the named `spec`. Any field omitted here
+Override individual resource settings on top of the named `spec`. This section is
+optional — omit it entirely to use the spec values unchanged. Any field omitted here
 falls back to the spec value.
 
 ```toml
@@ -65,17 +66,23 @@ Copy files or directories from the host into the VM before any provisioning runs
 
 ```toml
 [[files]]
-source = "~/.gitconfig"
-dest   = "~/.gitconfig"
+source = "{{HOME}}/.gitconfig"          # host path — use {{HOME}}, not ~/
+dest   = "/home/{{AGV_USER}}/.gitconfig"
 
 [[files]]
 source = "./scripts"
-dest   = "/home/agent/scripts"
+dest   = "/home/{{AGV_USER}}/scripts"
 ```
 
-CLI equivalent: `--file ~/.gitconfig:~/.gitconfig` (repeatable)
+CLI equivalent: `--file {{HOME}}/.gitconfig:/home/{{AGV_USER}}/.gitconfig` (repeatable)
 
-Both `source` and `dest` support template variable expansion (see below).
+Both `source` and `dest` support template variable expansion (see below). Note that
+`~/` is **not** expanded — use `{{HOME}}` for host paths and `/home/{{AGV_USER}}`
+for paths inside the VM. `{{AGV_USER}}` is set to the VM's username (default: `agent`).
+
+> **Security:** Avoid copying your primary SSH key here. If the agent runs malicious
+> code or the VM is compromised, the key is exposed. See [`docs/repo-access.md`](repo-access.md)
+> for safer alternatives.
 
 ## `[[setup]]`
 
@@ -123,6 +130,9 @@ script = "./user-setup.sh"   # local script, copied in and executed as your user
 
 CLI equivalents: `--provision "SCRIPT"`, `--provision-script ./path`
 
+`setup` and `provision` steps from mixins run before your own steps, in the order the
+mixins are listed.
+
 ## Template variables
 
 Config values support `{{VAR}}` substitution. This is the main way to pass secrets or
@@ -134,7 +144,7 @@ run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
 
 [[files]]
 source = "{{HOME}}/.ssh/id_ed25519"
-dest   = "/home/agent/.ssh/id_ed25519"
+dest   = "/home/{{AGV_USER}}/.ssh/id_ed25519"
 ```
 
 Syntax:
@@ -144,7 +154,13 @@ Syntax:
 | `{{VAR}}` | Required — `agv create` fails if `VAR` is not set |
 | `{{VAR:-default}}` | Uses `default` if `VAR` is not set |
 
-Variables are resolved in this order (last wins):
+Built-in variables:
+
+| Variable | Value |
+|----------|-------|
+| `{{AGV_USER}}` | The VM's username (same as `user` in `[base]`, default: `agent`) |
+
+User-defined variables are resolved in this order (last wins):
 
 1. `.env` file next to `agv.toml`
 2. `.env` in the current working directory
