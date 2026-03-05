@@ -4,6 +4,7 @@
 //! help output, and commands that require no external tools.
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use predicates::str::contains;
 
 fn agv() -> Command {
@@ -182,6 +183,50 @@ fn destroy_without_name_fails() {
 #[test]
 fn ssh_without_name_fails() {
     agv().arg("ssh").assert().failure();
+}
+
+#[test]
+fn ssh_help_succeeds() {
+    agv().args(["ssh", "--help"]).assert().success();
+}
+
+// These tests verify that ssh flags are accepted by clap (not treated as
+// unknown agv args). They fail with "VM not found", not a parse error.
+
+#[test]
+fn ssh_flag_agent_forwarding_accepted() {
+    agv()
+        .args(["ssh", "novm", "-A"])
+        .assert()
+        .failure()
+        .stderr(contains("novm").or(contains("not found")).or(contains("No such")));
+}
+
+#[test]
+fn ssh_flag_port_forward_accepted() {
+    agv()
+        .args(["ssh", "novm", "-L", "8080:localhost:8080"])
+        .assert()
+        .failure()
+        .stderr(contains("novm").or(contains("not found")).or(contains("No such")));
+}
+
+#[test]
+fn ssh_command_after_separator_accepted() {
+    agv()
+        .args(["ssh", "novm", "--", "ls", "-la"])
+        .assert()
+        .failure()
+        .stderr(contains("novm").or(contains("not found")).or(contains("No such")));
+}
+
+#[test]
+fn ssh_opts_and_command_accepted() {
+    agv()
+        .args(["ssh", "novm", "-A", "--", "ls"])
+        .assert()
+        .failure()
+        .stderr(contains("novm").or(contains("not found")).or(contains("No such")));
 }
 
 #[test]

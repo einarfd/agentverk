@@ -22,6 +22,19 @@ use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRm
 use specs::SpecSource;
 use images::ImageType;
 
+/// Split `agv ssh` trailing args at `--`.
+///
+/// Everything before `--` is passed to ssh before the destination (ssh options
+/// such as `-A`, `-L port:host:port`). Everything after `--` is the remote
+/// command, passed after the destination. With no `--`, all args are treated
+/// as ssh options and no remote command is run.
+fn split_ssh_args(args: &[String]) -> (&[String], &[String]) {
+    match args.iter().position(|a| a == "--") {
+        Some(i) => (&args[..i], &args[i + 1..]),
+        None => (args, &[]),
+    }
+}
+
 fn config_step_label(step: &config::ProvisionStep) -> String {
     if let Some(ref source) = step.source {
         return source.clone();
@@ -88,11 +101,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
             let cfg = config::load_resolved(&inst.config_path())?;
-            let sep = args.args.iter().position(|a| a == "--");
-            let (ssh_opts, command) = match sep {
-                Some(i) => (&args.args[..i], &args.args[i + 1..]),
-                None => (&args.args[..], &[][..]),
-            };
+            let (ssh_opts, command) = split_ssh_args(&args.args);
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
         Command::Ls => {
@@ -333,5 +342,61 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Command::Doctor => doctor::run(),
         Command::Init(args) => init::run(args.template.as_deref(), args.force),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn split_ssh_args_empty() {
+        let (opts, cmd) = split_ssh_args(&[]);
+        assert!(opts.is_empty());
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn split_ssh_args_opts_only() {
+        let args = vec![s("-A"), s("-L"), s("8080:localhost:8080")];
+        let (opts, cmd) = split_ssh_args(&args);
+        assert_eq!(opts, &[s("-A"), s("-L"), s("8080:localhost:8080")]);
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn split_ssh_args_command_only() {
+        let args = vec![s("--"), s("ls"), s("-la")];
+        let (opts, cmd) = split_ssh_args(&args);
+        assert!(opts.is_empty());
+        assert_eq!(cmd, &[s("ls"), s("-la")]);
+    }
+
+    #[test]
+    fn split_ssh_args_opts_and_command() {
+        let args = vec![s("-A"), s("--"), s("ls"), s("-la")];
+        let (opts, cmd) = split_ssh_args(&args);
+        assert_eq!(opts, &[s("-A")]);
+        assert_eq!(cmd, &[s("ls"), s("-la")]);
+    }
+
+    #[test]
+    fn split_ssh_args_separator_at_start() {
+        let args = vec![s("--"), s("ls")];
+        let (opts, cmd) = split_ssh_args(&args);
+        assert!(opts.is_empty());
+        assert_eq!(cmd, &[s("ls")]);
+    }
+
+    #[test]
+    fn split_ssh_args_separator_at_end() {
+        let args = vec![s("-N"), s("--")];
+        let (opts, cmd) = split_ssh_args(&args);
+        assert_eq!(opts, &[s("-N")]);
+        assert!(cmd.is_empty());
     }
 }
