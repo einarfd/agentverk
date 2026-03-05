@@ -88,7 +88,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
             let cfg = config::load_resolved(&inst.config_path())?;
-            ssh::session(&inst, &cfg.user, args.forward_agent, &args.command).await
+            let sep = args.args.iter().position(|a| a == "--");
+            let (ssh_opts, command) = match sep {
+                Some(i) => (&args.args[..i], &args.args[i + 1..]),
+                None => (&args.args[..], &[][..]),
+            };
+            ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
         Command::Ls => {
             let instances = vm::list().await?;

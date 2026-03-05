@@ -123,11 +123,11 @@ Each VM gets its own key, so revoking one VM's access does not affect others.
 
 ## 4. SSH agent forwarding (interactive sessions only)
 
-Forward your local SSH agent into the VM with `agv ssh -A`. The key never touches the
+Forward your local SSH agent into the VM with `agv ssh`. The key never touches the
 VM's disk — it stays on your machine.
 
 ```sh
-agv ssh -A myvm
+agv ssh myvm -A
 ```
 
 Once inside the VM, git operations will authenticate via your forwarded agent as normal.

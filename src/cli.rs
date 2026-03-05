@@ -172,13 +172,11 @@ pub struct SshArgs {
     /// Name of the VM to connect to.
     pub name: String,
 
-    /// Forward the local SSH agent into the VM.
-    #[arg(short = 'A', long = "forward-agent")]
-    pub forward_agent: bool,
-
-    /// Command to run over SSH instead of an interactive session.
-    #[arg(last = true)]
-    pub command: Vec<String>,
+    /// SSH options and/or remote command.
+    /// Options (e.g. -A, -L 8080:localhost:8080) are passed through to ssh.
+    /// Use -- to separate ssh options from a remote command.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
