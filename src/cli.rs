@@ -68,6 +68,18 @@ pub enum Command {
     /// View or change VM configuration.
     Config(Box<ConfigArgs>),
 
+    /// Copy files between the host and a running VM.
+    ///
+    /// Prefix paths with : to indicate a path inside the VM.
+    ///
+    /// Examples:
+    ///   agv cp myvm :~/file.txt ./              # download from VM
+    ///   agv cp myvm ./file.txt :~/              # upload to VM
+    ///   agv cp myvm -r :~/project/ ./local/     # recursive download
+    ///   agv cp myvm -r ./local/dir/ :~/remote/  # recursive upload
+    #[command(verbatim_doc_comment)]
+    Cp(CpArgs),
+
     /// Check that all required external tools are installed.
     Doctor,
 
@@ -259,6 +271,22 @@ pub struct ConfigSetArgs {
     /// New disk size (must be larger than current), e.g. 40G.
     #[arg(long)]
     pub disk: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CpArgs {
+    /// Name of the VM to copy files to/from.
+    pub name: String,
+
+    /// Source path. Prefix with : for a path inside the VM.
+    pub source: String,
+
+    /// Destination path. Prefix with : for a path inside the VM.
+    pub dest: String,
+
+    /// Copy directories recursively.
+    #[arg(short, long)]
+    pub recursive: bool,
 }
 
 #[derive(Debug, clap::Args)]

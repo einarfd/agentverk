@@ -38,7 +38,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("specs"))
         .stdout(contains("config"))
         .stdout(contains("doctor"))
-        .stdout(contains("init"));
+        .stdout(contains("init"))
+        .stdout(contains("cp"));
 }
 
 #[test]
@@ -249,6 +250,43 @@ fn template_rm_without_name_fails() {
 #[test]
 fn doctor_succeeds() {
     agv().arg("doctor").assert().success();
+}
+
+// ── Cp ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cp_help_succeeds() {
+    agv().args(["cp", "--help"]).assert().success();
+}
+
+#[test]
+fn cp_without_args_fails() {
+    agv().arg("cp").assert().failure();
+}
+
+#[test]
+fn cp_missing_dest_fails() {
+    agv().args(["cp", "myvm", ":~/file"]).assert().failure();
+}
+
+#[test]
+fn cp_no_vm_path_fails() {
+    // Neither source nor dest has : prefix — should error.
+    agv()
+        .args(["cp", "novm", "./a", "./b"])
+        .assert()
+        .failure()
+        .stderr(contains("must be a VM path"));
+}
+
+#[test]
+fn cp_both_vm_paths_fails() {
+    // Both source and dest have : prefix — should error.
+    agv()
+        .args(["cp", "novm", ":~/a", ":~/b"])
+        .assert()
+        .failure()
+        .stderr(contains("cannot copy between two VM paths"));
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

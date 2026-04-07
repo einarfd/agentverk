@@ -347,6 +347,41 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Cp(args) => {
+            // Validate path syntax before opening the VM.
+            let src_is_vm = args.source.starts_with(':');
+            let dst_is_vm = args.dest.starts_with(':');
+            anyhow::ensure!(
+                src_is_vm || dst_is_vm,
+                "one of source or dest must be a VM path (prefixed with :)"
+            );
+            anyhow::ensure!(
+                !(src_is_vm && dst_is_vm),
+                "cannot copy between two VM paths — one side must be a local path"
+            );
+
+            let inst = vm::instance::Instance::open(&args.name).await?;
+            let status = inst.reconcile_status().await?;
+            anyhow::ensure!(
+                status == vm::instance::Status::Running,
+                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
+                args.name,
+                args.name,
+            );
+            let cfg = config::load_resolved(&inst.config_path())?;
+
+            ssh::transfer(&inst, &cfg.user, &args.source, &args.dest, args.recursive, verbose)
+                .await?;
+
+            if !quiet {
+                let direction = if src_is_vm { "downloaded" } else { "uploaded" };
+                let local = if src_is_vm { &args.dest } else { &args.source };
+                let remote = if src_is_vm { &args.source } else { &args.dest };
+                println!("  {direction}: {local} ↔ {}{remote}", args.name);
+            }
+
+            Ok(())
+        }
         Command::Doctor => doctor::run(),
         Command::Init(args) => init::run(args.template.as_deref(), args.force),
     }
