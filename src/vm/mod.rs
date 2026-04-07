@@ -154,27 +154,11 @@ async fn create_inner(
     let pub_key = ssh::generate_keypair(inst).await?;
     step_done(&spinner, "Generated SSH keypair");
 
-    // Gather files for cloud-init injection.
-    let files: Vec<(String, String)> = config
-        .files
-        .iter()
-        .map(|f| (f.source.clone(), f.dest.clone()))
-        .collect();
-
     // Generate cloud-init seed ISO.
-    let file_count = files.len();
-    if file_count > 0 {
-        spinner.set_message(format!("Generating cloud-init seed ({file_count} files)..."));
-    } else {
-        spinner.set_message("Generating cloud-init seed...");
-    }
+    spinner.set_message("Generating cloud-init seed...");
     info!("generating cloud-init seed ISO");
-    cloud_init::generate_seed(&inst.seed_path(), &pub_key, name, &config.user, &files).await?;
-    if file_count > 0 {
-        step_done(&spinner, &format!("Generated cloud-init seed ({file_count} files)"));
-    } else {
-        step_done(&spinner, "Generated cloud-init seed");
-    }
+    cloud_init::generate_seed(&inst.seed_path(), &pub_key, name, &config.user).await?;
+    step_done(&spinner, "Generated cloud-init seed");
 
     // If not starting, we're done — write stopped status.
     if !start_after {
@@ -468,7 +452,60 @@ async fn wait_for_ssh(inst: &Instance, user: &str, spinner: &ProgressBar) -> any
     result
 }
 
-/// Run the full first-boot provisioning flow: wait for SSH, setup, provision.
+/// Copy `[[files]]` entries into the VM via SCP.
+///
+/// Creates parent directories for each destination, then copies the file.
+/// Errors are reported immediately — unlike cloud-init `write_files`, failures
+/// are never silent.
+async fn copy_files(
+    instance: &Instance,
+    user: &str,
+    files: &[crate::config::FileEntry],
+    spinner: &ProgressBar,
+) -> anyhow::Result<()> {
+    let total = files.len();
+    for (i, file) in files.iter().enumerate() {
+        let num = i + 1;
+        let label = file
+            .source
+            .rsplit('/')
+            .next()
+            .unwrap_or(&file.source);
+        spinner.set_message(format!("Copying file ({num}/{total}): {label}..."));
+
+        // Ensure the parent directory exists inside the VM.
+        let parent_dir = file
+            .dest
+            .rsplit_once('/')
+            .map_or(".", |(dir, _)| dir);
+        if parent_dir != "." && parent_dir != "/" {
+            ssh::run_cmd(
+                instance,
+                user,
+                &[format!("mkdir -p {}", shell_escape(parent_dir))],
+            )
+            .await
+            .with_context(|| {
+                format!("file {num}: failed to create directory {parent_dir}")
+            })?;
+        }
+
+        ssh::copy_to(instance, user, Path::new(&file.source), &file.dest)
+            .await
+            .with_context(|| {
+                format!(
+                    "file {num}: failed to copy {} → {}",
+                    file.source, file.dest
+                )
+            })?;
+
+        step_done(spinner, &format!("Copied file ({num}/{total}): {label}"));
+    }
+
+    Ok(())
+}
+
+/// Run the full first-boot provisioning flow: wait for SSH, copy files, setup, provision.
 ///
 /// Called by both `create()` (with `--start`) and `start()` (first boot).
 async fn run_first_boot(
@@ -480,6 +517,10 @@ async fn run_first_boot(
 ) -> anyhow::Result<()> {
     wait_for_ssh(inst, &config.user, spinner).await?;
     step_done(spinner, "SSH is ready");
+
+    if !config.files.is_empty() {
+        copy_files(inst, &config.user, &config.files, spinner).await?;
+    }
 
     if !config.setup.is_empty() {
         run_setup(inst, &config.user, &config.setup, verbose, spinner).await?;
@@ -1005,7 +1046,7 @@ async fn create_from_template_inner(
 
     // Generate cloud-init seed (new hostname + SSH key; no extra files for clones).
     spinner.set_message("Generating cloud-init seed...");
-    cloud_init::generate_seed(&inst.seed_path(), &pub_key, vm_name, &meta.user, &[]).await?;
+    cloud_init::generate_seed(&inst.seed_path(), &pub_key, vm_name, &meta.user).await?;
     step_done(&spinner, "Generated cloud-init seed");
 
     // Save a resolved config for this clone so `start` and `inspect` work.

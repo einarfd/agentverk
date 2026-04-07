@@ -1,13 +1,11 @@
 //! Cloud-init seed image generation.
 //!
 //! Builds an ISO seed image containing user-data and meta-data for
-//! first-boot configuration: SSH keys, hostname, files, and user setup.
+//! first-boot configuration: SSH keys, hostname, and user setup.
 
-use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{bail, Context as _};
-use base64::Engine as _;
 use tracing::info;
 
 /// Default username for the VM's primary account.
@@ -18,14 +16,15 @@ pub const DEFAULT_USER: &str = "agent";
 /// The seed image contains:
 /// - `authorized_keys` with the generated SSH public key
 /// - `hostname` set to the VM name
-/// - `write_files` entries for all files to inject
 /// - Basic user setup (default user with sudo access)
+///
+/// Note: `[[files]]` are copied via SCP after SSH is ready, not via
+/// cloud-init `write_files`, to avoid silent failures and ownership issues.
 pub async fn generate_seed(
     output: &Path,
     ssh_pub_key: &str,
     vm_name: &str,
     user: &str,
-    files: &[(String, String)],
 ) -> anyhow::Result<()> {
     let parent = output
         .parent()
@@ -36,7 +35,7 @@ pub async fn generate_seed(
         .with_context(|| format!("failed to create staging directory {}", staging.display()))?;
 
     let meta_data = render_meta_data(vm_name);
-    let user_data = render_user_data(ssh_pub_key, vm_name, user, files).await?;
+    let user_data = render_user_data(ssh_pub_key, vm_name, user).await?;
 
     tokio::fs::write(staging.join("meta-data"), &meta_data)
         .await
@@ -67,16 +66,12 @@ fn render_meta_data(vm_name: &str) -> String {
 }
 
 /// Render the cloud-init `user-data` cloud-config YAML.
-///
-/// Reads each source file from the host and base64-encodes it for
-/// the `write_files` section.
 async fn render_user_data(
     ssh_pub_key: &str,
     vm_name: &str,
     user: &str,
-    files: &[(String, String)],
 ) -> anyhow::Result<String> {
-    let mut yaml = format!(
+    let yaml = format!(
         "#cloud-config\n\
          hostname: {vm_name}\n\
          users:\n\
@@ -86,24 +81,6 @@ async fn render_user_data(
          \x20   ssh_authorized_keys:\n\
          \x20     - {ssh_pub_key}\n"
     );
-
-    if !files.is_empty() {
-        yaml.push_str("write_files:\n");
-        for (source, dest) in files {
-            let content = tokio::fs::read(source).await.with_context(|| {
-                format!("failed to read file `{source}` for injection into VM")
-            })?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&content);
-            let _ = write!(
-                yaml,
-                "  - path: {dest}\n\
-                 \x20   encoding: b64\n\
-                 \x20   content: {encoded}\n\
-                 \x20   owner: {user}:{user}\n\
-                 \x20   permissions: '0644'\n"
-            );
-        }
-    }
 
     Ok(yaml)
 }
@@ -212,8 +189,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_data_no_files() {
-        let output = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent", &[])
+    async fn user_data_contains_expected_sections() {
+        let output = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent")
             .await
             .unwrap();
         assert!(output.starts_with("#cloud-config"));
@@ -223,40 +200,6 @@ mod tests {
         assert!(output.contains("shell: /bin/bash"));
         assert!(output.contains("ssh-ed25519 AAAA..."));
         assert!(!output.contains("write_files"));
-    }
-
-    #[tokio::test]
-    async fn user_data_with_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("hello.txt");
-        tokio::fs::write(&src, b"Hello, world!")
-            .await
-            .unwrap();
-        let src_str = src.to_str().unwrap().to_string();
-
-        let files = vec![(src_str, "/home/agent/hello.txt".to_string())];
-        let output = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent", &files)
-            .await
-            .unwrap();
-
-        assert!(output.contains("write_files:"));
-        assert!(output.contains("path: /home/agent/hello.txt"));
-        assert!(output.contains("encoding: b64"));
-        assert!(output.contains("owner: agent:agent"));
-        assert!(output.contains("permissions: '0644'"));
-
-        // Verify base64 content decodes to original.
-        let encoded = base64::engine::general_purpose::STANDARD.encode(b"Hello, world!");
-        assert!(output.contains(&encoded));
-    }
-
-    #[tokio::test]
-    async fn user_data_missing_source_file_errors() {
-        let files = vec![("/nonexistent/file.txt".to_string(), "/dest".to_string())];
-        let result = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent", &files).await;
-        assert!(result.is_err());
-        let err = format!("{:#}", result.unwrap_err());
-        assert!(err.contains("failed to read file `/nonexistent/file.txt`"));
     }
 
     #[cfg(target_os = "macos")]

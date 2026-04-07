@@ -1,6 +1,9 @@
-# Claude CLI mixin.
-# Installs the Claude AI coding agent CLI.
+# Claude Code CLI mixin.
+# Installs the Claude AI agent CLI.
 # Requires curl — pair with devtools: include = ["devtools", "claude"]
+#
+# Minimum 4 GB RAM required (Anthropic system requirement).
+# Recommended: spec = "large" (8 GB) for comfortable use with larger codebases.
 
 [[provision]]
 run = "curl -fsSL https://claude.ai/install.sh | bash"

@@ -100,6 +100,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
+            let status = inst.reconcile_status().await?;
+            anyhow::ensure!(
+                status == vm::instance::Status::Running,
+                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
+                args.name,
+                args.name,
+            );
             let cfg = config::load_resolved(&inst.config_path())?;
             let (ssh_opts, command) = split_ssh_args(&args.args);
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
