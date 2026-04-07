@@ -253,7 +253,7 @@ async fn create_marks_broken_on_failure() {
 /// Requires QEMU, qemu-img, and mkisofs/genisoimage.
 ///
 /// Run with:
-///   cargo test create_with_start_and_provision -- --include-ignored --nocapture
+///   cargo test `create_with_start_and_provision` -- --include-ignored --nocapture
 #[tokio::test]
 #[ignore = "downloads a real cloud image and boots a VM — slow"]
 async fn create_with_start_and_provision() {
@@ -267,6 +267,13 @@ async fn create_with_start_and_provision() {
     let name = "_test-create-full";
     cleanup(name).await;
 
+    // Create a temp file on the host to test file injection via SCP.
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let test_file = tmp_dir.path().join("agv-test-inject.txt");
+    tokio::fs::write(&test_file, "injected-by-agv")
+        .await
+        .unwrap();
+
     // Use debian-12: smaller image (~330 MB) and fully apt-compatible.
     let config = config::resolve(config::Config {
         base: Some(config::BaseConfig {
@@ -278,11 +285,16 @@ async fn create_with_start_and_provision() {
             cpus: Some(2),
             disk: Some("10G".to_string()),
         }),
-        files: vec![],
+        files: vec![config::FileEntry {
+            source: test_file.to_str().unwrap().to_string(),
+            dest: "/home/agent/.config/agv-test/agv-test-inject.txt".to_string(),
+        }],
         setup: vec![],
         provision: vec![config::ProvisionStep {
             source: None,
-            run: Some("echo 'provisioning complete' > /tmp/agv-test-marker".to_string()),
+            run: Some(
+                "cat /home/agent/.config/agv-test/agv-test-inject.txt".to_string(),
+            ),
             script: None,
         }],
     })
@@ -307,6 +319,12 @@ async fn create_with_start_and_provision() {
     assert!(inst.provision_log_path().exists(), "provision.log should exist");
     let log = tokio::fs::read_to_string(inst.provision_log_path()).await.unwrap();
     assert!(!log.is_empty(), "provision.log should have content");
+    // The provision step cats the injected file into /tmp/agv-test-marker.
+    // If the file was copied correctly, the log should contain the injected content.
+    assert!(
+        log.contains("injected-by-agv"),
+        "provision.log should contain injected file content — file copy via SCP failed"
+    );
 
     // Verify the provisioned marker was set.
     assert!(inst.is_provisioned(), "instance should be marked provisioned");

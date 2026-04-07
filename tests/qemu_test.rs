@@ -50,7 +50,6 @@ async fn setup_instance(dir: &std::path::Path, name: &str) -> anyhow::Result<Ins
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForQemuIntegrationTests test@agv",
         name,
         "agent",
-        &[],
     )
     .await?;
 
