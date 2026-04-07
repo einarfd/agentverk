@@ -474,11 +474,8 @@ async fn copy_files(
         spinner.set_message(format!("Copying file ({num}/{total}): {label}..."));
 
         // Ensure the parent directory exists inside the VM.
-        let parent_dir = file
-            .dest
-            .rsplit_once('/')
-            .map_or(".", |(dir, _)| dir);
-        if parent_dir != "." && parent_dir != "/" {
+        let parent_dir = parent_dir_of(&file.dest);
+        if !parent_dir.is_empty() && parent_dir != "." && parent_dir != "/" {
             ssh::run_cmd(
                 instance,
                 user,
@@ -656,6 +653,14 @@ fn step_label(step: &ProvisionStep) -> String {
 fn shell_escape(s: &str) -> String {
     let escaped = s.replace('\'', "'\\''");
     format!("'{escaped}'")
+}
+
+/// Extract the parent directory from a destination path.
+///
+/// Returns `"."` when no slash is present, or the portion before the last
+/// slash. Used by `copy_files()` to `mkdir -p` before copying.
+fn parent_dir_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or(".", |(dir, _)| dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,4 +1142,34 @@ pub async fn list() -> anyhow::Result<Vec<Instance>> {
     }
     instances.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(instances)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_dir_of_absolute_path() {
+        assert_eq!(parent_dir_of("/home/agent/.ssh/id_ed25519"), "/home/agent/.ssh");
+    }
+
+    #[test]
+    fn parent_dir_of_root_file() {
+        assert_eq!(parent_dir_of("/file.txt"), "");
+    }
+
+    #[test]
+    fn parent_dir_of_home_file() {
+        assert_eq!(parent_dir_of("/home/agent/file.txt"), "/home/agent");
+    }
+
+    #[test]
+    fn parent_dir_of_no_slash() {
+        assert_eq!(parent_dir_of("file.txt"), ".");
+    }
+
+    #[test]
+    fn parent_dir_of_nested() {
+        assert_eq!(parent_dir_of("/a/b/c/d"), "/a/b/c");
+    }
 }
