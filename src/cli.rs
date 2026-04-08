@@ -92,7 +92,7 @@ pub enum Command {
     Cp(CpArgs),
 
     /// Check that all required external tools are installed.
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// Write a starter agv.toml to the current directory.
     Init(InitArgs),
@@ -282,6 +282,17 @@ pub struct ConfigSetArgs {
     /// New disk size (must be larger than current), e.g. 40G.
     #[arg(long)]
     pub disk: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Add an Include line to ~/.ssh/config so IDEs can connect to VMs by name.
+    #[arg(long)]
+    pub setup_ssh: bool,
+
+    /// Remove the agv Include line from ~/.ssh/config.
+    #[arg(long)]
+    pub remove_ssh: bool,
 }
 
 #[derive(Debug, clap::Args)]

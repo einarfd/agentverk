@@ -15,6 +15,7 @@ pub mod images;
 pub mod init;
 pub mod specs;
 pub mod ssh;
+pub mod ssh_config;
 pub mod template;
 pub mod vm;
 
@@ -433,7 +434,27 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             Ok(())
         }
-        Command::Doctor => doctor::run(),
+        Command::Doctor(args) => {
+            if args.setup_ssh {
+                return ssh_config::install_include();
+            }
+            if args.remove_ssh {
+                return ssh_config::remove_include();
+            }
+            doctor::run()?;
+            // Check SSH config integration.
+            println!();
+            match ssh_config::is_include_installed() {
+                Ok(true) => println!("  SSH config Include: ✓ installed"),
+                Ok(false) => {
+                    println!("  SSH config Include: not set up");
+                    println!("    Run: agv doctor --setup-ssh");
+                    println!("    This lets IDEs connect to VMs by name.");
+                }
+                Err(_) => {}
+            }
+            Ok(())
+        }
         Command::Init(args) => init::run(args.template.as_deref(), args.force),
     }
 }

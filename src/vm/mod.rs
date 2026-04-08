@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{ProvisionStep, ResolvedConfig};
 use crate::error::Error;
-use crate::{dirs, image, ssh};
+use crate::{dirs, image, ssh, ssh_config};
 use instance::{Instance, Status};
 
 /// Create an indicatif spinner for status messages.
@@ -37,6 +37,20 @@ fn status_spinner(verbose: bool, quiet: bool) -> ProgressBar {
     } else {
         ProgressBar::hidden()
     }
+}
+
+/// Update the managed SSH config with this VM's connection details.
+///
+/// Best-effort — failures are logged but do not abort the operation.
+async fn update_ssh_config(inst: &Instance, user: &str) {
+    let port = match tokio::fs::read_to_string(inst.ssh_port_path()).await {
+        Ok(raw) => match raw.trim().parse::<u16>() {
+            Ok(p) => p,
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
+    let _ = ssh_config::add_entry(&inst.name, port, user, &inst.ssh_key_path()).await;
 }
 
 /// Print a completed-step line above the spinner, keeping previous output visible.
@@ -183,6 +197,9 @@ async fn create_inner(
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
     run_first_boot(inst, config, verbose, quiet, &spinner).await?;
+
+    // Update managed SSH config so IDEs can connect by VM name.
+    update_ssh_config(inst, &config.user).await;
 
     spinner.finish_with_message(format!("  ✓ VM '{name}' is running"));
     info!(name, "VM created and running");
@@ -428,6 +445,8 @@ pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()>
         run_first_boot(&inst, &config, verbose, quiet, &spinner).await?;
     }
 
+    update_ssh_config(&inst, &config.user).await;
+
     spinner.finish_with_message(format!("  ✓ VM '{name}' is running"));
     Ok(())
 }
@@ -599,6 +618,7 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
         qemu::stop(&inst).await?;
     }
     inst.write_status(Status::Stopped).await?;
+    let _ = ssh_config::remove_entry(name).await;
     Ok(())
 }
 
@@ -617,6 +637,8 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
         );
         let _ = qemu::force_stop(&inst).await;
     }
+
+    let _ = ssh_config::remove_entry(name).await;
 
     tokio::fs::remove_dir_all(&inst.dir)
         .await
