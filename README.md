@@ -64,6 +64,16 @@ agv create --include devtools --include claude --start myvm  # uses the default 
 
 Use `agv images` to see all available mixins, and `agv specs` to see size presets.
 
+**IDE integration** — set up once, then every running VM is accessible by name from
+VS Code, JetBrains, plain `ssh`, and any other SSH-based tool:
+
+```sh
+agv doctor --setup-ssh   # add Include to ~/.ssh/config (one-time)
+ssh myvm                 # connect directly by VM name
+```
+
+See [`docs/remote-ide.md`](docs/remote-ide.md) for IDE-specific setup.
+
 ## Usage
 
 ```
@@ -75,6 +85,8 @@ Commands:
   stop      Stop a running VM
   destroy   Destroy a VM and delete all its data
   ssh       Open an SSH session to a running VM
+  cp        Copy files between the host and a running VM
+  forward   Forward ports from a running VM to the host
   ls        List all VMs
   images    List available base images and mixins
   inspect   Show runtime status of a VM
@@ -83,7 +95,7 @@ Commands:
   specs     List available hardware size presets
   cache     Manage the image download cache
   init      Write a starter agv.toml to the current directory
-  doctor    Check that all required external tools are installed
+  doctor    Check dependencies and set up SSH config integration
 
 Options:
   -v, --verbose  Enable verbose output
@@ -109,10 +121,10 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk
 # memory = "16G"
 # disk = "80G"
 
-# Copy files into the VM:
+# Copy files into the VM (use {{HOME}} not ~/, see docs/config.md):
 [[files]]
-source = "~/.ssh/config"
-dest = "~/.ssh/config"
+source = "{{HOME}}/.gitconfig"
+dest   = "/home/{{AGV_USER}}/.gitconfig"
 
 # Run as root during OS setup:
 [[setup]]

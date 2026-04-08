@@ -44,6 +44,7 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - **Specs**: `src/specs/` — hardware size presets (small/medium/large/xlarge)
 - **Init**: `src/init.rs` — `agv init` command, embeds example configs via `include_str!`
 - **Doctor**: `src/doctor.rs` — `agv doctor` dependency checker with platform-specific hints
+- **SSH config**: `src/ssh_config.rs` — managed `~/.ssh/config` integration for IDE/SSH access by VM name
 - **Templates**: `src/template.rs` — `{{VAR}}` expansion in config values, `.env` file loading
 - **Directories**: `src/dirs.rs` — platform-specific paths (macOS/Linux)
 
@@ -53,6 +54,8 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - **`agv ssh` passes all args after the VM name to ssh.** Uses clap `trailing_var_arg` — everything before `--` becomes ssh options (e.g. `-A`, `-L`), everything after `--` is the remote command.
 - **Cloud-init seed only handles user creation, SSH keys, and hostname.** All file and software setup happens after SSH is ready, via the setup/provision/file-copy flow.
 - **ISO creation is platform-specific.** macOS uses built-in `hdiutil`, Linux uses `mkisofs`/`genisoimage`. Split with `#[cfg(target_os = "macos")]`.
+- **Managed SSH config for IDE integration.** `ssh_config.rs` maintains `<data_dir>/ssh_config` with Host entries for running VMs. Updated automatically on start/stop/destroy. Users add an Include once via `agv doctor --setup-ssh`.
+- **`agv cp` and `agv forward` wrap scp/ssh** with VM-aware syntax. `cp` uses `:path` prefix for VM paths; `forward` uses `local[:remote]` port specs. Both check VM status before connecting.
 
 ## Conventions
 
@@ -64,7 +67,7 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 
 ## Project structure
 
-- `docs/` — config reference (`config.md`), repo access guide (`repo-access.md`)
+- `docs/` — config reference (`config.md`), repo access guide (`repo-access.md`), remote IDE setup (`remote-ide.md`)
 - `examples/` — ready-to-use `agv.toml` files for Claude, Gemini, Codex, OpenClaw, repo checkout
 - `.github/workflows/` — CI (clippy + tests) and release (cross-platform binary builds)
 - `install.sh` — curl-pipe-sh installer that downloads the right binary and runs `agv doctor`
@@ -75,6 +78,8 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - Linux: `~/.local/share/agv/`
 
 Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `efi-vars.fd` (aarch64 only).
+
+The data dir also contains `ssh_config` — a managed SSH config file with Host entries for running VMs (see `ssh_config.rs`).
 
 VM templates live in `templates/` as paired `<name>.qcow2` + `<name>.toml` files.
 
