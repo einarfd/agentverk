@@ -343,8 +343,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let inst = test_instance(dir.path());
         inst.write_status(Status::Running).await.unwrap();
-        // u32::MAX is never a valid PID.
-        tokio::fs::write(inst.pid_path(), u32::MAX.to_string())
+        // Spawn a short-lived process, wait for it to exit, then use its
+        // PID — guaranteed to be dead and a valid PID number.
+        let child = tokio::process::Command::new("true")
+            .spawn()
+            .expect("failed to spawn 'true'");
+        let dead_pid = child.id().expect("child has no PID");
+        let _ = child.wait_with_output().await;
+        tokio::fs::write(inst.pid_path(), dead_pid.to_string())
             .await
             .unwrap();
         tokio::fs::write(inst.qmp_socket_path(), "").await.unwrap();
