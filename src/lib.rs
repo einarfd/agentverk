@@ -35,6 +35,29 @@ fn split_ssh_args(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
+/// Parse port specs like `"8080"` or `"8080:3000"` into `(local, remote)` pairs.
+fn parse_port_specs(specs: &[String]) -> anyhow::Result<Vec<(u16, u16)>> {
+    let mut ports = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let (local, remote) = if let Some((l, r)) = spec.split_once(':') {
+            let local: u16 = l
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid local port in '{spec}'"))?;
+            let remote: u16 = r
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid remote port in '{spec}'"))?;
+            (local, remote)
+        } else {
+            let port: u16 = spec
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid port '{spec}'"))?;
+            (port, port)
+        };
+        ports.push((local, remote));
+    }
+    Ok(ports)
+}
+
 fn config_step_label(step: &config::ProvisionStep) -> String {
     if let Some(ref source) = step.source {
         return source.clone();
@@ -347,6 +370,34 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Forward(args) => {
+            // Validate port specs before opening the VM.
+            let ports = parse_port_specs(&args.ports)?;
+
+            let inst = vm::instance::Instance::open(&args.name).await?;
+            let status = inst.reconcile_status().await?;
+            anyhow::ensure!(
+                status == vm::instance::Status::Running,
+                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
+                args.name,
+                args.name,
+            );
+            let cfg = config::load_resolved(&inst.config_path())?;
+
+            if !quiet {
+                eprintln!("Forwarding:");
+                for (local, remote) in &ports {
+                    if local == remote {
+                        eprintln!("  localhost:{local} ↔ VM:{remote}");
+                    } else {
+                        eprintln!("  localhost:{local} → VM:{remote}");
+                    }
+                }
+                eprintln!("Press Ctrl+C to stop.");
+            }
+
+            ssh::port_forward(&inst, &cfg.user, &ports).await
+        }
         Command::Cp(args) => {
             // Validate path syntax before opening the VM.
             let src_is_vm = args.source.starts_with(':');
@@ -440,5 +491,44 @@ mod tests {
         let (opts, cmd) = split_ssh_args(&args);
         assert_eq!(opts, &[s("-N")]);
         assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn parse_port_specs_single() {
+        let specs = vec![s("8080")];
+        let ports = parse_port_specs(&specs).unwrap();
+        assert_eq!(ports, vec![(8080, 8080)]);
+    }
+
+    #[test]
+    fn parse_port_specs_pair() {
+        let specs = vec![s("8080:3000")];
+        let ports = parse_port_specs(&specs).unwrap();
+        assert_eq!(ports, vec![(8080, 3000)]);
+    }
+
+    #[test]
+    fn parse_port_specs_multiple() {
+        let specs = vec![s("8080"), s("5432:5433")];
+        let ports = parse_port_specs(&specs).unwrap();
+        assert_eq!(ports, vec![(8080, 8080), (5432, 5433)]);
+    }
+
+    #[test]
+    fn parse_port_specs_invalid_port() {
+        let specs = vec![s("not_a_port")];
+        let result = parse_port_specs(&specs);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("invalid port"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn parse_port_specs_invalid_pair() {
+        let specs = vec![s("8080:abc")];
+        let result = parse_port_specs(&specs);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("invalid remote port"), "unexpected: {err}");
     }
 }

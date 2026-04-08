@@ -294,6 +294,45 @@ fn expand_vm_path(path: &str, user: &str) -> String {
     }
 }
 
+/// Forward ports from a running VM to the host via SSH.
+///
+/// Each `(local, remote)` pair creates an `-L local:localhost:remote` tunnel.
+/// Blocks until the SSH process exits (Ctrl+C).
+pub async fn port_forward(
+    instance: &Instance,
+    user: &str,
+    ports: &[(u16, u16)],
+) -> anyhow::Result<()> {
+    let port = ssh_port(instance).await?;
+    let key_path = instance.ssh_key_path();
+    let args = base_ssh_args(&key_path, port);
+
+    let destination = format!("{user}@localhost");
+
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(&args).arg("-N"); // no remote command, just forwarding
+
+    for (local, remote) in ports {
+        cmd.arg("-L");
+        cmd.arg(format!("{local}:localhost:{remote}"));
+    }
+
+    cmd.arg(&destination);
+
+    match cmd.status().await {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => anyhow::bail!("SSH port forwarding exited with {status}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("ssh not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(source) => Err(Error::Ssh {
+            name: instance.name.clone(),
+            source,
+        }
+        .into()),
+    }
+}
+
 /// Wait for SSH to become available on a VM, polling until ready.
 ///
 /// Retries up to 60 times with 1-second intervals (60s total timeout).

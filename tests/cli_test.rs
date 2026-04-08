@@ -39,7 +39,8 @@ fn help_lists_all_subcommands() {
         .stdout(contains("config"))
         .stdout(contains("doctor"))
         .stdout(contains("init"))
-        .stdout(contains("cp"));
+        .stdout(contains("cp"))
+        .stdout(contains("forward"));
 }
 
 #[test]
@@ -250,6 +251,27 @@ fn template_rm_without_name_fails() {
 #[test]
 fn doctor_succeeds() {
     agv().arg("doctor").assert().success();
+}
+
+// ── Forward ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn forward_help_succeeds() {
+    agv().args(["forward", "--help"]).assert().success();
+}
+
+#[test]
+fn forward_without_ports_fails() {
+    agv().args(["forward", "myvm"]).assert().failure();
+}
+
+#[test]
+fn forward_invalid_port_fails() {
+    agv()
+        .args(["forward", "novm", "not_a_port"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid port"));
 }
 
 // ── Cp ────────────────────────────────────────────────────────────────────────

@@ -68,6 +68,17 @@ pub enum Command {
     /// View or change VM configuration.
     Config(Box<ConfigArgs>),
 
+    /// Forward ports from a running VM to the host.
+    ///
+    /// Each port is local[:remote]. If remote is omitted, it matches local.
+    ///
+    /// Examples:
+    ///   agv forward myvm 8080               # VM:8080 → local:8080
+    ///   agv forward myvm 8080:3000          # VM:3000 → local:8080
+    ///   agv forward myvm 8080:3000 5432     # forward two ports
+    #[command(verbatim_doc_comment)]
+    Forward(ForwardArgs),
+
     /// Copy files between the host and a running VM.
     ///
     /// Prefix paths with : to indicate a path inside the VM.
@@ -271,6 +282,16 @@ pub struct ConfigSetArgs {
     /// New disk size (must be larger than current), e.g. 40G.
     #[arg(long)]
     pub disk: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ForwardArgs {
+    /// Name of the VM to forward ports from.
+    pub name: String,
+
+    /// Ports to forward: local[:remote]. Repeatable.
+    #[arg(required = true)]
+    pub ports: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
