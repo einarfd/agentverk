@@ -162,6 +162,7 @@ cargo test            # unit and integration tests (fast, no QEMU required)
 
 - [`docs/config.md`](docs/config.md) — full config file reference with CLI equivalents
 - [`docs/repo-access.md`](docs/repo-access.md) — accessing private repositories (PAT, SSH keys, deploy keys)
+- [`docs/remote-ide.md`](docs/remote-ide.md) — connecting VS Code, JetBrains, and other IDEs to VMs
 
 ## License
 

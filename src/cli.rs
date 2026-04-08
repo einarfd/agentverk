@@ -286,7 +286,7 @@ pub struct ConfigSetArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
-    /// Add an Include line to ~/.ssh/config so IDEs can connect to VMs by name.
+    /// Add an Include line to ~/.ssh/config so you can ssh into VMs by name and IDEs can connect automatically.
     #[arg(long)]
     pub setup_ssh: bool,
 

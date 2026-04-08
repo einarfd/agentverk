@@ -449,7 +449,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(false) => {
                     println!("  SSH config Include: not set up");
                     println!("    Run: agv doctor --setup-ssh");
-                    println!("    This lets IDEs connect to VMs by name.");
+                    println!("    This lets you ssh into VMs by name (e.g. ssh myvm) and");
+                    println!("    enables IDE remote development (VS Code, JetBrains, etc.).");
                 }
                 Err(_) => {}
             }
