@@ -31,16 +31,10 @@ fn user_ssh_config_path() -> anyhow::Result<PathBuf> {
 // Per-VM entry management (called by start/stop/destroy)
 // ---------------------------------------------------------------------------
 
-/// Add or update a Host entry for a VM in the managed SSH config.
-pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> anyhow::Result<()> {
-    let config_path = managed_config_path()?;
-    let mut content = read_or_empty(&config_path).await;
-
-    // Remove existing entry for this name, if any.
-    content = remove_host_block(&content, name);
-
+/// Format a Host entry for a VM.
+fn format_host_entry(name: &str, port: u16, user: &str, key_path: &Path) -> String {
     let key_str = key_path.display();
-    let entry = format!(
+    format!(
         "Host {name}\n\
          \x20   HostName localhost\n\
          \x20   Port {port}\n\
@@ -49,7 +43,26 @@ pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> an
          \x20   StrictHostKeyChecking no\n\
          \x20   UserKnownHostsFile /dev/null\n\
          \x20   LogLevel ERROR\n\n"
-    );
+    )
+}
+
+/// Format an Include block with marker comments.
+fn format_include_block(managed_path: &Path) -> String {
+    format!(
+        "{MARKER_START}\nInclude \"{}\"\n{MARKER_END}\n",
+        managed_path.display()
+    )
+}
+
+/// Add or update a Host entry for a VM in the managed SSH config.
+pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> anyhow::Result<()> {
+    let config_path = managed_config_path()?;
+    let mut content = read_or_empty(&config_path).await;
+
+    // Remove existing entry for this name, if any.
+    content = remove_host_block(&content, name);
+
+    let entry = format_host_entry(name, port, user, key_path);
 
     content.push_str(&entry);
 
@@ -110,10 +123,7 @@ pub fn install_include() -> anyhow::Result<()> {
     };
 
     // The Include must be at the top of the file to take effect.
-    let include_block = format!(
-        "{MARKER_START}\nInclude \"{}\"\n{MARKER_END}\n",
-        managed.display()
-    );
+    let include_block = format_include_block(&managed);
 
     let new_content = if existing.is_empty() {
         include_block
@@ -272,5 +282,41 @@ Host foo
         let data = dirs::data_dir().unwrap();
         assert!(path.starts_with(&data));
         assert!(path.ends_with("ssh_config"));
+    }
+
+    #[test]
+    fn host_entry_quotes_identity_file() {
+        let entry = format_host_entry(
+            "myvm",
+            2222,
+            "agent",
+            Path::new("/path/with spaces/id_ed25519"),
+        );
+        assert!(
+            entry.contains("IdentityFile \"/path/with spaces/id_ed25519\""),
+            "IdentityFile should be quoted: {entry}"
+        );
+    }
+
+    #[test]
+    fn host_entry_contains_all_fields() {
+        let entry = format_host_entry("myvm", 2222, "agent", Path::new("/key"));
+        assert!(entry.contains("Host myvm"));
+        assert!(entry.contains("HostName localhost"));
+        assert!(entry.contains("Port 2222"));
+        assert!(entry.contains("User agent"));
+        assert!(entry.contains("IdentityFile \"/key\""));
+        assert!(entry.contains("StrictHostKeyChecking no"));
+    }
+
+    #[test]
+    fn include_block_quotes_path() {
+        let block = format_include_block(Path::new("/path/with spaces/ssh_config"));
+        assert!(
+            block.contains("Include \"/path/with spaces/ssh_config\""),
+            "Include should be quoted: {block}"
+        );
+        assert!(block.contains(MARKER_START));
+        assert!(block.contains(MARKER_END));
     }
 }
