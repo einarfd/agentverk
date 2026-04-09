@@ -142,6 +142,32 @@ pub async fn resize_disk(path: &Path, new_size: &str) -> anyhow::Result<()> {
 /// Uses binary units: 1G = 1024³ bytes.
 ///
 /// Examples: `"20G"` → `21_474_836_480`, `"512M"` → `536_870_912`.
+/// Normalize a size string to the QEMU-compatible short form.
+///
+/// Accepts `8G`, `8GB`, `8GiB`, `8g`, etc. and returns `8G`.
+/// QEMU only understands the single-letter suffix (K, M, G, T).
+pub fn normalize_size(s: &str) -> anyhow::Result<String> {
+    let s = s.trim();
+    let split_pos = s
+        .find(|c: char| c.is_alphabetic())
+        .ok_or_else(|| anyhow::anyhow!("size must include a unit (K, M, G, T): {s:?}"))?;
+    let (num_str, suffix) = s.split_at(split_pos);
+
+    let num: u64 = num_str
+        .parse()
+        .with_context(|| format!("invalid number in size {s:?}"))?;
+
+    let unit = match suffix.chars().next().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => 'K',
+        Some('M') => 'M',
+        Some('G') => 'G',
+        Some('T') => 'T',
+        _ => anyhow::bail!("unknown unit {suffix:?} in size {s:?} — use K, M, G, or T"),
+    };
+
+    Ok(format!("{num}{unit}"))
+}
+
 pub fn parse_disk_size(s: &str) -> anyhow::Result<u64> {
     let s = s.trim();
     let split_pos = s
@@ -606,6 +632,36 @@ mod tests {
     #[test]
     fn parse_disk_size_unknown_unit_fails() {
         assert!(parse_disk_size("20X").is_err());
+    }
+
+    #[test]
+    fn normalize_size_short_form_unchanged() {
+        assert_eq!(normalize_size("8G").unwrap(), "8G");
+        assert_eq!(normalize_size("512M").unwrap(), "512M");
+        assert_eq!(normalize_size("1T").unwrap(), "1T");
+    }
+
+    #[test]
+    fn normalize_size_strips_b_suffix() {
+        assert_eq!(normalize_size("8GB").unwrap(), "8G");
+        assert_eq!(normalize_size("8GiB").unwrap(), "8G");
+        assert_eq!(normalize_size("512MB").unwrap(), "512M");
+    }
+
+    #[test]
+    fn normalize_size_case_insensitive() {
+        assert_eq!(normalize_size("8g").unwrap(), "8G");
+        assert_eq!(normalize_size("512m").unwrap(), "512M");
+    }
+
+    #[test]
+    fn normalize_size_no_unit_fails() {
+        assert!(normalize_size("8").is_err());
+    }
+
+    #[test]
+    fn normalize_size_invalid_unit_fails() {
+        assert!(normalize_size("8X").is_err());
     }
 
     #[tokio::test]

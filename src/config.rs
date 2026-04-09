@@ -208,6 +208,12 @@ pub fn resolve(config: Config) -> anyhow::Result<ResolvedConfig> {
         resolved.disk = spec.disk;
     }
 
+    // Normalize size strings to QEMU-compatible form (e.g. "8GB" → "8G").
+    resolved.memory = crate::image::normalize_size(&resolved.memory)
+        .context("invalid memory size")?;
+    resolved.disk = crate::image::normalize_size(&resolved.disk)
+        .context("invalid disk size")?;
+
     Ok(resolved)
 }
 

@@ -383,11 +383,11 @@ pub async fn config_set(
             let _ = inst.write_status(status).await;
             return Err(e);
         }
-        config.disk = new_disk.to_string();
+        config.disk = image::normalize_size(new_disk)?;
     }
 
     if let Some(mem) = memory {
-        config.memory = mem.to_string();
+        config.memory = image::normalize_size(mem)?;
     }
     if let Some(n) = cpus {
         config.cpus = n;
@@ -562,19 +562,21 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     println!();
     let w = 11; // label column width
 
-    // SSH connection command — only meaningful when running.
+    // Hardware summary.
+    println!(
+        "  {:<w$}  {}  {} vCPUs  {} disk",
+        "Hardware", config.memory, config.cpus, config.disk
+    );
+    println!("  {:<w$}  {}", "User", config.user);
+
+    // SSH connection info — only meaningful when running.
     if status == Status::Running {
         let port_raw = tokio::fs::read_to_string(inst.ssh_port_path())
             .await
             .unwrap_or_default();
         let port = port_raw.trim();
         if !port.is_empty() {
-            let key = inst.ssh_key_path();
-            let key_str = key.display();
-            println!(
-                "  {:<w$}  ssh -i \"{key_str}\" -p {port} {}@localhost",
-                "SSH", config.user
-            );
+            println!("  {:<w$}  localhost:{port}", "SSH port");
         }
     }
 
