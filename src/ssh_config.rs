@@ -45,7 +45,7 @@ pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> an
          \x20   HostName localhost\n\
          \x20   Port {port}\n\
          \x20   User {user}\n\
-         \x20   IdentityFile {key_str}\n\
+         \x20   IdentityFile \"{key_str}\"\n\
          \x20   StrictHostKeyChecking no\n\
          \x20   UserKnownHostsFile /dev/null\n\
          \x20   LogLevel ERROR\n\n"
@@ -111,7 +111,7 @@ pub fn install_include() -> anyhow::Result<()> {
 
     // The Include must be at the top of the file to take effect.
     let include_block = format!(
-        "{MARKER_START}\nInclude {}\n{MARKER_END}\n",
+        "{MARKER_START}\nInclude \"{}\"\n{MARKER_END}\n",
         managed.display()
     );
 
