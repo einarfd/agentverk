@@ -11,11 +11,25 @@ Run this once to let agv manage your SSH config:
 agv doctor --setup-ssh
 ```
 
-This adds an `Include` line to `~/.ssh/config` that points to an agv-managed file.
-After this, every running VM is automatically available by name — no manual SSH
-config needed. Stop or destroy a VM and its entry is removed automatically.
+This adds an `Include` line to `~/.ssh/config` pointing to an agv-managed config
+file. agv automatically maintains a `Host` entry for each running VM, so they are
+accessible by name from `ssh`, `scp`, `rsync`, and any IDE with SSH support.
 
-To undo: `agv doctor --remove-ssh`
+```sh
+ssh myvm                 # connect by name — no port or key needed
+scp file.txt myvm:~/     # copy files using standard scp
+```
+
+The entries are managed automatically:
+- `agv start` / `agv create --start` — adds the VM's entry
+- `agv stop` / `agv destroy` — removes it
+
+To undo the setup: `agv doctor --remove-ssh`
+
+## Zed
+
+Zed reads `~/.ssh/config` natively. After `agv doctor --setup-ssh`, running VMs
+appear in **File → Open Remote** with no additional configuration.
 
 ## VS Code / Cursor
 
@@ -38,6 +52,12 @@ To undo: `agv doctor --remove-ssh`
 
 1. File → Remote Development → SSH.
 2. Enter `myvm` as the host. Connection details are filled from SSH config.
+
+**Known issue — JetBrains Toolbox on macOS:** JetBrains Toolbox does not correctly
+handle `Include` directives in `~/.ssh/config` when the included path contains
+spaces (the agv data dir on macOS is `~/Library/Application Support/agv/`). This
+affects Toolbox only — Gateway and the IDEs themselves work fine. On Linux (where
+the path is `~/.local/share/agv/`) Toolbox works correctly.
 
 ## Neovim / terminal editors
 
@@ -64,6 +84,18 @@ agv forward myvm 3000:8080         # VM:8080 → local:3000
 
 Then open `http://localhost:8080` (or `3000`) in your browser.
 See `agv forward --help` for more options.
+
+## Copying files
+
+Use `agv cp` to copy files to and from a running VM:
+
+```sh
+agv cp myvm :~/file.txt ./              # download from VM
+agv cp myvm ./file.txt :~/              # upload to VM
+agv cp myvm -r :~/project/ ./local/     # recursive download
+```
+
+See `agv cp --help` for more details.
 
 ## Troubleshooting
 
