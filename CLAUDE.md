@@ -95,6 +95,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Error handling**: `anyhow::Result` for application code, `thiserror` for library error types in `error.rs`
 - **Async runtime**: Tokio — all I/O operations are async
 - **Lints**: `clippy::pedantic` is enabled; all warnings must be fixed before committing
+- **Suppressing lints**: use `#[expect(clippy::foo, reason = "...")]` instead of `#[allow(clippy::foo)]`. The `clippy::allow_attributes` and `clippy::allow_attributes_without_reason` lints enforce this. `expect` requires a reason and warns if the underlying lint is no longer firing, so dead suppressions get caught automatically.
 - **Unsafe**: Forbidden (`unsafe_code = "forbid"` in Cargo.toml)
 - **Edition**: Rust 2024
 

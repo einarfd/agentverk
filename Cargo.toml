@@ -36,6 +36,12 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+# Force the use of `#[expect(clippy::foo, reason = "...")]` instead of
+# `#[allow(clippy::foo)]`. expect requires the lint to actually fire, so
+# stale suppressions get caught automatically; reason makes every
+# suppression self-documenting.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 [profile.release]
 lto = true

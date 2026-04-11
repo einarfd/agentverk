@@ -351,7 +351,10 @@ fn nested_virt_available() -> bool {
 }
 
 /// Return the QEMU binary name and platform-specific machine/accel args.
-#[allow(clippy::unnecessary_wraps)] // Returns Err on unsupported platforms (compile-time).
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "returns Err on unsupported platforms via #[cfg]; clippy can't see the conditional branches"
+)]
 fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -498,7 +501,10 @@ fn find_efi_firmware() -> anyhow::Result<EfiFirmware> {
 }
 
 /// Build the full QEMU argument list.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear builder for the full QEMU command line; splitting it would just hide the structure"
+)]
 fn build_qemu_args(
     instance: &Instance,
     memory: &str,

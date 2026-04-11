@@ -333,7 +333,10 @@ async fn sha512_file(path: &Path) -> anyhow::Result<String> {
 }
 
 /// Stream-download a URL to a local file, logging progress.
-#[allow(clippy::cast_precision_loss)] // progress display only
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "u64-to-f64 cast is for progress percentage display only"
+)]
 async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     const LOG_INTERVAL: u64 = 50 * 1024 * 1024; // 50 MiB
 

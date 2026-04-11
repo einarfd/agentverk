@@ -22,7 +22,6 @@ pub fn managed_config_path() -> anyhow::Result<PathBuf> {
 
 /// Path to the user's SSH config file.
 fn user_ssh_config_path() -> anyhow::Result<PathBuf> {
-    #[allow(deprecated)]
     let home = std::env::home_dir().context("could not determine home directory")?;
     Ok(home.join(".ssh/config"))
 }

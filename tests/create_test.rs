@@ -458,7 +458,10 @@ async fn suspend_and_resume_preserves_state() {
 /// `agv start --retry` resumes from that step (skipping completed ones).
 #[tokio::test]
 #[ignore = "downloads a real cloud image and boots a VM — slow"]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear integration test that exercises the full retry flow end-to-end"
+)]
 async fn provision_failure_then_retry_resumes() {
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping provision_failure_then_retry_resumes");

@@ -88,8 +88,10 @@ pub fn load_variables(config_dir: Option<&Path>) -> HashMap<String, String> {
 ///
 /// - `{{VAR}}` — required, fails if `VAR` is not in `vars`.
 /// - `{{VAR:-default}}` — uses `default` if `VAR` is missing.
-// Caller always uses the default hasher; no value in being generic over it.
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher; no value in being generic"
+)]
 pub fn expand(input: &str, vars: &HashMap<String, String>) -> anyhow::Result<String> {
     let mut result = String::with_capacity(input.len());
     let mut remaining = input;
@@ -129,8 +131,10 @@ pub fn expand(input: &str, vars: &HashMap<String, String>) -> anyhow::Result<Str
 ///
 /// Expands: `ProvisionStep.run`, `ProvisionStep.script`, `FileEntry.source`,
 /// `FileEntry.dest` across `files`, `setup`, and `provision` lists.
-// Caller always uses the default hasher; no value in being generic over it.
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher; no value in being generic"
+)]
 pub fn expand_config(
     config: &mut ResolvedConfig,
     vars: &HashMap<String, String>,

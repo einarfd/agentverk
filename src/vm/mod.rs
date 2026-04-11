@@ -91,7 +91,10 @@ async fn append_provision_log(instance: &Instance, text: &str) -> anyhow::Result
 /// This is the top-level entry point with error recovery: if creation fails
 /// after the instance directory has been created, the VM is marked as broken
 /// and the error is logged to `error.log`.
-#[allow(clippy::fn_params_excessive_bools)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "distinct independent flags; bundling them in a struct would push boilerplate to call sites"
+)]
 pub async fn create(
     name: &str,
     config: &ResolvedConfig,
@@ -134,7 +137,10 @@ pub async fn create(
 }
 
 /// Inner creation logic — does all real work, uses `?` for early return.
-#[allow(clippy::fn_params_excessive_bools)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "distinct independent flags; bundling them in a struct would push boilerplate to call sites"
+)]
 async fn create_inner(
     inst: &Instance,
     name: &str,
@@ -225,7 +231,10 @@ async fn create_inner(
 /// SSH connects as the configured user (the only user with an authorized key)
 /// and wraps each command with `sudo` to gain root privileges.
 /// Output is captured to `provision.log`; with `verbose`, also written to stderr.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading instance + user + steps + start_index + interactive state + spinner; the parameters are distinct and refactoring would just shuffle them"
+)]
 async fn run_setup(
     instance: &Instance,
     user: &str,
@@ -337,7 +346,10 @@ async fn run_setup(
 /// Execute provisioning steps in order. First failure aborts remaining steps.
 ///
 /// Output is captured to `provision.log`; with `verbose`, also written to stderr.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading instance + user + steps + start_index + interactive state + spinner; the parameters are distinct and refactoring would just shuffle them"
+)]
 async fn run_provision_steps(
     instance: &Instance,
     user: &str,
@@ -521,7 +533,10 @@ pub async fn config_set(
 ///
 /// If the VM has never been provisioned, runs the full provisioning flow
 /// (wait for SSH, setup steps, provision steps) after starting QEMU.
-#[allow(clippy::fn_params_excessive_bools)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "distinct independent flags; bundling them in a struct would push boilerplate to call sites"
+)]
 pub async fn start(
     name: &str,
     retry: bool,
@@ -1302,7 +1317,10 @@ async fn find_template_dependents(template_name: &str) -> anyhow::Result<Vec<Str
 /// gets a fresh SSH keypair, and receives a new cloud-init seed with its own
 /// hostname. Provisioning steps are not re-run — the template already contains
 /// a fully configured system.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading instance + user + steps + start_index + interactive state + spinner; the parameters are distinct and refactoring would just shuffle them"
+)]
 pub async fn create_from_template(
     template_name: &str,
     vm_name: &str,
@@ -1381,7 +1399,10 @@ pub async fn create_from_template(
 }
 
 /// Inner logic for creating a VM from a template.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading instance + user + steps + start_index + interactive state + spinner; the parameters are distinct and refactoring would just shuffle them"
+)]
 async fn create_from_template_inner(
     inst: &Instance,
     vm_name: &str,

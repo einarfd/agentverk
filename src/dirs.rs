@@ -53,7 +53,6 @@ pub fn instance_dir(name: &str) -> anyhow::Result<PathBuf> {
 }
 
 fn home_dir() -> anyhow::Result<PathBuf> {
-    #[allow(deprecated)]
     std::env::home_dir().context("could not determine home directory")
 }
 

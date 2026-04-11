@@ -1,9 +1,9 @@
 //! agv — create and manage QEMU VMs for AI agents.
 
-// `missing_errors_doc` is suppressed crate-wide: this is application code
-// rather than a library, and adding `# Errors` sections to every Result-
-// returning function would be ~70 doc blocks of low value.
-#![allow(clippy::missing_errors_doc)]
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "application code, not a library: ~70 # Errors blocks would add little for callers"
+)]
 
 pub mod cli;
 pub mod config;
@@ -90,7 +90,10 @@ fn config_step_label(step: &config::ProvisionStep) -> String {
 }
 
 /// Run the CLI, dispatching to the appropriate subcommand handler.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "main subcommand dispatcher; splitting into per-command functions would add boilerplate without improving readability"
+)]
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     dirs::ensure_dirs().await?;
 
