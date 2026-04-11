@@ -378,34 +378,46 @@ fn init_help_succeeds() {
 #[test]
 fn init_writes_agv_toml() {
     let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("agv.toml");
     agv()
-        .arg("init")
-        .current_dir(&dir)
+        .args(["init", "-o"])
+        .arg(&out)
         .assert()
         .success()
         .stdout(contains("agv.toml"));
-    assert!(dir.path().join("agv.toml").exists());
+    assert!(out.exists());
+}
+
+#[test]
+fn init_without_output_fails() {
+    agv()
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(contains("--output").or(contains("<-o|--output")));
 }
 
 #[test]
 fn init_template_claude_writes_agv_toml() {
     let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("agv.toml");
     agv()
-        .args(["init", "claude"])
-        .current_dir(&dir)
+        .args(["init", "claude", "-o"])
+        .arg(&out)
         .assert()
         .success();
-    let content = std::fs::read_to_string(dir.path().join("agv.toml")).unwrap();
+    let content = std::fs::read_to_string(&out).unwrap();
     assert!(content.contains("claude"));
 }
 
 #[test]
 fn init_fails_if_agv_toml_exists() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("agv.toml"), "# existing").unwrap();
+    let out = dir.path().join("agv.toml");
+    std::fs::write(&out, "# existing").unwrap();
     agv()
-        .arg("init")
-        .current_dir(&dir)
+        .args(["init", "-o"])
+        .arg(&out)
         .assert()
         .failure()
         .stderr(contains("already exists"));
@@ -414,10 +426,11 @@ fn init_fails_if_agv_toml_exists() {
 #[test]
 fn init_force_overwrites() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("agv.toml"), "# existing").unwrap();
+    let out = dir.path().join("agv.toml");
+    std::fs::write(&out, "# existing").unwrap();
     agv()
-        .args(["init", "--force"])
-        .current_dir(&dir)
+        .args(["init", "--force", "-o"])
+        .arg(&out)
         .assert()
         .success();
 }
@@ -425,9 +438,10 @@ fn init_force_overwrites() {
 #[test]
 fn init_unknown_template_fails() {
     let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("agv.toml");
     agv()
-        .args(["init", "bogus"])
-        .current_dir(&dir)
+        .args(["init", "bogus", "-o"])
+        .arg(&out)
         .assert()
         .failure()
         .stderr(contains("unknown template"));

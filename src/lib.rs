@@ -552,7 +552,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Init(args) => {
-            init::run(args.template.as_deref(), args.output.as_deref(), args.force)
+            init::run(args.template.as_deref(), &args.output, args.force)
         }
     }
 }

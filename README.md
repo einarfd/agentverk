@@ -45,13 +45,12 @@ Run `agv doctor` at any time to check which dependencies are present and get ins
 
 ## Getting started
 
-**With a config file** — `agv init` writes `agv.toml` to the current directory;
-`agv create` picks it up automatically:
+**With a config file** — generate one with `agv init`, then pass it to `agv create`:
 
 ```sh
-agv init claude          # write agv.toml for Claude Code in the current directory
-agv create --start myvm  # create and start the VM using agv.toml (spec = "large" from the template)
-agv ssh myvm             # open a shell inside the VM
+agv init claude -o agv.toml                        # write a Claude Code config
+agv create --config agv.toml --start myvm          # create and start the VM
+agv ssh myvm                                       # open a shell inside the VM
 ```
 
 See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex, and OpenClaw.
@@ -63,6 +62,7 @@ agv create --include devtools --include claude --start myvm  # uses the default 
 ```
 
 Use `agv images` to see all available mixins, and `agv specs` to see size presets.
+`agv create` does **not** pick up `agv.toml` from the current directory — you must pass `--config` explicitly.
 
 **IDE integration** — set up once, then every running VM is accessible by name from
 VS Code, JetBrains, plain `ssh`, and any other SSH-based tool:
@@ -108,8 +108,8 @@ Options:
 
 ## Config file
 
-VMs are configured with a TOML file (defaults to `agv.toml` in the current directory).
-Run `agv init` to generate one, or `agv specs` to see available size presets.
+VMs can be configured with a TOML file passed to `agv create --config <path>`.
+Run `agv init -o <path>` to generate a starter file, or `agv specs` to see available size presets.
 See [`docs/config.md`](docs/config.md) for the full reference including CLI equivalents for every field.
 
 ```toml

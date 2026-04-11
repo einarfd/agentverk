@@ -103,7 +103,7 @@ pub enum Command {
     /// Check that all required external tools are installed.
     Doctor(DoctorArgs),
 
-    /// Write a starter agv.toml to the current directory.
+    /// Write a starter config file to a given path (use with `agv create --config`).
     Init(InitArgs),
 }
 
@@ -363,9 +363,9 @@ pub struct InitArgs {
     /// Writes a minimal annotated config if not specified.
     pub template: Option<String>,
 
-    /// Path to write the config to (default: ./agv.toml in the current directory).
+    /// Path to write the config to, e.g. ./agv.toml.
     #[arg(short, long, value_name = "PATH")]
-    pub output: Option<String>,
+    pub output: String,
 
     /// Overwrite the output file if it already exists.
     #[arg(long)]

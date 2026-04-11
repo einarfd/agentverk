@@ -1,10 +1,15 @@
 # Config file reference
 
-VMs are configured with a TOML file, defaulting to `agv.toml` in the current directory.
-Generate a starter file with `agv init`, or create one from scratch using the sections below.
+VMs can be configured with a TOML file passed to `agv create --config <path>`.
+Generate a starter file with `agv init -o <path>`, or create one from scratch
+using the sections below.
 
 Everything in a config file can also be expressed as CLI flags to `agv create` — each
 section shows the equivalent flags.
+
+> **Note:** `agv create` does not look for `agv.toml` in the current directory —
+> the `--config` flag is required if you want to use a config file. Without it,
+> `agv create` falls back to the built-in `ubuntu-24.04` image.
 
 ## Overview
 

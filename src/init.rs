@@ -65,9 +65,8 @@ spec    = "medium"                      # 2G RAM, 2 vCPUs, 20G disk (`agv specs`
 # keys, deploy keys) and their security trade-offs.
 "#;
 
-pub fn run(template: Option<&str>, output: Option<&str>, force: bool) -> anyhow::Result<()> {
-    let dest: PathBuf = output.map_or_else(|| PathBuf::from("agv.toml"), PathBuf::from);
-    run_to(&dest, template, force)
+pub fn run(template: Option<&str>, output: &str, force: bool) -> anyhow::Result<()> {
+    run_to(&PathBuf::from(output), template, force)
 }
 
 fn run_to(dest: &Path, template: Option<&str>, force: bool) -> anyhow::Result<()> {
@@ -104,7 +103,7 @@ fn run_to(dest: &Path, template: Option<&str>, force: bool) -> anyhow::Result<()
 
     let label = template.unwrap_or("default");
     println!("  Wrote {} ({label})", dest.display());
-    println!("  Run: agv create --start <name>");
+    println!("  Run: agv create --config {} --start <name>", dest.display());
     Ok(())
 }
 

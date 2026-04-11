@@ -491,7 +491,12 @@ pub async fn save(config: &ResolvedConfig, path: &Path) -> anyhow::Result<()> {
 /// Build a resolved config from CLI args.
 ///
 /// Precedence for image source:
-///   `--config <path>` > `--image <name>` > `agv.toml` (if exists) > `ubuntu-24.04`
+///   `--config <path>` > `--image <name>` > `ubuntu-24.04`
+///
+/// There is no implicit pickup of `agv.toml` from the current directory —
+/// the user must pass `--config` explicitly if they want a config file.
+/// This keeps `agv create` behaving the same regardless of which directory
+/// it is invoked from.
 pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 1. Determine the base config source.
     //    Also record the config file's directory so we can look for .env there.
@@ -508,9 +513,6 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
             }),
             ..Default::default()
         }
-    } else if Path::new("agv.toml").exists() {
-        // agv.toml is in cwd — .env next to it is already handled by cwd lookup.
-        load(Path::new("agv.toml"))?
     } else {
         Config {
             base: Some(BaseConfig {
