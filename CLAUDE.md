@@ -43,6 +43,7 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - **Image registry**: `src/images/` — built-in and user-defined image/mixin catalogue (TOML files)
 - **Specs**: `src/specs/` — hardware size presets (small/medium/large/xlarge)
 - **Init**: `src/init.rs` — `agv init` command, embeds example configs via `include_str!`
+- **Interactive**: `src/interactive.rs` — y/n/e/a/q prompting for `--interactive` mode
 - **Doctor**: `src/doctor.rs` — `agv doctor` dependency checker with platform-specific hints
 - **SSH config**: `src/ssh_config.rs` — managed `~/.ssh/config` integration for IDE/SSH access by VM name
 - **Templates**: `src/template.rs` — `{{VAR}}` expansion in config values, `.env` file loading
@@ -57,6 +58,8 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - **Managed SSH config for IDE integration.** `ssh_config.rs` maintains `<data_dir>/ssh_config` with Host entries for running VMs. Updated automatically on start/stop/destroy. Users add an Include once via `agv doctor --setup-ssh`.
 - **`agv cp` and `agv forward` wrap scp/ssh** with VM-aware syntax. `cp` uses `:path` prefix for VM paths; `forward` uses `local[:remote]` port specs. Both check VM status before connecting.
 - **`agv suspend` / `agv resume` use QEMU savevm/loadvm.** State is stored as a snapshot inside the qcow2 disk (no extra files). Suspend uses HMP `savevm` via QMP `human-monitor-command`, then exits QEMU; resume passes `-loadvm agv-suspend` to QEMU on start.
+- **Provision state is tracked per phase + step index.** `<instance>/provision_state` (TOML) records phase (`ssh_wait`/`files`/`setup`/`provision`/`complete`) and the next step index. On first-boot failure, the VM is marked `broken` but QEMU is left running so the user can SSH in to debug. `agv start --retry` resumes from the saved phase/index, skipping completed steps. Legacy VMs with the old `provisioned` touch file are auto-detected as `Complete`.
+- **Interactive provisioning (`-i/--interactive` on `create` and `start`).** Prompts before each file copy, setup step, and provision step with `y/n/e/a/q`. Edit (`e`) is runtime-only — does not modify the saved config. Implemented in `src/interactive.rs` with `prompt_step_io` for testability.
 
 ## Conventions
 

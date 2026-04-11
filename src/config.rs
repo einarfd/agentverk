@@ -634,6 +634,7 @@ mod tests {
             provision_scripts: vec![],
             no_checksum: false,
             start: false,
+            interactive: false,
             from: None,
         }
     }

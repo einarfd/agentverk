@@ -165,6 +165,11 @@ pub struct CreateArgs {
     #[arg(long)]
     pub start: bool,
 
+    /// Prompt before each provisioning step (y/n/e/a/q).
+    /// Useful for debugging or stepping through a script.
+    #[arg(short, long)]
+    pub interactive: bool,
+
     /// Create VM as a thin clone of this template instead of building from scratch.
     #[arg(long, value_name = "TEMPLATE", conflicts_with_all = ["config", "image"])]
     pub from: Option<String>,
@@ -179,6 +184,11 @@ pub struct StartArgs {
     /// Skips already-completed setup, file-copy, and provision steps.
     #[arg(long)]
     pub retry: bool,
+
+    /// Prompt before each provisioning step (y/n/e/a/q).
+    /// Useful for debugging or stepping through a script.
+    #[arg(short, long)]
+    pub interactive: bool,
 }
 
 #[derive(Debug, clap::Args)]

@@ -80,8 +80,8 @@ See [`docs/remote-ide.md`](docs/remote-ide.md) for IDE-specific setup.
 agv [OPTIONS] <COMMAND>
 
 Commands:
-  create    Create a new VM
-  start     Start a stopped VM
+  create    Create a new VM (use --interactive to step through provisioning)
+  start     Start a stopped VM (--retry to resume failed provisioning, --interactive to step)
   stop      Stop a running VM
   suspend   Suspend a running VM (save full state to disk)
   resume    Resume a suspended VM

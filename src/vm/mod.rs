@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{ProvisionStep, ResolvedConfig};
 use crate::error::Error;
-use crate::{dirs, image, ssh, ssh_config};
+use crate::interactive::InteractiveState;
+use crate::{dirs, image, interactive, ssh, ssh_config};
 use instance::{Instance, Phase, ProvisionState, Status};
 
 /// Create an indicatif spinner for status messages.
@@ -90,10 +91,12 @@ async fn append_provision_log(instance: &Instance, text: &str) -> anyhow::Result
 /// This is the top-level entry point with error recovery: if creation fails
 /// after the instance directory has been created, the VM is marked as broken
 /// and the error is logged to `error.log`.
+#[allow(clippy::fn_params_excessive_bools)]
 pub async fn create(
     name: &str,
     config: &ResolvedConfig,
     start_after: bool,
+    interactive_mode: bool,
     verbose: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
@@ -120,7 +123,7 @@ pub async fn create(
     inst.write_status(Status::Creating).await?;
 
     // Delegate to inner function; catch errors to mark broken.
-    if let Err(e) = create_inner(&inst, name, config, start_after, verbose, quiet).await {
+    if let Err(e) = create_inner(&inst, name, config, start_after, interactive_mode, verbose, quiet).await {
         // Mark as broken so users can inspect / destroy. Leave QEMU running
         // if it's alive — the user can SSH in to debug.
         mark_broken_with_error(&inst, &e).await;
@@ -131,11 +134,13 @@ pub async fn create(
 }
 
 /// Inner creation logic — does all real work, uses `?` for early return.
+#[allow(clippy::fn_params_excessive_bools)]
 async fn create_inner(
     inst: &Instance,
     name: &str,
     config: &ResolvedConfig,
     start_after: bool,
+    interactive_mode: bool,
     verbose: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
@@ -205,7 +210,7 @@ async fn create_inner(
     );
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
-    run_first_boot(inst, config, verbose, quiet, &spinner).await?;
+    run_first_boot(inst, config, interactive_mode, verbose, quiet, &spinner).await?;
 
     // Update managed SSH config so IDEs can connect by VM name.
     update_ssh_config(inst, &config.user).await;
@@ -220,11 +225,14 @@ async fn create_inner(
 /// SSH connects as the configured user (the only user with an authorized key)
 /// and wraps each command with `sudo` to gain root privileges.
 /// Output is captured to `provision.log`; with `verbose`, also written to stderr.
+#[allow(clippy::too_many_arguments)]
 async fn run_setup(
     instance: &Instance,
     user: &str,
     steps: &[ProvisionStep],
     start_index: usize,
+    interactive_mode: bool,
+    int_state: &mut InteractiveState,
     verbose: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
@@ -244,11 +252,29 @@ async fn run_setup(
         spinner.set_message(format!("Running setup ({num}/{total}): {label}..."));
 
         if let Some(ref script) = step.run {
+            // Interactive prompt — may edit the inline script.
+            let to_run = if interactive_mode && !int_state.all {
+                let decision = spinner.suspend(|| {
+                    interactive::prompt_step(&format!("setup {num}/{total}"), script)
+                })?;
+                match decision {
+                    interactive::Decision::Run(cmd) => cmd,
+                    interactive::Decision::All(cmd) => {
+                        int_state.all = true;
+                        cmd
+                    }
+                    interactive::Decision::Skip => continue,
+                    interactive::Decision::Quit => return Err(interactive::user_quit_error()),
+                }
+            } else {
+                script.clone()
+            };
+
             info!(step = num, "running inline setup script (as root)");
             let output = ssh::run_cmd(
                 instance,
                 user,
-                &[format!("sudo bash -c {}", shell_escape(script))],
+                &[format!("sudo bash -c {}", shell_escape(&to_run))],
             )
             .await
             .with_context(|| format!("setup step {num}: inline script failed"))?;
@@ -257,6 +283,23 @@ async fn run_setup(
                 eprint!("{output}");
             }
         } else if let Some(ref script_path) = step.script {
+            // Interactive prompt — script files can't be edited inline.
+            if interactive_mode && !int_state.all {
+                let display = format!("(script file) {script_path}");
+                let decision = spinner.suspend(|| {
+                    interactive::prompt_step(&format!("setup {num}/{total}"), &display)
+                })?;
+                match decision {
+                    interactive::Decision::Run(_) => {}
+                    interactive::Decision::All(_) => int_state.all = true,
+                    interactive::Decision::Skip => {
+                        step_done(spinner, &format!("Setup ({num}/{total}): {label} (skipped)"));
+                        continue;
+                    }
+                    interactive::Decision::Quit => return Err(interactive::user_quit_error()),
+                }
+            }
+
             info!(step = num, path = script_path, "running setup script file (as root)");
             let remote_path = format!("/tmp/agv-setup-{i}.sh");
 
@@ -294,11 +337,14 @@ async fn run_setup(
 /// Execute provisioning steps in order. First failure aborts remaining steps.
 ///
 /// Output is captured to `provision.log`; with `verbose`, also written to stderr.
+#[allow(clippy::too_many_arguments)]
 async fn run_provision_steps(
     instance: &Instance,
     user: &str,
     steps: &[ProvisionStep],
     start_index: usize,
+    interactive_mode: bool,
+    int_state: &mut InteractiveState,
     verbose: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
@@ -318,11 +364,29 @@ async fn run_provision_steps(
         spinner.set_message(format!("Running provision ({num}/{total}): {label}..."));
 
         if let Some(ref script) = step.run {
+            // Interactive prompt — may edit the inline script.
+            let to_run = if interactive_mode && !int_state.all {
+                let decision = spinner.suspend(|| {
+                    interactive::prompt_step(&format!("provision {num}/{total}"), script)
+                })?;
+                match decision {
+                    interactive::Decision::Run(cmd) => cmd,
+                    interactive::Decision::All(cmd) => {
+                        int_state.all = true;
+                        cmd
+                    }
+                    interactive::Decision::Skip => continue,
+                    interactive::Decision::Quit => return Err(interactive::user_quit_error()),
+                }
+            } else {
+                script.clone()
+            };
+
             info!(step = num, "running inline provisioning script");
             let output = ssh::run_cmd(
                 instance,
                 user,
-                &[format!("bash -c {}", shell_escape(script))],
+                &[format!("bash -c {}", shell_escape(&to_run))],
             )
             .await
             .with_context(|| format!("provisioning step {num}: inline script failed"))?;
@@ -331,6 +395,23 @@ async fn run_provision_steps(
                 eprint!("{output}");
             }
         } else if let Some(ref script_path) = step.script {
+            // Interactive prompt — script files can't be edited inline.
+            if interactive_mode && !int_state.all {
+                let display = format!("(script file) {script_path}");
+                let decision = spinner.suspend(|| {
+                    interactive::prompt_step(&format!("provision {num}/{total}"), &display)
+                })?;
+                match decision {
+                    interactive::Decision::Run(_) => {}
+                    interactive::Decision::All(_) => int_state.all = true,
+                    interactive::Decision::Skip => {
+                        step_done(spinner, &format!("Provision ({num}/{total}): {label} (skipped)"));
+                        continue;
+                    }
+                    interactive::Decision::Quit => return Err(interactive::user_quit_error()),
+                }
+            }
+
             info!(step = num, path = script_path, "running provisioning script file");
             let remote_path = format!("/tmp/agv-provision-{i}.sh");
 
@@ -440,7 +521,14 @@ pub async fn config_set(
 ///
 /// If the VM has never been provisioned, runs the full provisioning flow
 /// (wait for SSH, setup steps, provision steps) after starting QEMU.
-pub async fn start(name: &str, retry: bool, verbose: bool, quiet: bool) -> anyhow::Result<()> {
+#[allow(clippy::fn_params_excessive_bools)]
+pub async fn start(
+    name: &str,
+    retry: bool,
+    interactive_mode: bool,
+    verbose: bool,
+    quiet: bool,
+) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
     if status == Status::Suspended {
@@ -509,7 +597,7 @@ pub async fn start(name: &str, retry: bool, verbose: bool, quiet: bool) -> anyho
             step_done(&spinner, "SSH is ready");
         })
     } else {
-        run_first_boot(&inst, &config, verbose, quiet, &spinner).await
+        run_first_boot(&inst, &config, interactive_mode, verbose, quiet, &spinner).await
     };
 
     if let Err(e) = first_boot_result {
@@ -555,6 +643,8 @@ async fn copy_files(
     user: &str,
     files: &[crate::config::FileEntry],
     start_index: usize,
+    interactive_mode: bool,
+    int_state: &mut InteractiveState,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
     let total = files.len();
@@ -576,6 +666,21 @@ async fn copy_files(
             .next()
             .unwrap_or(&file.source);
         spinner.set_message(format!("Copying file ({num}/{total}): {label}..."));
+
+        // Interactive prompt: let the user skip a file or quit.
+        // Edits don't make sense for file copies.
+        if interactive_mode && !int_state.all {
+            let display = format!("copy {} → {}", file.source, file.dest);
+            let decision = spinner.suspend(|| {
+                interactive::prompt_step(&format!("file {num}/{total}"), &display)
+            })?;
+            match decision {
+                interactive::Decision::Run(_) => {}
+                interactive::Decision::All(_) => int_state.all = true,
+                interactive::Decision::Skip => continue,
+                interactive::Decision::Quit => return Err(interactive::user_quit_error()),
+            }
+        }
 
         // Ensure the parent directory exists inside the VM.
         let parent_dir = parent_dir_of(&file.dest);
@@ -612,14 +717,19 @@ async fn copy_files(
 /// Reads the existing `provision_state` and resumes from the saved phase/index,
 /// so a previously failed run can pick up where it left off without re-running
 /// already-completed steps.
+///
+/// In `interactive_mode`, the user is prompted before each file copy, setup
+/// step, and provision step.
 async fn run_first_boot(
     inst: &Instance,
     config: &crate::config::ResolvedConfig,
+    interactive_mode: bool,
     verbose: bool,
     _quiet: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
     let state = inst.read_provision_state().await;
+    let mut int_state = InteractiveState::new();
 
     // Always wait for SSH — it's idempotent and we need it for all later phases.
     if state.phase == Phase::SshWait || state.phase == Phase::Files
@@ -642,7 +752,16 @@ async fn run_first_boot(
     {
         let files_start = if state.phase == Phase::Files { state.index } else { 0 };
         if !config.files.is_empty() {
-            copy_files(inst, &config.user, &config.files, files_start, spinner).await?;
+            copy_files(
+                inst,
+                &config.user,
+                &config.files,
+                files_start,
+                interactive_mode,
+                &mut int_state,
+                spinner,
+            )
+            .await?;
         }
     }
 
@@ -653,7 +772,17 @@ async fn run_first_boot(
     {
         let setup_start = if state.phase == Phase::Setup { state.index } else { 0 };
         if !config.setup.is_empty() {
-            run_setup(inst, &config.user, &config.setup, setup_start, verbose, spinner).await?;
+            run_setup(
+                inst,
+                &config.user,
+                &config.setup,
+                setup_start,
+                interactive_mode,
+                &mut int_state,
+                verbose,
+                spinner,
+            )
+            .await?;
         }
     }
 
@@ -665,6 +794,8 @@ async fn run_first_boot(
             &config.user,
             &config.provision,
             provision_start,
+            interactive_mode,
+            &mut int_state,
             verbose,
             spinner,
         )
@@ -995,7 +1126,7 @@ pub async fn create_template(
                 config.memory, config.cpus
             ),
         );
-        run_first_boot(&inst, &config, verbose, quiet, &spinner).await?;
+        run_first_boot(&inst, &config, false, verbose, quiet, &spinner).await?;
         status = Status::Running;
     }
 

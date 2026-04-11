@@ -124,7 +124,7 @@ async fn create_without_start() {
     cleanup(name).await;
 
     let config = test_config(&image_url);
-    vm::create(name, &config, false, false, true).await.unwrap();
+    vm::create(name, &config, false, false, false, true).await.unwrap();
 
     // Verify instance directory and files exist.
     let inst_dir = dirs::instance_dir(name).unwrap();
@@ -182,10 +182,10 @@ async fn create_duplicate_name_fails() {
     let config = test_config(&image_url);
 
     // First create should succeed.
-    vm::create(name, &config, false, false, true).await.unwrap();
+    vm::create(name, &config, false, false, false, true).await.unwrap();
 
     // Second create with same name should fail with VmAlreadyExists.
-    let result = vm::create(name, &config, false, false, true).await;
+    let result = vm::create(name, &config, false, false, false, true).await;
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
     assert!(
@@ -220,7 +220,7 @@ async fn create_marks_broken_on_failure() {
     };
 
     // Create should fail (unreachable image URL).
-    let result = vm::create(name, &config, false, false, true).await;
+    let result = vm::create(name, &config, false, false, false, true).await;
     assert!(result.is_err(), "create should fail with bad image URL");
 
     // Instance dir should still exist.
@@ -302,7 +302,7 @@ async fn create_with_start_and_provision() {
 
     assert!(!config.provision.is_empty());
 
-    vm::create(name, &config, true, false, true).await.unwrap();
+    vm::create(name, &config, true, false, false, true).await.unwrap();
 
     let inst_dir = dirs::instance_dir(name).unwrap();
     let inst = Instance {
@@ -368,7 +368,7 @@ async fn suspend_and_resume_preserves_state() {
     })
     .unwrap();
 
-    vm::create(name, &config, true, false, true).await.unwrap();
+    vm::create(name, &config, true, false, false, true).await.unwrap();
 
     let inst_dir = dirs::instance_dir(name).unwrap();
     let inst = Instance {
@@ -522,7 +522,7 @@ async fn provision_failure_then_retry_resumes() {
     .unwrap();
 
     // First create — expected to fail at step 1.
-    let create_result = vm::create(name, &config, true, false, true).await;
+    let create_result = vm::create(name, &config, true, false, false, true).await;
     assert!(
         create_result.is_err(),
         "expected create to fail because of the deliberately failing provision step"
@@ -563,7 +563,7 @@ async fn provision_failure_then_retry_resumes() {
     );
 
     // Retry — should resume from step 1.
-    vm::start(name, true, false, true).await.expect("retry failed");
+    vm::start(name, true, false, false, true).await.expect("retry failed");
 
     assert_eq!(inst.read_status().await.unwrap(), Status::Running);
     assert!(inst.is_provisioned(), "VM should now be fully provisioned");

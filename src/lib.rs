@@ -13,6 +13,7 @@ pub mod error;
 pub mod image;
 pub mod images;
 pub mod init;
+pub mod interactive;
 pub mod specs;
 pub mod ssh;
 pub mod ssh_config;
@@ -99,7 +100,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Create(args) => {
             let start = args.start;
+            let interactive = args.interactive;
             let name = args.name.clone();
+            if interactive && args.from.is_some() {
+                anyhow::bail!("--interactive cannot be combined with --from (template clones do not run provisioning)");
+            }
             if let Some(ref template_name) = args.from.clone() {
                 tracing::info!(name = %name, template = %template_name, "creating VM from template");
                 vm::create_from_template(
@@ -116,12 +121,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 let config = config::build_from_cli(&args)?;
                 tracing::info!(name = %name, "creating VM");
-                vm::create(&name, &config, start, verbose, quiet).await
+                vm::create(&name, &config, start, interactive, verbose, quiet).await
             }
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, retry = args.retry, "starting VM");
-            vm::start(&args.name, args.retry, verbose, quiet).await
+            vm::start(&args.name, args.retry, args.interactive, verbose, quiet).await
         }
         Command::Stop(args) => {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");

@@ -194,6 +194,36 @@ fn ssh_help_succeeds() {
     agv().args(["ssh", "--help"]).assert().success();
 }
 
+#[test]
+fn start_help_mentions_retry_and_interactive() {
+    agv()
+        .args(["start", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--retry"))
+        .stdout(contains("--interactive"));
+}
+
+#[test]
+fn create_help_mentions_interactive() {
+    agv()
+        .args(["create", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--interactive"));
+}
+
+#[test]
+fn start_retry_and_interactive_combine() {
+    // Both flags together should be accepted by clap (errors with VM-not-found,
+    // not with a parse error, proving the flag combination is valid).
+    agv()
+        .args(["start", "--retry", "--interactive", "novm"])
+        .assert()
+        .failure()
+        .stderr(contains("novm").or(contains("not found")).or(contains("No such")));
+}
+
 // These tests verify that ssh flags are accepted by clap (not treated as
 // unknown agv args). They fail with "VM not found", not a parse error.
 
