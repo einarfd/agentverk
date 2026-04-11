@@ -363,7 +363,11 @@ pub struct InitArgs {
     /// Writes a minimal annotated config if not specified.
     pub template: Option<String>,
 
-    /// Overwrite an existing agv.toml.
+    /// Path to write the config to (default: ./agv.toml in the current directory).
+    #[arg(short, long, value_name = "PATH")]
+    pub output: Option<String>,
+
+    /// Overwrite the output file if it already exists.
     #[arg(long)]
     pub force: bool,
 }
