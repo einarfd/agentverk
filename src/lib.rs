@@ -167,24 +167,58 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
         Command::Ls => {
+            // Gathered into rows so we can compute column widths after.
+            struct Row {
+                name: String,
+                status: String,
+                memory: String,
+                cpus: String,
+                disk: String,
+            }
+
             let instances = vm::list().await?;
             if instances.is_empty() {
                 eprintln!("No VMs found. Create one with: agv create <name>");
                 return Ok(());
             }
-            let col_width = instances.iter().map(|i| i.name.len()).max().unwrap_or(0);
+
+            let mut rows = Vec::with_capacity(instances.len());
             for inst in &instances {
                 let status = inst
                     .reconcile_status()
                     .await
                     .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
-                if status == "broken" {
+                let status = if status == "broken" {
                     let state = inst.read_provision_state().await;
-                    let sub = vm::broken_substate(&state);
-                    println!("  {:<col_width$}  {status} ({sub})", inst.name);
+                    format!("broken ({})", vm::broken_substate(&state))
                 } else {
-                    println!("  {:<col_width$}  {status}", inst.name);
-                }
+                    status
+                };
+                // Best-effort: show "?" if config can't be read.
+                let (memory, cpus, disk) = config::load_resolved(&inst.config_path())
+                    .map_or_else(
+                        |_| ("?".to_string(), "?".to_string(), "?".to_string()),
+                        |c| (c.memory, c.cpus.to_string(), c.disk),
+                    );
+                rows.push(Row {
+                    name: inst.name.clone(),
+                    status,
+                    memory,
+                    cpus,
+                    disk,
+                });
+            }
+
+            let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
+            let status_w = rows.iter().map(|r| r.status.len()).max().unwrap_or(0);
+            let mem_w = rows.iter().map(|r| r.memory.len()).max().unwrap_or(0);
+            let cpus_w = rows.iter().map(|r| r.cpus.len()).max().unwrap_or(0);
+            let disk_w = rows.iter().map(|r| r.disk.len()).max().unwrap_or(0);
+            for r in &rows {
+                println!(
+                    "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
+                    r.name, r.status, r.memory, r.cpus, r.disk,
+                );
             }
             Ok(())
         }
