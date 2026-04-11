@@ -56,6 +56,88 @@ impl std::str::FromStr for Status {
     }
 }
 
+/// First-boot provisioning phase.
+///
+/// Tracks where the first-boot flow is at, so a failed provisioning can be
+/// resumed from the same point via `agv start --retry` instead of restarting
+/// from scratch (which would re-run already-completed steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Waiting for the SSH server inside the VM to become reachable.
+    SshWait,
+    /// Copying `[[files]]` entries into the VM via SCP.
+    Files,
+    /// Running `[[setup]]` steps as root.
+    Setup,
+    /// Running `[[provision]]` steps as the user.
+    Provision,
+    /// All first-boot work has completed successfully.
+    Complete,
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SshWait => write!(f, "ssh wait"),
+            Self::Files => write!(f, "files"),
+            Self::Setup => write!(f, "setup"),
+            Self::Provision => write!(f, "provision"),
+            Self::Complete => write!(f, "complete"),
+        }
+    }
+}
+
+/// Persisted progress through first-boot provisioning.
+///
+/// Stored at `<instance>/provision_state` as TOML. The `index` field is the
+/// position of the *next* step to run within the phase, so it equals the
+/// number of completed steps in the current phase. When `phase` is
+/// `Complete`, `index` is unused.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvisionState {
+    pub phase: Phase,
+    /// Next step index to run within the current phase (0-based).
+    #[serde(default)]
+    pub index: usize,
+    /// Total number of steps in the current phase, for display purposes.
+    #[serde(default)]
+    pub total: usize,
+    /// Error message from the last failed step, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ProvisionState {
+    /// Build a state representing "fresh — never started provisioning yet".
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self {
+            phase: Phase::SshWait,
+            index: 0,
+            total: 0,
+            error: None,
+        }
+    }
+
+    /// Build a state representing "all done".
+    #[must_use]
+    pub fn complete() -> Self {
+        Self {
+            phase: Phase::Complete,
+            index: 0,
+            total: 0,
+            error: None,
+        }
+    }
+
+    /// Has provisioning finished successfully?
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.phase == Phase::Complete
+    }
+}
+
 /// In-memory representation of a VM instance.
 #[derive(Debug)]
 pub struct Instance {
@@ -159,20 +241,71 @@ impl Instance {
         self.dir.join("provision.log")
     }
 
-    /// Path to the provisioned marker file.
+    /// Path to the legacy provisioned marker file.
+    ///
+    /// Newer VMs use `provision_state` instead. This file is kept for
+    /// backward compatibility with VMs created before the state machine
+    /// was added.
     #[must_use]
     pub fn provisioned_path(&self) -> PathBuf {
         self.dir.join("provisioned")
     }
 
-    /// Check whether this instance has been provisioned.
+    /// Path to the provision state file.
+    #[must_use]
+    pub fn provision_state_path(&self) -> PathBuf {
+        self.dir.join("provision_state")
+    }
+
+    /// Read the persisted provision state.
+    ///
+    /// Returns:
+    /// - The parsed `ProvisionState` if `provision_state` exists.
+    /// - `Complete` if only the legacy `provisioned` touch file exists.
+    /// - `Fresh` if neither exists.
+    pub async fn read_provision_state(&self) -> ProvisionState {
+        let path = self.provision_state_path();
+        if let Ok(contents) = tokio::fs::read_to_string(&path).await {
+            if let Ok(state) = toml::from_str::<ProvisionState>(&contents) {
+                return state;
+            }
+        }
+        if self.provisioned_path().exists() {
+            return ProvisionState::complete();
+        }
+        ProvisionState::fresh()
+    }
+
+    /// Write the provision state to disk.
+    pub async fn write_provision_state(&self, state: &ProvisionState) -> anyhow::Result<()> {
+        let toml_str = toml::to_string(state)
+            .with_context(|| format!("failed to serialize provision state for VM '{}'", self.name))?;
+        tokio::fs::write(self.provision_state_path(), toml_str)
+            .await
+            .with_context(|| format!("failed to write provision state for VM '{}'", self.name))
+    }
+
+    /// Check whether this instance has finished provisioning.
+    ///
+    /// This is a synchronous best-effort check used during start to decide
+    /// whether to run first-boot. Falls back to the legacy marker file when
+    /// the state file is missing.
     #[must_use]
     pub fn is_provisioned(&self) -> bool {
+        let state_path = self.provision_state_path();
+        if let Ok(contents) = std::fs::read_to_string(&state_path) {
+            if let Ok(state) = toml::from_str::<ProvisionState>(&contents) {
+                return state.is_complete();
+            }
+        }
         self.provisioned_path().exists()
     }
 
-    /// Mark this instance as provisioned by writing a marker file.
+    /// Mark this instance as fully provisioned.
     pub async fn mark_provisioned(&self) -> anyhow::Result<()> {
+        self.write_provision_state(&ProvisionState::complete()).await?;
+        // Also write the legacy marker so older versions of agv would still
+        // recognize the VM as provisioned.
         tokio::fs::write(self.provisioned_path(), "")
             .await
             .with_context(|| format!("failed to write provisioned marker for VM '{}'", self.name))
@@ -208,7 +341,7 @@ impl Instance {
     }
 
     /// Check whether the QEMU process (from the PID file) is still alive.
-    async fn is_process_alive(&self) -> bool {
+    pub async fn is_process_alive(&self) -> bool {
         let Ok(raw) = tokio::fs::read_to_string(self.pid_path()).await else {
             return false;
         };
@@ -246,6 +379,7 @@ mod tests {
         assert_eq!(Status::Configuring.to_string(), "configuring");
         assert_eq!(Status::Running.to_string(), "running");
         assert_eq!(Status::Stopped.to_string(), "stopped");
+        assert_eq!(Status::Suspended.to_string(), "suspended");
         assert_eq!(Status::Broken.to_string(), "broken");
     }
 
@@ -255,7 +389,103 @@ mod tests {
         assert_eq!("configuring".parse::<Status>().unwrap(), Status::Configuring);
         assert_eq!("running".parse::<Status>().unwrap(), Status::Running);
         assert_eq!("stopped".parse::<Status>().unwrap(), Status::Stopped);
+        assert_eq!("suspended".parse::<Status>().unwrap(), Status::Suspended);
         assert_eq!("broken".parse::<Status>().unwrap(), Status::Broken);
+    }
+
+    #[test]
+    fn provision_state_fresh_is_ssh_wait() {
+        let s = ProvisionState::fresh();
+        assert_eq!(s.phase, Phase::SshWait);
+        assert_eq!(s.index, 0);
+        assert!(!s.is_complete());
+    }
+
+    #[test]
+    fn provision_state_complete_is_complete() {
+        let s = ProvisionState::complete();
+        assert_eq!(s.phase, Phase::Complete);
+        assert!(s.is_complete());
+    }
+
+    #[tokio::test]
+    async fn provision_state_roundtrips_to_disk() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        let original = ProvisionState {
+            phase: Phase::Provision,
+            index: 3,
+            total: 5,
+            error: Some("step 3: nope".to_string()),
+        };
+        inst.write_provision_state(&original).await.unwrap();
+        let loaded = inst.read_provision_state().await;
+        assert_eq!(loaded.phase, Phase::Provision);
+        assert_eq!(loaded.index, 3);
+        assert_eq!(loaded.total, 5);
+        assert_eq!(loaded.error.as_deref(), Some("step 3: nope"));
+    }
+
+    #[tokio::test]
+    async fn provision_state_missing_returns_fresh() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        let s = inst.read_provision_state().await;
+        assert_eq!(s.phase, Phase::SshWait);
+        assert_eq!(s.index, 0);
+    }
+
+    #[tokio::test]
+    async fn provision_state_legacy_marker_returns_complete() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        // Write the legacy touch file but no provision_state.
+        tokio::fs::write(inst.provisioned_path(), "").await.unwrap();
+        let s = inst.read_provision_state().await;
+        assert_eq!(s.phase, Phase::Complete);
+        assert!(s.is_complete());
+    }
+
+    #[tokio::test]
+    async fn is_provisioned_uses_state_file() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        assert!(!inst.is_provisioned());
+
+        inst.write_provision_state(&ProvisionState {
+            phase: Phase::Provision,
+            index: 2,
+            total: 5,
+            error: None,
+        })
+        .await
+        .unwrap();
+        assert!(!inst.is_provisioned(), "partial state should not count as provisioned");
+
+        inst.write_provision_state(&ProvisionState::complete())
+            .await
+            .unwrap();
+        assert!(inst.is_provisioned());
+    }
+
+    #[tokio::test]
+    async fn is_provisioned_falls_back_to_legacy_marker() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        // No provision_state file, but legacy marker exists.
+        tokio::fs::write(inst.provisioned_path(), "").await.unwrap();
+        assert!(inst.is_provisioned());
+    }
+
+    #[tokio::test]
+    async fn mark_provisioned_writes_both_files() {
+        let dir = tempdir().unwrap();
+        let inst = test_instance(dir.path());
+        inst.mark_provisioned().await.unwrap();
+        assert!(inst.provision_state_path().exists());
+        assert!(inst.provisioned_path().exists());
+        let s = inst.read_provision_state().await;
+        assert!(s.is_complete());
     }
 
     #[test]

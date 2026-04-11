@@ -120,8 +120,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Start(args) => {
-            tracing::info!(name = %args.name, "starting VM");
-            vm::start(&args.name, verbose, quiet).await
+            tracing::info!(name = %args.name, retry = args.retry, "starting VM");
+            vm::start(&args.name, args.retry, verbose, quiet).await
         }
         Command::Stop(args) => {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");
@@ -146,7 +146,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
             let status = inst.reconcile_status().await?;
-            if status != vm::instance::Status::Running {
+            // Allow SSH to a broken VM if QEMU is still running and SSH came
+            // up — this lets users debug provisioning failures.
+            let broken_but_reachable = status == vm::instance::Status::Broken
+                && inst.is_process_alive().await
+                && inst.read_provision_state().await.phase != vm::instance::Phase::SshWait;
+            if status != vm::instance::Status::Running && !broken_but_reachable {
                 return Err(not_running_error(&args.name, status));
             }
             let cfg = config::load_resolved(&inst.config_path())?;
@@ -165,7 +170,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     .reconcile_status()
                     .await
                     .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
-                println!("  {:<col_width$}  {status}", inst.name);
+                if status == "broken" {
+                    let state = inst.read_provision_state().await;
+                    let sub = vm::broken_substate(&state);
+                    println!("  {:<col_width$}  {status} ({sub})", inst.name);
+                } else {
+                    println!("  {:<col_width$}  {status}", inst.name);
+                }
             }
             Ok(())
         }

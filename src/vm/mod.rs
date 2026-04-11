@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{ProvisionStep, ResolvedConfig};
 use crate::error::Error;
 use crate::{dirs, image, ssh, ssh_config};
-use instance::{Instance, Status};
+use instance::{Instance, Phase, ProvisionState, Status};
 
 /// Create an indicatif spinner for status messages.
 ///
@@ -56,6 +56,19 @@ async fn update_ssh_config(inst: &Instance, user: &str) {
 /// Print a completed-step line above the spinner, keeping previous output visible.
 fn step_done(spinner: &ProgressBar, msg: &str) {
     spinner.println(format!("  ✓ {msg}"));
+}
+
+/// Mark a VM as broken and persist the error to all the relevant places.
+///
+/// Used by both `create()` and `start()` when first-boot provisioning fails.
+/// Updates: status → broken, `error.log`, `provision_state.error`.
+async fn mark_broken_with_error(inst: &Instance, error: &anyhow::Error) {
+    let msg = format!("{error:#}");
+    let _ = inst.write_status(Status::Broken).await;
+    let _ = tokio::fs::write(inst.error_log_path(), &msg).await;
+    let mut state = inst.read_provision_state().await;
+    state.error = Some(msg);
+    let _ = inst.write_provision_state(&state).await;
 }
 
 /// Append output text to the provision log file.
@@ -108,13 +121,9 @@ pub async fn create(
 
     // Delegate to inner function; catch errors to mark broken.
     if let Err(e) = create_inner(&inst, name, config, start_after, verbose, quiet).await {
-        // Mark as broken so users can inspect / destroy.
-        let _ = inst.write_status(Status::Broken).await;
-        let _ = tokio::fs::write(
-            inst.error_log_path(),
-            format!("{e:#}"),
-        )
-        .await;
+        // Mark as broken so users can inspect / destroy. Leave QEMU running
+        // if it's alive — the user can SSH in to debug.
+        mark_broken_with_error(&inst, &e).await;
         return Err(e);
     }
 
@@ -215,11 +224,21 @@ async fn run_setup(
     instance: &Instance,
     user: &str,
     steps: &[ProvisionStep],
+    start_index: usize,
     verbose: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
     let total = steps.len();
-    for (i, step) in steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate().skip(start_index) {
+        instance
+            .write_provision_state(&ProvisionState {
+                phase: Phase::Setup,
+                index: i,
+                total,
+                error: None,
+            })
+            .await?;
+
         let num = i + 1;
         let label = step_label(step);
         spinner.set_message(format!("Running setup ({num}/{total}): {label}..."));
@@ -279,11 +298,21 @@ async fn run_provision_steps(
     instance: &Instance,
     user: &str,
     steps: &[ProvisionStep],
+    start_index: usize,
     verbose: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
     let total = steps.len();
-    for (i, step) in steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate().skip(start_index) {
+        instance
+            .write_provision_state(&ProvisionState {
+                phase: Phase::Provision,
+                index: i,
+                total,
+                error: None,
+            })
+            .await?;
+
         let num = i + 1;
         let label = step_label(step);
         spinner.set_message(format!("Running provision ({num}/{total}): {label}..."));
@@ -411,7 +440,7 @@ pub async fn config_set(
 ///
 /// If the VM has never been provisioned, runs the full provisioning flow
 /// (wait for SSH, setup steps, provision steps) after starting QEMU.
-pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
+pub async fn start(name: &str, retry: bool, verbose: bool, quiet: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
     if status == Status::Suspended {
@@ -419,35 +448,75 @@ pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()>
             "VM '{name}' is suspended. Resume it with: agv resume {name}"
         );
     }
-    anyhow::ensure!(
-        status == Status::Stopped,
-        Error::VmBadState {
-            name: name.to_string(),
-            status: status.to_string(),
-            expected: "stopped".to_string(),
+
+    // Handle --retry: VM must be broken with non-complete provision state.
+    if retry {
+        if status != Status::Broken {
+            anyhow::bail!(
+                "--retry requires VM '{name}' to be in broken state (currently {status})"
+            );
         }
-    );
+        let state = inst.read_provision_state().await;
+        if state.is_complete() {
+            anyhow::bail!(
+                "VM '{name}' has no failed provisioning to retry — provisioning already completed"
+            );
+        }
+    } else {
+        // Normal start: VM must be stopped, OR broken with QEMU still running
+        // (in which case we tell the user to use --retry).
+        if status == Status::Broken {
+            anyhow::bail!(
+                "VM '{name}' is broken. Use 'agv start --retry {name}' to resume \
+                 provisioning, or 'agv destroy {name}' to start over."
+            );
+        }
+        anyhow::ensure!(
+            status == Status::Stopped,
+            Error::VmBadState {
+                name: name.to_string(),
+                status: status.to_string(),
+                expected: "stopped".to_string(),
+            }
+        );
+    }
 
     let config = crate::config::load_resolved(&inst.config_path())?;
 
     let spinner = status_spinner(verbose, quiet);
-    spinner.set_message(format!(
-        "Starting QEMU ({} RAM, {} vCPUs)...",
-        config.memory, config.cpus
-    ));
 
-    qemu::start(&inst, &config.memory, config.cpus).await?;
-    inst.write_status(Status::Running).await?;
-    step_done(
-        &spinner,
-        &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
-    );
-
-    if inst.is_provisioned() {
-        wait_for_ssh(&inst, &config.user, &spinner).await?;
-        step_done(&spinner, "SSH is ready");
+    // Start QEMU only if it's not already running (a broken VM may still
+    // have QEMU alive — the user wants to retry, not restart from scratch).
+    let qemu_already_running = retry && inst.is_process_alive().await;
+    if qemu_already_running {
+        step_done(&spinner, "QEMU already running — retrying provisioning");
     } else {
-        run_first_boot(&inst, &config, verbose, quiet, &spinner).await?;
+        spinner.set_message(format!(
+            "Starting QEMU ({} RAM, {} vCPUs)...",
+            config.memory, config.cpus
+        ));
+        qemu::start(&inst, &config.memory, config.cpus).await?;
+        step_done(
+            &spinner,
+            &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
+        );
+    }
+    inst.write_status(Status::Running).await?;
+
+    // Run first boot (resumes from saved state if any) or wait for SSH.
+    let first_boot_result = if inst.is_provisioned() {
+        wait_for_ssh(&inst, &config.user, &spinner).await.map(|()| {
+            step_done(&spinner, "SSH is ready");
+        })
+    } else {
+        run_first_boot(&inst, &config, verbose, quiet, &spinner).await
+    };
+
+    if let Err(e) = first_boot_result {
+        // Mark broken and persist the error. Leave QEMU running so the
+        // user can SSH in to debug (assuming SSH came up at all).
+        mark_broken_with_error(&inst, &e).await;
+        return Err(e);
     }
 
     update_ssh_config(&inst, &config.user).await;
@@ -485,10 +554,21 @@ async fn copy_files(
     instance: &Instance,
     user: &str,
     files: &[crate::config::FileEntry],
+    start_index: usize,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
     let total = files.len();
-    for (i, file) in files.iter().enumerate() {
+    for (i, file) in files.iter().enumerate().skip(start_index) {
+        // Update state to "about to run step i".
+        instance
+            .write_provision_state(&ProvisionState {
+                phase: Phase::Files,
+                index: i,
+                total,
+                error: None,
+            })
+            .await?;
+
         let num = i + 1;
         let label = file
             .source
@@ -528,7 +608,10 @@ async fn copy_files(
 
 /// Run the full first-boot provisioning flow: wait for SSH, copy files, setup, provision.
 ///
-/// Called by both `create()` (with `--start`) and `start()` (first boot).
+/// Called by `create()` (with `--start`) and `start()` (first boot or `--retry`).
+/// Reads the existing `provision_state` and resumes from the saved phase/index,
+/// so a previously failed run can pick up where it left off without re-running
+/// already-completed steps.
 async fn run_first_boot(
     inst: &Instance,
     config: &crate::config::ResolvedConfig,
@@ -536,19 +619,56 @@ async fn run_first_boot(
     _quiet: bool,
     spinner: &ProgressBar,
 ) -> anyhow::Result<()> {
-    wait_for_ssh(inst, &config.user, spinner).await?;
-    step_done(spinner, "SSH is ready");
+    let state = inst.read_provision_state().await;
 
-    if !config.files.is_empty() {
-        copy_files(inst, &config.user, &config.files, spinner).await?;
+    // Always wait for SSH — it's idempotent and we need it for all later phases.
+    if state.phase == Phase::SshWait || state.phase == Phase::Files
+        || state.phase == Phase::Setup || state.phase == Phase::Provision
+    {
+        inst.write_provision_state(&ProvisionState {
+            phase: Phase::SshWait,
+            index: 0,
+            total: 0,
+            error: None,
+        })
+        .await?;
+        wait_for_ssh(inst, &config.user, spinner).await?;
+        step_done(spinner, "SSH is ready");
     }
 
-    if !config.setup.is_empty() {
-        run_setup(inst, &config.user, &config.setup, verbose, spinner).await?;
+    // Files phase: skip if we're already past it.
+    if state.phase == Phase::SshWait
+        || state.phase == Phase::Files
+    {
+        let files_start = if state.phase == Phase::Files { state.index } else { 0 };
+        if !config.files.is_empty() {
+            copy_files(inst, &config.user, &config.files, files_start, spinner).await?;
+        }
     }
 
+    // Setup phase.
+    if state.phase == Phase::SshWait
+        || state.phase == Phase::Files
+        || state.phase == Phase::Setup
+    {
+        let setup_start = if state.phase == Phase::Setup { state.index } else { 0 };
+        if !config.setup.is_empty() {
+            run_setup(inst, &config.user, &config.setup, setup_start, verbose, spinner).await?;
+        }
+    }
+
+    // Provision phase.
+    let provision_start = if state.phase == Phase::Provision { state.index } else { 0 };
     if !config.provision.is_empty() {
-        run_provision_steps(inst, &config.user, &config.provision, verbose, spinner).await?;
+        run_provision_steps(
+            inst,
+            &config.user,
+            &config.provision,
+            provision_start,
+            verbose,
+            spinner,
+        )
+        .await?;
     }
 
     inst.mark_provisioned().await?;
@@ -560,9 +680,14 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
     let config = crate::config::load_resolved(&inst.config_path())?;
+    let provision_state = inst.read_provision_state().await;
 
-    // Header: name and status.
-    println!("{name}  {status}");
+    // Header: name and status. For broken VMs, append a substate.
+    if status == Status::Broken {
+        println!("{name}  {status} ({})", broken_substate(&provision_state));
+    } else {
+        println!("{name}  {status}");
+    }
 
     println!();
     let w = 11; // label column width
@@ -574,8 +699,10 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     );
     println!("  {:<w$}  {}", "User", config.user);
 
-    // SSH connection info — only meaningful when running.
-    if status == Status::Running {
+    // SSH connection info — meaningful when running, or broken-but-SSH-came-up.
+    let ssh_might_work = status == Status::Running
+        || (status == Status::Broken && provision_state.phase != Phase::SshWait);
+    if ssh_might_work {
         let port_raw = tokio::fs::read_to_string(inst.ssh_port_path())
             .await
             .unwrap_or_default();
@@ -602,9 +729,29 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
                 println!("    {line}");
             }
         }
+        // Hint how to recover.
+        println!();
+        if provision_state.phase == Phase::SshWait {
+            println!("  Hint: SSH never came up. Try 'agv destroy {name}' and create again.");
+        } else if !provision_state.is_complete() {
+            println!("  Hint: 'agv start --retry {name}' to resume from the failed step,");
+            println!("        or 'agv destroy {name}' to start over.");
+        }
     }
 
     Ok(())
+}
+
+/// Build a short description of where a broken VM failed.
+#[must_use]
+pub fn broken_substate(state: &ProvisionState) -> String {
+    match state.phase {
+        Phase::SshWait => "ssh timeout".to_string(),
+        Phase::Files => format!("files step {}/{}", state.index + 1, state.total),
+        Phase::Setup => format!("setup step {}/{}", state.index + 1, state.total),
+        Phase::Provision => format!("provision step {}/{}", state.index + 1, state.total),
+        Phase::Complete => "post-provisioning failure".to_string(),
+    }
 }
 
 /// Stop a running VM. If `force` is true, kill the process immediately.

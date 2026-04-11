@@ -174,6 +174,11 @@ pub struct CreateArgs {
 pub struct StartArgs {
     /// Name of the VM to start.
     pub name: String,
+
+    /// Resume provisioning of a broken VM from where it failed.
+    /// Skips already-completed setup, file-copy, and provision steps.
+    #[arg(long)]
+    pub retry: bool,
 }
 
 #[derive(Debug, clap::Args)]

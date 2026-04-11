@@ -10,7 +10,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use agv::vm::instance::{Instance, Status};
+use agv::vm::instance::{Instance, Phase, Status};
 use agv::{config, dirs, ssh, vm};
 
 /// Counter to generate unique filenames across concurrent tests.
@@ -448,6 +448,146 @@ async fn suspend_and_resume_preserves_state() {
     assert!(
         uptime_after >= uptime_before,
         "VM uptime decreased ({uptime_before} → {uptime_after}) — VM rebooted instead of resuming"
+    );
+
+    cleanup(name).await;
+}
+
+/// Verify that a failing provision step puts the VM into a broken state
+/// with `provision_state` pointing at the failed step, and that
+/// `agv start --retry` resumes from that step (skipping completed ones).
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[allow(clippy::too_many_lines)]
+async fn provision_failure_then_retry_resumes() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping provision_failure_then_retry_resumes");
+        return;
+    }
+
+    dirs::ensure_dirs().await.unwrap();
+
+    let name = "_test-retry";
+    cleanup(name).await;
+
+    // Three provision steps:
+    //   0. echo "first" >> /tmp/agv-retry-log    (always succeeds)
+    //   1. fails on the first run, succeeds on the second (counter file)
+    //   2. echo "third" >> /tmp/agv-retry-log    (only runs after retry)
+    //
+    // After the initial create:
+    //   - Step 0 ran → log contains "first"
+    //   - Step 1 failed → broken, provision_state.index = 1
+    // After retry:
+    //   - Step 1 ran successfully → counter file proves it
+    //   - Step 2 ran → log contains "third"
+    //   - Step 0 should NOT have run again (we'd see "first" twice)
+    let config = config::resolve(config::Config {
+        base: Some(config::BaseConfig {
+            from: Some("debian-12".to_string()),
+            ..Default::default()
+        }),
+        vm: Some(config::VmConfig {
+            memory: Some("1G".to_string()),
+            cpus: Some(2),
+            disk: Some("10G".to_string()),
+        }),
+        files: vec![],
+        setup: vec![],
+        provision: vec![
+            config::ProvisionStep {
+                source: None,
+                run: Some("echo first >> /tmp/agv-retry-log".to_string()),
+                script: None,
+            },
+            config::ProvisionStep {
+                source: None,
+                run: Some(
+                    "if [ -f /tmp/agv-retry-counter ]; then \
+                       echo second >> /tmp/agv-retry-log; \
+                     else \
+                       touch /tmp/agv-retry-counter; \
+                       exit 1; \
+                     fi".to_string(),
+                ),
+                script: None,
+            },
+            config::ProvisionStep {
+                source: None,
+                run: Some("echo third >> /tmp/agv-retry-log".to_string()),
+                script: None,
+            },
+        ],
+    })
+    .unwrap();
+
+    // First create — expected to fail at step 1.
+    let create_result = vm::create(name, &config, true, false, true).await;
+    assert!(
+        create_result.is_err(),
+        "expected create to fail because of the deliberately failing provision step"
+    );
+
+    let inst_dir = dirs::instance_dir(name).unwrap();
+    let inst = Instance {
+        name: name.to_string(),
+        dir: inst_dir,
+    };
+
+    // VM should be marked broken with provision_state pointing at step 1.
+    assert_eq!(inst.read_status().await.unwrap(), Status::Broken);
+    let state = inst.read_provision_state().await;
+    assert_eq!(state.phase, Phase::Provision, "expected to be in provision phase");
+    assert_eq!(state.index, 1, "expected to have failed at step index 1");
+    assert!(state.error.is_some(), "expected an error message in state");
+
+    // QEMU should still be running (we leave it for debugging).
+    assert!(inst.is_process_alive().await, "QEMU should still be alive after broken first-boot");
+
+    // The first step should have run exactly once.
+    let log_after_fail = ssh::run_cmd(
+        &inst,
+        &config.user,
+        &["cat /tmp/agv-retry-log".to_string()],
+    )
+    .await
+    .expect("failed to read retry log via SSH");
+    assert_eq!(
+        log_after_fail.matches("first").count(),
+        1,
+        "expected step 0 to have run once before failure (got: {log_after_fail:?})"
+    );
+    assert!(
+        !log_after_fail.contains("third"),
+        "step 2 should not have run yet (got: {log_after_fail:?})"
+    );
+
+    // Retry — should resume from step 1.
+    vm::start(name, true, false, true).await.expect("retry failed");
+
+    assert_eq!(inst.read_status().await.unwrap(), Status::Running);
+    assert!(inst.is_provisioned(), "VM should now be fully provisioned");
+
+    // Check the log: should contain first (once), second, third.
+    let log_after_retry = ssh::run_cmd(
+        &inst,
+        &config.user,
+        &["cat /tmp/agv-retry-log".to_string()],
+    )
+    .await
+    .expect("failed to read retry log via SSH after retry");
+    assert_eq!(
+        log_after_retry.matches("first").count(),
+        1,
+        "step 0 should not have run again on retry (got: {log_after_retry:?})"
+    );
+    assert!(
+        log_after_retry.contains("second"),
+        "step 1 should have run on retry (got: {log_after_retry:?})"
+    );
+    assert!(
+        log_after_retry.contains("third"),
+        "step 2 should have run after step 1 succeeded (got: {log_after_retry:?})"
     );
 
     cleanup(name).await;
