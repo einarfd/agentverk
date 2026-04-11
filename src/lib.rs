@@ -1,9 +1,9 @@
-//! agv — create and manage QEMU VMs for AI coding agents.
+//! agv — create and manage QEMU VMs for AI agents.
 
-// These are expected during scaffolding — stubs will gain docs and async
-// bodies as features are implemented.
+// `missing_errors_doc` is suppressed crate-wide: this is application code
+// rather than a library, and adding `# Errors` sections to every Result-
+// returning function would be ~70 doc blocks of low value.
 #![allow(clippy::missing_errors_doc)]
-#![allow(clippy::unused_async)]
 
 pub mod cli;
 pub mod config;
@@ -149,7 +149,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Ssh(args) => {
-            let inst = vm::instance::Instance::open(&args.name).await?;
+            let inst = vm::instance::Instance::open(&args.name)?;
             let status = inst.reconcile_status().await?;
             // Allow SSH to a broken VM if QEMU is still running and SSH came
             // up — this lets users debug provisioning failures.
@@ -263,7 +263,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Config(args) => match args.command {
             ConfigCommand::Show(s) => {
                 const W: usize = 10;
-                let inst = vm::instance::Instance::open(&s.name).await?;
+                let inst = vm::instance::Instance::open(&s.name)?;
                 let cfg = config::load_resolved(&inst.config_path())?;
 
                 println!("Hardware");
@@ -318,7 +318,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             ConfigCommand::Set(s) => {
                 let inst_config = {
-                    let inst = vm::instance::Instance::open(&s.name).await?;
+                    let inst = vm::instance::Instance::open(&s.name)?;
                     config::load_resolved(&inst.config_path())?
                 };
                 let old_memory = inst_config.memory.clone();
@@ -409,7 +409,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             // Validate port specs before opening the VM.
             let ports = parse_port_specs(&args.ports)?;
 
-            let inst = vm::instance::Instance::open(&args.name).await?;
+            let inst = vm::instance::Instance::open(&args.name)?;
             let status = inst.reconcile_status().await?;
             if status != vm::instance::Status::Running {
                 return Err(not_running_error(&args.name, status));
@@ -443,7 +443,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 "cannot copy between two VM paths — one side must be a local path"
             );
 
-            let inst = vm::instance::Instance::open(&args.name).await?;
+            let inst = vm::instance::Instance::open(&args.name)?;
             let status = inst.reconcile_status().await?;
             if status != vm::instance::Status::Running {
                 return Err(not_running_error(&args.name, status));

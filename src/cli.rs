@@ -5,9 +5,11 @@
 
 use clap::{Parser, Subcommand};
 
-/// Create and manage QEMU VMs for AI coding agents.
+/// Create and manage QEMU VMs for AI agents.
 #[derive(Debug, Parser)]
 #[command(name = "agv", version, about, long_about = None)]
+// Four global flags (verbose/quiet/json/yes) is idiomatic for CLIs and
+// hard to refactor away with clap's derive macros.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     /// Enable verbose output.

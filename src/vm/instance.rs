@@ -149,7 +149,7 @@ pub struct Instance {
 
 impl Instance {
     /// Open an existing instance by name.
-    pub async fn open(name: &str) -> anyhow::Result<Self> {
+    pub fn open(name: &str) -> anyhow::Result<Self> {
         let dir = crate::dirs::instance_dir(name)?;
         anyhow::ensure!(
             dir.exists(),

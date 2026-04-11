@@ -459,7 +459,7 @@ pub async fn config_set(
         "no changes specified — provide at least one of --memory, --cpus, --disk"
     );
 
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
 
     anyhow::ensure!(
@@ -529,7 +529,7 @@ pub async fn start(
     verbose: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
     if status == Status::Suspended {
         anyhow::bail!(
@@ -808,7 +808,7 @@ async fn run_first_boot(
 
 /// Print detailed information about a VM instance.
 pub async fn inspect(name: &str) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
     let config = crate::config::load_resolved(&inst.config_path())?;
     let provision_state = inst.read_provision_state().await;
@@ -887,7 +887,7 @@ pub fn broken_substate(state: &ProvisionState) -> String {
 
 /// Stop a running VM. If `force` is true, kill the process immediately.
 pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
     anyhow::ensure!(
         status == Status::Running,
@@ -913,7 +913,7 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
 /// the qcow2 disk, so no extra files are created. Note: the disk file grows
 /// by roughly the VM's RAM usage.
 pub async fn suspend(name: &str) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
     anyhow::ensure!(
         status == Status::Running,
@@ -931,7 +931,7 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
 
 /// Resume a suspended VM by starting QEMU with the saved snapshot.
 pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
     anyhow::ensure!(
         status == Status::Suspended,
@@ -968,7 +968,7 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
 /// Refuses to destroy a running VM unless `force` is set, to prevent
 /// accidental data loss.
 pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
-    let inst = Instance::open(name).await?;
+    let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
 
     if status == Status::Running {
@@ -1074,7 +1074,7 @@ pub async fn create_template(
     verbose: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let inst = Instance::open(vm_name).await?;
+    let inst = Instance::open(vm_name)?;
     let mut status = inst.reconcile_status().await?;
     let config = crate::config::load_resolved(&inst.config_path())?;
 

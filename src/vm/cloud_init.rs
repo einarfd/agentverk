@@ -35,7 +35,7 @@ pub async fn generate_seed(
         .with_context(|| format!("failed to create staging directory {}", staging.display()))?;
 
     let meta_data = render_meta_data(vm_name);
-    let user_data = render_user_data(ssh_pub_key, vm_name, user).await?;
+    let user_data = render_user_data(ssh_pub_key, vm_name, user);
 
     tokio::fs::write(staging.join("meta-data"), &meta_data)
         .await
@@ -66,12 +66,8 @@ fn render_meta_data(vm_name: &str) -> String {
 }
 
 /// Render the cloud-init `user-data` cloud-config YAML.
-async fn render_user_data(
-    ssh_pub_key: &str,
-    vm_name: &str,
-    user: &str,
-) -> anyhow::Result<String> {
-    let yaml = format!(
+fn render_user_data(ssh_pub_key: &str, vm_name: &str, user: &str) -> String {
+    format!(
         "#cloud-config\n\
          hostname: {vm_name}\n\
          users:\n\
@@ -80,9 +76,7 @@ async fn render_user_data(
          \x20   shell: /bin/bash\n\
          \x20   ssh_authorized_keys:\n\
          \x20     - {ssh_pub_key}\n"
-    );
-
-    Ok(yaml)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +182,9 @@ mod tests {
         assert!(output.contains("local-hostname: test-vm"));
     }
 
-    #[tokio::test]
-    async fn user_data_contains_expected_sections() {
-        let output = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent")
-            .await
-            .unwrap();
+    #[test]
+    fn user_data_contains_expected_sections() {
+        let output = render_user_data("ssh-ed25519 AAAA...", "my-vm", "agent");
         assert!(output.starts_with("#cloud-config"));
         assert!(output.contains("hostname: my-vm"));
         assert!(output.contains("name: agent"));
