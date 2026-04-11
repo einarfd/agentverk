@@ -112,8 +112,8 @@ pub struct CreateArgs {
     /// Name for the new VM instance.
     pub name: String,
 
-    /// Path to .toml config file (defaults to agv.toml if it exists).
-    #[arg(long, value_name = "PATH")]
+    /// Path to .toml config file.
+    #[arg(short, long, value_name = "PATH")]
     pub config: Option<String>,
 
     /// Image to base the VM on [default: ubuntu-24.04].
@@ -136,8 +136,13 @@ pub struct CreateArgs {
     #[arg(long)]
     pub disk: Option<String>,
 
-    /// Include a named module (files/setup/provision). Repeatable.
-    #[arg(long = "include", value_name = "NAME")]
+    /// Add a mixin to the VM (e.g. devtools, claude, docker, rust, nodejs).
+    ///
+    /// Mixins are named bundles of setup/provision steps that install and
+    /// configure specific tools or languages. Run `agv images` to see all
+    /// available mixins. Repeat the flag to add multiple:
+    ///   --include devtools --include claude
+    #[arg(short = 'i', long = "include", value_name = "NAME")]
     pub includes: Vec<String>,
 
     /// Copy a file or directory into the VM. Repeatable. Format: source:dest.
@@ -165,12 +170,12 @@ pub struct CreateArgs {
     pub no_checksum: bool,
 
     /// Start the VM after creation.
-    #[arg(long)]
+    #[arg(short, long)]
     pub start: bool,
 
     /// Prompt before each provisioning step (y/n/e/a/q).
     /// Useful for debugging or stepping through a script.
-    #[arg(short, long)]
+    #[arg(long)]
     pub interactive: bool,
 
     /// Create VM as a thin clone of this template instead of building from scratch.
@@ -190,7 +195,7 @@ pub struct StartArgs {
 
     /// Prompt before each provisioning step (y/n/e/a/q).
     /// Useful for debugging or stepping through a script.
-    #[arg(short, long)]
+    #[arg(long)]
     pub interactive: bool,
 }
 
@@ -200,7 +205,7 @@ pub struct StopArgs {
     pub name: String,
 
     /// Force stop (equivalent to pulling the power).
-    #[arg(long)]
+    #[arg(short, long)]
     pub force: bool,
 }
 
@@ -222,7 +227,7 @@ pub struct DestroyArgs {
     pub name: String,
 
     /// Destroy even if the VM is currently running (force-stops it first).
-    #[arg(long)]
+    #[arg(short, long)]
     pub force: bool,
 }
 
@@ -368,7 +373,7 @@ pub struct InitArgs {
     pub output: String,
 
     /// Overwrite the output file if it already exists.
-    #[arg(long)]
+    #[arg(short, long)]
     pub force: bool,
 }
 
