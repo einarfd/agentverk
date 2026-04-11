@@ -48,6 +48,30 @@ fn split_ssh_args(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
+/// Format a byte count as `<n>K`, `<n>M`, `<n.n>G`, or `<n.n>T` to match
+/// the size strings used in agv config files (e.g. "8G", "512M", "20G").
+fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    const TIB: u64 = 1024 * GIB;
+    if bytes >= TIB {
+        #[expect(clippy::cast_precision_loss, reason = "display formatting")]
+        let v = bytes as f64 / TIB as f64;
+        format!("{v:.1}T")
+    } else if bytes >= GIB {
+        #[expect(clippy::cast_precision_loss, reason = "display formatting")]
+        let v = bytes as f64 / GIB as f64;
+        format!("{v:.1}G")
+    } else if bytes >= MIB {
+        format!("{}M", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{}K", bytes / KIB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
 /// Parse port specs like `"8080"` or `"8080:3000"` into `(local, remote)` pairs.
 fn parse_port_specs(specs: &[String]) -> anyhow::Result<Vec<(u16, u16)>> {
     let mut ports = Vec::with_capacity(specs.len());
@@ -195,11 +219,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     status
                 };
                 // Best-effort: show "?" if config can't be read.
-                let (memory, cpus, disk) = config::load_resolved(&inst.config_path())
-                    .map_or_else(
+                let (memory, cpus, disk_max) =
+                    config::load_resolved(&inst.config_path()).map_or_else(
                         |_| ("?".to_string(), "?".to_string(), "?".to_string()),
                         |c| (c.memory, c.cpus.to_string(), c.disk),
                     );
+                // Actual on-disk size of the qcow2 file. qcow2 grows as the
+                // guest writes, so this is much more useful than the maximum.
+                let disk_used = tokio::fs::metadata(inst.disk_path())
+                    .await
+                    .map_or_else(|_| "?".to_string(), |m| format_size(m.len()));
+                let disk = format!("{disk_used}/{disk_max}");
                 rows.push(Row {
                     name: inst.name.clone(),
                     status,
@@ -617,5 +647,35 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("invalid remote port"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0B");
+        assert_eq!(format_size(512), "512B");
+    }
+
+    #[test]
+    fn format_size_kib() {
+        assert_eq!(format_size(1024), "1K");
+        assert_eq!(format_size(2 * 1024), "2K");
+    }
+
+    #[test]
+    fn format_size_mib() {
+        assert_eq!(format_size(1024 * 1024), "1M");
+        assert_eq!(format_size(512 * 1024 * 1024), "512M");
+    }
+
+    #[test]
+    fn format_size_gib() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0G");
+        assert_eq!(format_size(8 * 1024 * 1024 * 1024), "8.0G");
+        assert_eq!(format_size(2400 * 1024 * 1024), "2.3G");
+    }
+
+    #[test]
+    fn format_size_tib() {
+        assert_eq!(format_size(1024_u64.pow(4)), "1.0T");
     }
 }
