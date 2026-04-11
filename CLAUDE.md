@@ -7,25 +7,54 @@
 ## Build and test
 
 ```bash
-cargo build          # Build debug binary
-cargo clippy         # Lint — must pass with zero warnings
-cargo test           # Run fast tests only (no QEMU needed)
+cargo build            # Build debug binary
+cargo clippy           # Lint — must pass with zero warnings
+cargo test             # Run all default tests (fast, no boot)
+cargo test -- --include-ignored --nocapture   # Also run slow boot tests
 cargo build --release  # Release build (LTO enabled)
 ```
 
 The binary is at `./target/debug/agv` (or `./target/release/agv`).
 
-### Test layers
+### Test policy
 
-**Fast tests** (`cargo test`) — always pass, no external tools needed:
-- `src/` unit tests — config parsing, template expansion, SSH arg splitting, etc.
-- `tests/cli_test.rs` — binary-level tests for arg parsing, help output, error messages
+Tests fall into three categories. Pick the right one when adding a new test:
 
-**VM integration tests** (`cargo test -- --include-ignored --nocapture`) — boot real VMs, require QEMU + network:
-- `tests/create_test.rs` — full create/start/provision lifecycle including file injection via SCP
-- `tests/qemu_test.rs` — low-level QEMU process management and QMP protocol
+**1. Always-on, no external tools** — runs on every `cargo test`, no skip logic
+- **Where:** unit tests inside `src/*.rs`, and `tests/cli_test.rs`
+- **What:** pure logic (parsing, formatting, state machines), CLI argument parsing,
+  error message shapes, help output. Anything that does not touch a real subprocess
+  or download.
+- **Examples:** `interactive::tests::*`, `vm::instance::tests::*`,
+  `tests/cli_test.rs::ssh_help_succeeds`
 
-VM tests are `#[ignore]` by default so `cargo test` always passes in CI without QEMU. Use `--include-ignored` to run them locally. They create VMs with names prefixed `_test-` and clean up after themselves.
+**2. Runtime-skip integration** — runs on every `cargo test`, but skips if a tool is missing
+- **Where:** top-level integration tests in `tests/*.rs` that are NOT marked `#[ignore]`
+- **What:** uses `qemu-img`, `mkisofs`/`hdiutil`, briefly spawns a `qemu-system-*` process
+  with a fake/empty disk, etc. Fast (under ~10 seconds per test). Does not need network
+  and does not boot a guest OS.
+- **Skip mechanism:** call a helper like `qemu_available()`/`qemu_img_available()` at
+  the top of the test, `eprintln!` and `return` if missing. Do not panic on missing
+  tools — these tests must never fail in environments without them.
+- **Examples:** `tests/qemu_test.rs::qemu_start_and_force_stop`,
+  `tests/create_test.rs::create_without_start`
+
+**3. Slow boot tests** — opt-in, marked `#[ignore]`
+- **Where:** `tests/create_test.rs` (and similar). Marked with
+  `#[ignore = "downloads a real cloud image and boots a VM — slow"]`
+- **What:** downloads a real cloud image (~330 MB), boots a guest OS, runs full
+  provisioning. Takes minutes per test.
+- **Run with:** `cargo test -- --include-ignored --nocapture`
+- **Conventions:** still call the runtime-skip helpers (so they no-op gracefully if
+  tools are missing). Use VM names prefixed `_test-` and call `cleanup(name)` at the
+  start and end.
+- **Examples:** `create_with_start_and_provision`, `suspend_and_resume_preserves_state`,
+  `provision_failure_then_retry_resumes`
+
+**Decision rule:**
+- Pure logic with no external state → category 1
+- Touches `qemu-img`, briefly spawns QEMU, or generates a seed ISO, but no network and < 10s → category 2
+- Downloads a cloud image or boots a guest OS → category 3
 
 ## Architecture
 
