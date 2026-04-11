@@ -3,4 +3,4 @@
 # Use via: include = ["devtools"]
 
 [[setup]]
-run = "apt-get update && apt-get install -y git git-delta curl build-essential fzf"
+run = "apt-get update && apt-get install -y git git-delta curl build-essential fzf direnv"
