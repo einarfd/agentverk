@@ -21,6 +21,8 @@ pub enum Status {
     Running,
     /// VM exists but is not running.
     Stopped,
+    /// VM is suspended — full state saved to disk, can be resumed.
+    Suspended,
     /// Creation or provisioning failed partway through.
     Broken,
 }
@@ -32,6 +34,7 @@ impl fmt::Display for Status {
             Self::Configuring => write!(f, "configuring"),
             Self::Running => write!(f, "running"),
             Self::Stopped => write!(f, "stopped"),
+            Self::Suspended => write!(f, "suspended"),
             Self::Broken => write!(f, "broken"),
         }
     }
@@ -46,6 +49,7 @@ impl std::str::FromStr for Status {
             "configuring" => Ok(Self::Configuring),
             "running" => Ok(Self::Running),
             "stopped" => Ok(Self::Stopped),
+            "suspended" => Ok(Self::Suspended),
             "broken" => Ok(Self::Broken),
             other => anyhow::bail!("unknown VM status: {other}"),
         }

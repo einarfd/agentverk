@@ -23,6 +23,17 @@ use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRm
 use specs::SpecSource;
 use images::ImageType;
 
+/// Build a "VM not running" error message that suggests the right command
+/// for the current status (start vs resume).
+fn not_running_error(name: &str, status: vm::instance::Status) -> anyhow::Error {
+    let action = if status == vm::instance::Status::Suspended {
+        format!("Resume it with: agv resume {name}")
+    } else {
+        format!("Start it with: agv start {name}")
+    };
+    anyhow::anyhow!("VM '{name}' is not running (status: {status}). {action}")
+}
+
 /// Split `agv ssh` trailing args at `--`.
 ///
 /// Everything before `--` is passed to ssh before the destination (ssh options
@@ -116,6 +127,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");
             vm::stop(&args.name, args.force).await
         }
+        Command::Suspend(args) => {
+            tracing::info!(name = %args.name, "suspending VM");
+            vm::suspend(&args.name).await?;
+            println!("  ✓ VM '{}' suspended", args.name);
+            Ok(())
+        }
+        Command::Resume(args) => {
+            tracing::info!(name = %args.name, "resuming VM");
+            vm::resume(&args.name, verbose, quiet).await
+        }
         Command::Destroy(args) => {
             tracing::info!(name = %args.name, force = args.force, "destroying VM");
             vm::destroy(&args.name, args.force).await?;
@@ -125,12 +146,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name).await?;
             let status = inst.reconcile_status().await?;
-            anyhow::ensure!(
-                status == vm::instance::Status::Running,
-                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
-                args.name,
-                args.name,
-            );
+            if status != vm::instance::Status::Running {
+                return Err(not_running_error(&args.name, status));
+            }
             let cfg = config::load_resolved(&inst.config_path())?;
             let (ssh_opts, command) = split_ssh_args(&args.args);
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
@@ -377,12 +395,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let inst = vm::instance::Instance::open(&args.name).await?;
             let status = inst.reconcile_status().await?;
-            anyhow::ensure!(
-                status == vm::instance::Status::Running,
-                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
-                args.name,
-                args.name,
-            );
+            if status != vm::instance::Status::Running {
+                return Err(not_running_error(&args.name, status));
+            }
             let cfg = config::load_resolved(&inst.config_path())?;
 
             if !quiet {
@@ -414,12 +429,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let inst = vm::instance::Instance::open(&args.name).await?;
             let status = inst.reconcile_status().await?;
-            anyhow::ensure!(
-                status == vm::instance::Status::Running,
-                "VM '{}' is not running (status: {status}). Start it with: agv start {}",
-                args.name,
-                args.name,
-            );
+            if status != vm::instance::Status::Running {
+                return Err(not_running_error(&args.name, status));
+            }
             let cfg = config::load_resolved(&inst.config_path())?;
 
             ssh::transfer(&inst, &cfg.user, &args.source, &args.dest, args.recursive, verbose)

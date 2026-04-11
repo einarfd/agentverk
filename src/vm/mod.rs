@@ -414,6 +414,11 @@ pub async fn config_set(
 pub async fn start(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name).await?;
     let status = inst.reconcile_status().await?;
+    if status == Status::Suspended {
+        anyhow::bail!(
+            "VM '{name}' is suspended. Resume it with: agv resume {name}"
+        );
+    }
     anyhow::ensure!(
         status == Status::Stopped,
         Error::VmBadState {
@@ -621,6 +626,62 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     }
     inst.write_status(Status::Stopped).await?;
     let _ = ssh_config::remove_entry(name).await;
+    Ok(())
+}
+
+/// Suspend a running VM by saving its state to a snapshot, then exit QEMU.
+///
+/// The VM can be brought back with `resume`. The snapshot is stored inside
+/// the qcow2 disk, so no extra files are created. Note: the disk file grows
+/// by roughly the VM's RAM usage.
+pub async fn suspend(name: &str) -> anyhow::Result<()> {
+    let inst = Instance::open(name).await?;
+    let status = inst.reconcile_status().await?;
+    anyhow::ensure!(
+        status == Status::Running,
+        Error::VmBadState {
+            name: name.to_string(),
+            status: status.to_string(),
+            expected: "running".to_string(),
+        }
+    );
+    qemu::suspend(&inst).await?;
+    inst.write_status(Status::Suspended).await?;
+    let _ = ssh_config::remove_entry(name).await;
+    Ok(())
+}
+
+/// Resume a suspended VM by starting QEMU with the saved snapshot.
+pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
+    let inst = Instance::open(name).await?;
+    let status = inst.reconcile_status().await?;
+    anyhow::ensure!(
+        status == Status::Suspended,
+        Error::VmBadState {
+            name: name.to_string(),
+            status: status.to_string(),
+            expected: "suspended".to_string(),
+        }
+    );
+
+    let config = crate::config::load_resolved(&inst.config_path())?;
+
+    let spinner = status_spinner(verbose, quiet);
+    spinner.set_message(format!(
+        "Resuming VM ({} RAM, {} vCPUs)...",
+        config.memory, config.cpus
+    ));
+
+    qemu::start_with_loadvm(&inst, &config.memory, config.cpus, Some("agv-suspend")).await?;
+    inst.write_status(Status::Running).await?;
+    step_done(&spinner, "Resumed VM");
+
+    wait_for_ssh(&inst, &config.user, &spinner).await?;
+    step_done(&spinner, "SSH is ready");
+
+    update_ssh_config(&inst, &config.user).await;
+
+    spinner.finish_with_message(format!("  ✓ VM '{name}' is running"));
     Ok(())
 }
 

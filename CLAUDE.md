@@ -56,6 +56,7 @@ VM tests are `#[ignore]` by default so `cargo test` always passes in CI without 
 - **ISO creation is platform-specific.** macOS uses built-in `hdiutil`, Linux uses `mkisofs`/`genisoimage`. Split with `#[cfg(target_os = "macos")]`.
 - **Managed SSH config for IDE integration.** `ssh_config.rs` maintains `<data_dir>/ssh_config` with Host entries for running VMs. Updated automatically on start/stop/destroy. Users add an Include once via `agv doctor --setup-ssh`.
 - **`agv cp` and `agv forward` wrap scp/ssh** with VM-aware syntax. `cp` uses `:path` prefix for VM paths; `forward` uses `local[:remote]` port specs. Both check VM status before connecting.
+- **`agv suspend` / `agv resume` use QEMU savevm/loadvm.** State is stored as a snapshot inside the qcow2 disk (no extra files). Suspend uses HMP `savevm` via QMP `human-monitor-command`, then exits QEMU; resume passes `-loadvm agv-suspend` to QEMU on start.
 
 ## Conventions
 
@@ -85,6 +86,6 @@ VM templates live in `templates/` as paired `<name>.qcow2` + `<name>.toml` files
 
 ## VM statuses
 
-`creating` | `configuring` | `running` | `stopped` | `broken`
+`creating` | `configuring` | `running` | `stopped` | `suspended` | `broken`
 
-A `broken` VM can only be destroyed. If a `running` VM's PID is stale, it auto-transitions to `stopped`.
+A `broken` VM can only be destroyed. If a `running` VM's PID is stale, it auto-transitions to `stopped`. A `suspended` VM has its full state (RAM + devices) saved to a snapshot inside `disk.qcow2` (named `agv-suspend`); resume restarts QEMU with `-loadvm`.

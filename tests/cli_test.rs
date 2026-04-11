@@ -40,7 +40,9 @@ fn help_lists_all_subcommands() {
         .stdout(contains("doctor"))
         .stdout(contains("init"))
         .stdout(contains("cp"))
-        .stdout(contains("forward"));
+        .stdout(contains("forward"))
+        .stdout(contains("suspend"))
+        .stdout(contains("resume"));
 }
 
 #[test]
@@ -251,6 +253,28 @@ fn template_rm_without_name_fails() {
 #[test]
 fn doctor_succeeds() {
     agv().arg("doctor").assert().success();
+}
+
+// ── Suspend / Resume ──────────────────────────────────────────────────────────
+
+#[test]
+fn suspend_help_succeeds() {
+    agv().args(["suspend", "--help"]).assert().success();
+}
+
+#[test]
+fn resume_help_succeeds() {
+    agv().args(["resume", "--help"]).assert().success();
+}
+
+#[test]
+fn suspend_without_name_fails() {
+    agv().arg("suspend").assert().failure();
+}
+
+#[test]
+fn resume_without_name_fails() {
+    agv().arg("resume").assert().failure();
 }
 
 // ── Forward ───────────────────────────────────────────────────────────────────

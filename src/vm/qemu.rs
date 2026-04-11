@@ -20,8 +20,22 @@ use crate::vm::instance::Instance;
 /// and spawns QEMU in daemon mode. On success, the PID file and SSH port
 /// file are written by QEMU and this function respectively.
 pub async fn start(instance: &Instance, memory: &str, cpus: u32) -> anyhow::Result<()> {
+    start_with_loadvm(instance, memory, cpus, None).await
+}
+
+/// Start QEMU, optionally loading from a saved snapshot.
+pub async fn start_with_loadvm(
+    instance: &Instance,
+    memory: &str,
+    cpus: u32,
+    loadvm: Option<&str>,
+) -> anyhow::Result<()> {
     let ssh_port = allocate_free_port().await?;
-    let (binary, args) = build_qemu_args(instance, memory, cpus, ssh_port)?;
+    let (binary, mut args) = build_qemu_args(instance, memory, cpus, ssh_port)?;
+    if let Some(snapshot) = loadvm {
+        args.push("-loadvm".to_string());
+        args.push(snapshot.to_string());
+    }
 
     info!(
         vm = %instance.name,
@@ -83,6 +97,43 @@ pub async fn stop(instance: &Instance) -> anyhow::Result<()> {
     }
 
     warn!(vm = %instance.name, "graceful shutdown timed out after 30s, force-killing");
+    force_stop(instance).await
+}
+
+/// Suspend the VM by saving its full state to a snapshot in the qcow2 disk,
+/// then exiting QEMU.
+///
+/// Uses the HMP `savevm` command via QMP `human-monitor-command`. The
+/// snapshot name is fixed (`agv-suspend`) since each VM has at most one
+/// suspended state.
+pub async fn suspend(instance: &Instance) -> anyhow::Result<()> {
+    let socket_path = instance.qmp_socket_path();
+    info!(vm = %instance.name, "saving VM state via QMP savevm");
+
+    let mut client = QmpClient::connect(&socket_path).await?;
+    // Run `savevm agv-suspend` via the human monitor.
+    client
+        .execute_hmp("savevm agv-suspend")
+        .await
+        .context("failed to save VM state")?;
+    info!(vm = %instance.name, "VM state saved, shutting down QEMU");
+
+    // Quit QEMU cleanly now that the snapshot is on disk.
+    // The `quit` command causes QEMU to exit immediately without ACPI shutdown.
+    let _ = client.execute("quit").await;
+    drop(client);
+
+    // Wait for the process to exit.
+    let pid = read_pid(instance).await?;
+    for _ in 0..60 {
+        if !is_process_alive(pid) {
+            cleanup_runtime_files(instance).await;
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    warn!(vm = %instance.name, "QEMU did not exit after quit, force-killing");
     force_stop(instance).await
 }
 
@@ -162,6 +213,28 @@ impl QmpClient {
         Ok(resp)
     }
 
+    /// Execute a Human Monitor (HMP) command via the QMP human-monitor-command
+    /// wrapper. Used for HMP-only operations like `savevm`/`loadvm`.
+    async fn execute_hmp(&mut self, command: &str) -> anyhow::Result<serde_json::Value> {
+        let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
+        let msg = format!(
+            r#"{{"execute":"human-monitor-command","arguments":{{"command-line":"{escaped}"}}}}"#
+        );
+        self.send_raw(&msg).await?;
+        let resp = self.read_response().await?;
+        if let Some(error) = resp.get("error") {
+            bail!("HMP command '{command}' failed: {error}");
+        }
+        // The "return" field of human-monitor-command is the HMP output as a string.
+        // If it's non-empty, it usually indicates an error from the HMP command itself.
+        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
+            if !ret.trim().is_empty() {
+                bail!("HMP command '{command}' returned error: {}", ret.trim());
+            }
+        }
+        Ok(resp)
+    }
+
     /// Read a single JSON response, skipping asynchronous event messages.
     async fn read_response(&mut self) -> anyhow::Result<serde_json::Value> {
         loop {
@@ -211,6 +284,24 @@ impl QmpClient {
 ///
 /// There is a small TOCTOU window between when we release the port and when
 /// QEMU binds to it, but this is acceptable for our use case.
+/// Detect a disk image format from the file's magic bytes.
+///
+/// Returns `"qcow2"` if the first 4 bytes match the qcow2 magic (`QFI\xfb`),
+/// otherwise `"raw"`. Used for the EFI vars file, which may be raw on
+/// existing VMs created before the qcow2 conversion was added.
+#[cfg(target_arch = "aarch64")]
+fn detect_image_format(path: &Path) -> anyhow::Result<&'static str> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut magic = [0u8; 4];
+    if file.read_exact(&mut magic).is_ok() && &magic == b"QFI\xfb" {
+        Ok("qcow2")
+    } else {
+        Ok("raw")
+    }
+}
+
 async fn allocate_free_port() -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -407,6 +498,7 @@ fn find_efi_firmware() -> anyhow::Result<EfiFirmware> {
 }
 
 /// Build the full QEMU argument list.
+#[allow(clippy::too_many_lines)]
 fn build_qemu_args(
     instance: &Instance,
     memory: &str,
@@ -425,16 +517,37 @@ fn build_qemu_args(
             .to_str()
             .context("EFI firmware code path is not valid UTF-8")?;
         let vars_dst = instance.efi_vars_path();
-        // Copy the vars template if this instance doesn't have one yet.
+
+        // Create the vars file as qcow2 if it doesn't exist yet. qcow2 is
+        // required for `savevm`/`loadvm` (suspend/resume) to work — raw drives
+        // do not support snapshots.
         if !vars_dst.exists() {
-            std::fs::copy(&firmware.vars, &vars_dst).with_context(|| {
-                format!(
-                    "failed to copy EFI vars template {} → {}",
-                    firmware.vars.display(),
-                    vars_dst.display()
-                )
-            })?;
+            let src_str = firmware
+                .vars
+                .to_str()
+                .context("EFI vars template path is not valid UTF-8")?;
+            let dst_str = vars_dst
+                .to_str()
+                .context("EFI vars path is not valid UTF-8")?;
+            let output = std::process::Command::new("qemu-img")
+                .args(["convert", "-f", "raw", "-O", "qcow2", src_str, dst_str])
+                .output()
+                .with_context(|| {
+                    format!(
+                        "failed to run qemu-img convert for EFI vars: {} → {}",
+                        firmware.vars.display(),
+                        vars_dst.display()
+                    )
+                })?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("qemu-img convert failed (exit {}): {stderr}", output.status);
+            }
         }
+
+        // Detect the format of the existing file. New VMs always get qcow2,
+        // but pre-existing VMs created before this change have raw files.
+        let vars_format = detect_image_format(&vars_dst)?;
         let vars_str = vars_dst
             .to_str()
             .context("EFI vars path is not valid UTF-8")?;
@@ -442,7 +555,7 @@ fn build_qemu_args(
             "-drive".to_string(),
             format!("if=pflash,format=raw,readonly=on,file={code_str}"),
             "-drive".to_string(),
-            format!("if=pflash,format=raw,file={vars_str}"),
+            format!("if=pflash,format={vars_format},file={vars_str}"),
         ]);
     }
 
@@ -591,6 +704,35 @@ mod tests {
         let port1 = allocate_free_port().await.unwrap();
         let port2 = allocate_free_port().await.unwrap();
         assert_ne!(port1, port2, "expected unique ports, got {port1} twice");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn detect_image_format_qcow2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.qcow2");
+        // qcow2 magic: "QFI\xfb" followed by version etc.
+        std::fs::write(&path, b"QFI\xfbsome more bytes").unwrap();
+        assert_eq!(detect_image_format(&path).unwrap(), "qcow2");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn detect_image_format_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.raw");
+        // EFI vars file starts with EFI vars header, not qcow2 magic.
+        std::fs::write(&path, b"\x00\x00\x00\x00random binary content").unwrap();
+        assert_eq!(detect_image_format(&path).unwrap(), "raw");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn detect_image_format_short_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, b"ab").unwrap(); // shorter than 4 bytes
+        assert_eq!(detect_image_format(&path).unwrap(), "raw");
     }
 
     #[test]

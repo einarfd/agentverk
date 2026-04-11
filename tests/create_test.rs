@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use agv::vm::instance::{Instance, Status};
-use agv::{config, dirs, vm};
+use agv::{config, dirs, ssh, vm};
 
 /// Counter to generate unique filenames across concurrent tests.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -328,6 +328,127 @@ async fn create_with_start_and_provision() {
 
     // Verify the provisioned marker was set.
     assert!(inst.is_provisioned(), "instance should be marked provisioned");
+
+    cleanup(name).await;
+}
+
+/// Verify that suspend saves VM state and resume restores it.
+///
+/// Creates a marker file in /run (tmpfs/RAM-backed), suspends the VM, resumes
+/// it, then checks that:
+///   1. The marker file is still there (RAM state preserved)
+///   2. /proc/uptime is at least as large as it was before suspend (continuous,
+///      not reset by a reboot)
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+async fn suspend_and_resume_preserves_state() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping suspend_and_resume_preserves_state");
+        return;
+    }
+
+    dirs::ensure_dirs().await.unwrap();
+
+    let name = "_test-suspend-resume";
+    cleanup(name).await;
+
+    let config = config::resolve(config::Config {
+        base: Some(config::BaseConfig {
+            from: Some("debian-12".to_string()),
+            ..Default::default()
+        }),
+        vm: Some(config::VmConfig {
+            memory: Some("1G".to_string()),
+            cpus: Some(2),
+            disk: Some("10G".to_string()),
+        }),
+        files: vec![],
+        setup: vec![],
+        provision: vec![],
+    })
+    .unwrap();
+
+    vm::create(name, &config, true, false, true).await.unwrap();
+
+    let inst_dir = dirs::instance_dir(name).unwrap();
+    let inst = Instance {
+        name: name.to_string(),
+        dir: inst_dir,
+    };
+
+    // Status should be running.
+    assert_eq!(inst.read_status().await.unwrap(), Status::Running);
+
+    // Write a marker file to /run (tmpfs, lives only in RAM) and capture
+    // the uptime before suspending.
+    let marker = format!("agv-suspend-test-{}", std::process::id());
+    ssh::run_cmd(
+        &inst,
+        &config.user,
+        &[format!("sudo sh -c 'echo {marker} > /run/agv-marker'")],
+    )
+    .await
+    .expect("failed to write marker");
+
+    let uptime_before_raw = ssh::run_cmd(
+        &inst,
+        &config.user,
+        &["cat /proc/uptime".to_string()],
+    )
+    .await
+    .unwrap();
+    let uptime_before: f64 = uptime_before_raw
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Suspend the VM.
+    vm::suspend(name).await.expect("suspend failed");
+    assert_eq!(inst.read_status().await.unwrap(), Status::Suspended);
+    // QEMU process should be gone.
+    assert!(!inst.pid_path().exists(), "PID file should be removed after suspend");
+    assert!(!inst.ssh_port_path().exists(), "ssh_port should be removed after suspend");
+
+    // Resume the VM.
+    vm::resume(name, false, true).await.expect("resume failed");
+    assert_eq!(inst.read_status().await.unwrap(), Status::Running);
+    assert!(inst.pid_path().exists(), "PID file should exist after resume");
+
+    // The marker file in tmpfs should still be there — proves RAM state was
+    // saved and restored.
+    let marker_content = ssh::run_cmd(
+        &inst,
+        &config.user,
+        &["cat /run/agv-marker".to_string()],
+    )
+    .await
+    .expect("failed to read marker after resume");
+    assert!(
+        marker_content.contains(&marker),
+        "marker file lost after suspend/resume — state was not preserved (got: {marker_content:?})"
+    );
+
+    // Uptime should be at least as large as before — proves the VM did not
+    // reboot during suspend/resume.
+    let uptime_after_raw = ssh::run_cmd(
+        &inst,
+        &config.user,
+        &["cat /proc/uptime".to_string()],
+    )
+    .await
+    .unwrap();
+    let uptime_after: f64 = uptime_after_raw
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        uptime_after >= uptime_before,
+        "VM uptime decreased ({uptime_before} → {uptime_after}) — VM rebooted instead of resuming"
+    );
 
     cleanup(name).await;
 }

@@ -41,6 +41,12 @@ pub enum Command {
     /// Stop a running VM.
     Stop(StopArgs),
 
+    /// Suspend a running VM, saving its full state to disk.
+    Suspend(SuspendArgs),
+
+    /// Resume a suspended VM from its saved state.
+    Resume(ResumeArgs),
+
     /// Destroy a VM and delete all its data.
     Destroy(DestroyArgs),
 
@@ -178,6 +184,18 @@ pub struct StopArgs {
     /// Force stop (equivalent to pulling the power).
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SuspendArgs {
+    /// Name of the VM to suspend.
+    pub name: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ResumeArgs {
+    /// Name of the VM to resume.
+    pub name: String,
 }
 
 #[derive(Debug, clap::Args)]

@@ -83,6 +83,8 @@ Commands:
   create    Create a new VM
   start     Start a stopped VM
   stop      Stop a running VM
+  suspend   Suspend a running VM (save full state to disk)
+  resume    Resume a suspended VM
   destroy   Destroy a VM and delete all its data
   ssh       Open an SSH session to a running VM
   cp        Copy files between the host and a running VM
