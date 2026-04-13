@@ -76,7 +76,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Doctor**: `src/doctor.rs` — `agv doctor` dependency checker with platform-specific hints
 - **SSH config**: `src/ssh_config.rs` — managed `~/.ssh/config` integration for IDE/SSH access by VM name
 - **Templates**: `src/template.rs` — `{{VAR}}` expansion in config values, `.env` file loading
-- **Directories**: `src/dirs.rs` — platform-specific paths (macOS/Linux)
+- **Directories**: `src/dirs.rs` — XDG-compliant data paths, `AGV_DATA_DIR` override
 
 ## Key design decisions
 
@@ -108,8 +108,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 
 ## VM state storage
 
-- macOS: `~/Library/Application Support/agv/`
-- Linux: `~/.local/share/agv/`
+`~/.local/share/agv/` (XDG-compliant, same on all platforms). Override with `AGV_DATA_DIR`.
 
 Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `efi-vars.fd` (aarch64 only).
 

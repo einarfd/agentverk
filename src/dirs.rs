@@ -1,9 +1,7 @@
-//! Platform-specific state and cache directory paths.
+//! State and cache directory paths.
 //!
-//! On macOS: `~/Library/Application Support/agv/`
-//! On Linux: `~/.local/share/agv/`
-//!
-//! The data directory can be overridden via [`set_data_dir`] for testing.
+//! Default: `~/.local/share/agv/` (XDG-compliant, same on all platforms).
+//! Override with the `AGV_DATA_DIR` environment variable.
 
 use std::path::PathBuf;
 
@@ -11,15 +9,13 @@ use anyhow::Context as _;
 
 /// Return the root data directory for agv.
 ///
-/// - macOS: `~/Library/Application Support/agv/`
-/// - Linux: `~/.local/share/agv/`
+/// Default: `~/.local/share/agv/` (XDG-compliant, same on all platforms).
+/// Override with the `AGV_DATA_DIR` environment variable.
 pub fn data_dir() -> anyhow::Result<PathBuf> {
-    let base = if cfg!(target_os = "macos") {
-        home_dir()?.join("Library/Application Support")
-    } else {
-        home_dir()?.join(".local/share")
-    };
-    Ok(base.join("agv"))
+    if let Ok(custom) = std::env::var("AGV_DATA_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
+    Ok(home_dir()?.join(".local/share/agv"))
 }
 
 /// Return the directory where downloaded images are cached.

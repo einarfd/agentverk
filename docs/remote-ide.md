@@ -53,12 +53,6 @@ appear in **File → Open Remote** with no additional configuration.
 1. File → Remote Development → SSH.
 2. Enter `myvm` as the host. Connection details are filled from SSH config.
 
-**Known issue — JetBrains Toolbox on macOS:** JetBrains Toolbox does not correctly
-handle `Include` directives in `~/.ssh/config` when the included path contains
-spaces (the agv data dir on macOS is `~/Library/Application Support/agv/`). This
-affects Toolbox only — Gateway and the IDEs themselves work fine. On Linux (where
-the path is `~/.local/share/agv/`) Toolbox works correctly.
-
 ## Neovim / terminal editors
 
 Just SSH in:
