@@ -335,6 +335,10 @@ impl Instance {
             // Clean up stale runtime files.
             let _ = tokio::fs::remove_file(self.pid_path()).await;
             let _ = tokio::fs::remove_file(self.qmp_socket_path()).await;
+            let _ = tokio::fs::remove_file(self.ssh_port_path()).await;
+            // Remove the managed SSH config entry so `ssh <name>` doesn't
+            // try to connect to a stale port.
+            let _ = crate::ssh_config::remove_entry(&self.name).await;
             return Ok(Status::Stopped);
         }
         Ok(status)
@@ -588,6 +592,7 @@ mod tests {
             .await
             .unwrap();
         tokio::fs::write(inst.qmp_socket_path(), "").await.unwrap();
+        tokio::fs::write(inst.ssh_port_path(), "2222").await.unwrap();
 
         assert_eq!(inst.reconcile_status().await.unwrap(), Status::Stopped);
         assert_eq!(inst.read_status().await.unwrap(), Status::Stopped);
@@ -595,6 +600,10 @@ mod tests {
         assert!(
             !inst.qmp_socket_path().exists(),
             "stale qmp socket should be removed"
+        );
+        assert!(
+            !inst.ssh_port_path().exists(),
+            "stale ssh_port file should be removed"
         );
     }
 
