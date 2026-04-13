@@ -645,6 +645,12 @@ fn build_qemu_args(
         "none".to_string(),
     ]);
 
+    // Exit instead of rebooting when the guest halts or reboots. Without
+    // this, `sudo halt` inside the VM leaves QEMU running (vCPU in halt
+    // state, burning CPU). `-no-reboot` makes QEMU exit cleanly, and
+    // status reconciliation will mark the VM as stopped.
+    args.push("-no-reboot".to_string());
+
     // Daemonize and write PID.
     args.extend([
         "-daemonize".to_string(),
@@ -785,6 +791,7 @@ mod tests {
             joined.contains("hostfwd=tcp::2222-:22"),
             "missing hostfwd: {joined}"
         );
+        assert!(joined.contains("-no-reboot"), "missing -no-reboot: {joined}");
         assert!(joined.contains("-daemonize"), "missing -daemonize: {joined}");
         assert!(
             joined.contains("disk.qcow2"),
