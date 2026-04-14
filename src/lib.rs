@@ -10,6 +10,7 @@ pub mod config;
 pub mod dirs;
 pub mod doctor;
 pub mod error;
+pub mod forward;
 pub mod image;
 pub mod images;
 pub mod init;

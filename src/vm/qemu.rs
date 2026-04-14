@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, info, warn};
 
+use crate::forward::{ForwardSpec, Proto};
 use crate::vm::instance::Instance;
 
 /// Spawn a QEMU process for the given VM instance.
@@ -152,6 +153,57 @@ pub async fn force_stop(instance: &Instance) -> anyhow::Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     cleanup_runtime_files(instance).await;
     Ok(())
+}
+
+/// Add a host-to-guest port forward via QMP `hostfwd_add` on the running VM.
+///
+/// Uses the HMP `hostfwd_add` command targeting the `net0` user-mode netdev.
+/// The host port is bound on all interfaces (same as the SSH forward QEMU
+/// sets up at boot). Fails if the host port is already in use or already
+/// forwarded with the same protocol.
+pub async fn hostfwd_add(instance: &Instance, spec: ForwardSpec) -> anyhow::Result<()> {
+    let socket_path = instance.qmp_socket_path();
+    let mut client = QmpClient::connect(&socket_path).await?;
+    let cmd = format_hostfwd_add(spec);
+    debug!(vm = %instance.name, %cmd, "hostfwd_add via QMP");
+    client
+        .execute_hmp(&cmd)
+        .await
+        .with_context(|| format!("failed to add forward {spec}"))?;
+    Ok(())
+}
+
+/// Remove a previously-added host-to-guest port forward via QMP.
+pub async fn hostfwd_remove(instance: &Instance, spec: ForwardSpec) -> anyhow::Result<()> {
+    let socket_path = instance.qmp_socket_path();
+    let mut client = QmpClient::connect(&socket_path).await?;
+    let cmd = format_hostfwd_remove(spec);
+    debug!(vm = %instance.name, %cmd, "hostfwd_remove via QMP");
+    client
+        .execute_hmp(&cmd)
+        .await
+        .with_context(|| format!("failed to remove forward {spec}"))?;
+    Ok(())
+}
+
+fn format_hostfwd_add(spec: ForwardSpec) -> String {
+    let proto = match spec.proto {
+        Proto::Tcp => "tcp",
+        Proto::Udp => "udp",
+    };
+    format!(
+        "hostfwd_add net0 {proto}::{host}-:{guest}",
+        host = spec.host,
+        guest = spec.guest,
+    )
+}
+
+fn format_hostfwd_remove(spec: ForwardSpec) -> String {
+    let proto = match spec.proto {
+        Proto::Tcp => "tcp",
+        Proto::Udp => "udp",
+    };
+    format!("hostfwd_remove net0 {proto}::{host}", host = spec.host)
 }
 
 // ---------------------------------------------------------------------------
@@ -699,11 +751,42 @@ async fn cleanup_runtime_files(instance: &Instance) {
     let _ = tokio::fs::remove_file(instance.pid_path()).await;
     let _ = tokio::fs::remove_file(instance.qmp_socket_path()).await;
     let _ = tokio::fs::remove_file(instance.ssh_port_path()).await;
+    let _ = tokio::fs::remove_file(instance.forwards_path()).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_hostfwd_add_tcp_same_port() {
+        let s = ForwardSpec::new(8080, 8080, Proto::Tcp);
+        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 tcp::8080-:8080");
+    }
+
+    #[test]
+    fn format_hostfwd_add_tcp_distinct_ports() {
+        let s = ForwardSpec::new(8080, 3000, Proto::Tcp);
+        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 tcp::8080-:3000");
+    }
+
+    #[test]
+    fn format_hostfwd_add_udp() {
+        let s = ForwardSpec::new(53, 5353, Proto::Udp);
+        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 udp::53-:5353");
+    }
+
+    #[test]
+    fn format_hostfwd_remove_tcp() {
+        let s = ForwardSpec::new(8080, 3000, Proto::Tcp);
+        assert_eq!(format_hostfwd_remove(s), "hostfwd_remove net0 tcp::8080");
+    }
+
+    #[test]
+    fn format_hostfwd_remove_udp() {
+        let s = ForwardSpec::new(53, 53, Proto::Udp);
+        assert_eq!(format_hostfwd_remove(s), "hostfwd_remove net0 udp::53");
+    }
 
     #[tokio::test]
     async fn allocate_free_port_returns_nonzero() {
@@ -865,6 +948,7 @@ mod tests {
         tokio::fs::write(instance.pid_path(), "12345").await.unwrap();
         tokio::fs::write(instance.qmp_socket_path(), "dummy").await.unwrap();
         tokio::fs::write(instance.ssh_port_path(), "2222").await.unwrap();
+        tokio::fs::write(instance.forwards_path(), "active = []\n").await.unwrap();
 
         assert!(instance.pid_path().exists());
         assert!(instance.qmp_socket_path().exists());
@@ -875,6 +959,7 @@ mod tests {
         assert!(!instance.pid_path().exists());
         assert!(!instance.qmp_socket_path().exists());
         assert!(!instance.ssh_port_path().exists());
+        assert!(!instance.forwards_path().exists());
     }
 
     #[tokio::test]

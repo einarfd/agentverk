@@ -241,6 +241,12 @@ impl Instance {
         self.dir.join("provision.log")
     }
 
+    /// Path to the active port-forwards state file.
+    #[must_use]
+    pub fn forwards_path(&self) -> PathBuf {
+        self.dir.join("forwards.toml")
+    }
+
     /// Path to the legacy provisioned marker file.
     ///
     /// Newer VMs use `provision_state` instead. This file is kept for
@@ -336,6 +342,7 @@ impl Instance {
             let _ = tokio::fs::remove_file(self.pid_path()).await;
             let _ = tokio::fs::remove_file(self.qmp_socket_path()).await;
             let _ = tokio::fs::remove_file(self.ssh_port_path()).await;
+            let _ = tokio::fs::remove_file(self.forwards_path()).await;
             // Remove the managed SSH config entry so `ssh <name>` doesn't
             // try to connect to a stale port.
             let _ = crate::ssh_config::remove_entry(&self.name).await;
