@@ -69,15 +69,34 @@ nvim scp://myvm//home/agent/project/file.py
 
 ## Port forwarding for web UIs
 
-If your project runs a web server inside the VM, forward the port:
+If your project runs a web server inside the VM, forward the port. `agv forward`
+returns immediately — the forward lives on QEMU, not on your terminal:
 
 ```sh
-agv forward myvm 8080              # VM:8080 → local:8080
-agv forward myvm 3000:8080         # VM:8080 → local:3000
+agv forward myvm 8080              # host:8080 → VM:8080
+agv forward myvm 3000:8080         # host:3000 → VM:8080
+agv forward myvm 53/udp            # UDP
 ```
 
 Then open `http://localhost:8080` (or `3000`) in your browser.
-See `agv forward --help` for more options.
+
+Manage what's active:
+
+```sh
+agv forward myvm --list            # show everything currently forwarded
+agv forward myvm --stop 8080       # remove one
+agv forward myvm --stop            # remove every active forward
+```
+
+For forwards you want every time the VM starts, declare them in `agv.toml`:
+
+```toml
+forwards = ["8080", "3000:8080", "5433:5432"]
+```
+
+Runtime `agv forward` changes are ephemeral — the next `agv start`/`agv resume`
+resets to exactly what the config declares. See `docs/config.md` for the full
+syntax and `agv forward --help` for more options.
 
 ## Copying files
 

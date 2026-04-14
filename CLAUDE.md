@@ -65,7 +65,9 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Errors**: `src/error.rs` — `thiserror` enum with all error variants
 - **VM lifecycle**: `src/vm/mod.rs` — orchestrates create/start/stop/destroy, file copy, provisioning
 - **Instance state**: `src/vm/instance.rs` — on-disk state, status reconciliation
-- **QEMU**: `src/vm/qemu.rs` — process spawning and QMP protocol
+- **QEMU**: `src/vm/qemu.rs` — process spawning and QMP protocol (including `hostfwd_add`/`hostfwd_remove`)
+- **Port forwarding runtime**: `src/vm/forwarding.rs` — add/list/stop on a running VM, persists to `<instance>/forwards.toml`
+- **Port forwarding types**: `src/forward.rs` — `ForwardSpec` parser (`HOST[:GUEST][/PROTO]`), active-forwards state file I/O
 - **Cloud-init**: `src/vm/cloud_init.rs` — seed image generation (user setup, SSH keys, hostname only)
 - **SSH**: `src/ssh.rs` — shells out to system `ssh`/`scp` for sessions, commands, and file copy
 - **Images**: `src/image.rs` — download, cache, checksum, qcow2 overlays
@@ -85,7 +87,8 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Cloud-init seed only handles user creation, SSH keys, and hostname.** All file and software setup happens after SSH is ready, via the setup/provision/file-copy flow.
 - **ISO creation is platform-specific.** macOS uses built-in `hdiutil`, Linux uses `mkisofs`/`genisoimage`. Split with `#[cfg(target_os = "macos")]`.
 - **Managed SSH config for IDE integration.** `ssh_config.rs` maintains `<data_dir>/ssh_config` with Host entries for running VMs. Updated automatically on start/stop/destroy. Users add an Include once via `agv doctor --setup-ssh`.
-- **`agv cp` and `agv forward` wrap scp/ssh** with VM-aware syntax. `cp` uses `:path` prefix for VM paths; `forward` uses `local[:remote]` port specs. Both check VM status before connecting.
+- **`agv cp` wraps scp** with VM-aware syntax — `:path` marks a path inside the VM.
+- **`agv forward` uses QEMU hostfwd via QMP**, not SSH tunnels. Add/list/stop subcommands mutate the live set on a running VM; runtime changes are ephemeral and wiped on next start/resume. Persistent forwards are declared in config (`forwards = [...]` or `agv config set --forwards`) and reapplied on every start/resume. Host<->guest specs use the form `HOST[:GUEST][/PROTO]`. State tracked in `<instance>/forwards.toml` with an origin tag (`config`/`adhoc`) so `--list` can distinguish them.
 - **`agv suspend` / `agv resume` use QEMU savevm/loadvm.** State is stored as a snapshot inside the qcow2 disk (no extra files). Suspend uses HMP `savevm` via QMP `human-monitor-command`, then exits QEMU; resume passes `-loadvm agv-suspend` to QEMU on start.
 - **Provision state is tracked per phase + step index.** `<instance>/provision_state` (TOML) records phase (`ssh_wait`/`files`/`setup`/`provision`/`complete`) and the next step index. On first-boot failure, the VM is marked `broken` but QEMU is left running so the user can SSH in to debug. `agv start --retry` resumes from the saved phase/index, skipping completed steps. Legacy VMs with the old `provisioned` touch file are auto-detected as `Complete`.
 - **Interactive provisioning (`-i/--interactive` on `create` and `start`).** Prompts before each file copy, setup step, and provision step with `y/n/e/a/q`. Edit (`e`) is runtime-only — does not modify the saved config. Implemented in `src/interactive.rs` with `prompt_step_io` for testability.
@@ -110,7 +113,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 
 `~/.local/share/agv/` (XDG-compliant, same on all platforms). Override with `AGV_DATA_DIR`.
 
-Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `efi-vars.fd` (aarch64 only).
+Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `forwards.toml` (present when forwards are active), `efi-vars.fd` (aarch64 only).
 
 The data dir also contains `ssh_config` — a managed SSH config file with Host entries for running VMs (see `ssh_config.rs`).
 

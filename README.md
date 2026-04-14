@@ -88,7 +88,7 @@ Commands:
   destroy   Destroy a VM and delete all its data
   ssh       Open an SSH session to a running VM
   cp        Copy files between the host and a running VM
-  forward   Forward ports from a running VM to the host
+  forward   Add, list, or remove host-to-guest port forwards on a running VM
   ls        List all VMs
   images    List available base images and mixins
   inspect   Show runtime status of a VM
