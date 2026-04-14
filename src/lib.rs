@@ -175,6 +175,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("  ✓ VM '{}' destroyed", args.name);
             Ok(())
         }
+        Command::Rename(args) => {
+            tracing::info!(old = %args.old, new = %args.new, "renaming VM");
+            vm::rename(&args.old, &args.new).await?;
+            println!("  ✓ VM '{}' renamed to '{}'", args.old, args.new);
+            println!();
+            println!("  Note: the hostname inside the guest is unchanged.");
+            println!("  To update it, SSH in after starting the VM and run:");
+            println!("    sudo hostnamectl set-hostname {}", args.new);
+            Ok(())
+        }
         Command::Ssh(args) => {
             let inst = vm::instance::Instance::open(&args.name)?;
             let status = inst.reconcile_status().await?;

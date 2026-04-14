@@ -53,6 +53,9 @@ pub enum Command {
     /// Destroy a VM and delete all its data.
     Destroy(DestroyArgs),
 
+    /// Rename a VM. The VM must be stopped or suspended.
+    Rename(RenameArgs),
+
     /// Open an SSH session to a running VM.
     Ssh(SshArgs),
 
@@ -229,6 +232,15 @@ pub struct DestroyArgs {
     /// Destroy even if the VM is currently running (force-stops it first).
     #[arg(short, long)]
     pub force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RenameArgs {
+    /// Current name of the VM.
+    pub old: String,
+
+    /// New name for the VM.
+    pub new: String,
 }
 
 #[derive(Debug, clap::Args)]

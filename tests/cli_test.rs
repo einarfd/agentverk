@@ -45,7 +45,23 @@ fn help_lists_all_subcommands() {
         .stdout(contains("cp"))
         .stdout(contains("forward"))
         .stdout(contains("suspend"))
-        .stdout(contains("resume"));
+        .stdout(contains("resume"))
+        .stdout(contains("rename"));
+}
+
+#[test]
+fn rename_help_succeeds() {
+    agv()
+        .args(["rename", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("stopped or suspended"));
+}
+
+#[test]
+fn rename_missing_args_fails() {
+    agv().args(["rename"]).assert().failure();
+    agv().args(["rename", "old"]).assert().failure();
 }
 
 #[test]

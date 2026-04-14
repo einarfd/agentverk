@@ -982,6 +982,62 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
 ///
 /// Refuses to destroy a running VM unless `force` is set, to prevent
 /// accidental data loss.
+/// Rename a VM. Requires the VM to be stopped, suspended, or broken
+/// (renaming a running VM would move files out from under QEMU).
+///
+/// Moves the instance directory, updates the managed SSH config, and
+/// returns whether the guest hostname should be updated manually.
+pub async fn rename(old: &str, new: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        old != new,
+        "old and new names are identical: '{old}'"
+    );
+    anyhow::ensure!(
+        !new.is_empty(),
+        "new name cannot be empty"
+    );
+    anyhow::ensure!(
+        !new.contains('/') && !new.contains('\\') && !new.contains('\0'),
+        "new name contains invalid characters: '{new}'"
+    );
+
+    let inst = Instance::open(old)?;
+    let status = inst.reconcile_status().await?;
+    anyhow::ensure!(
+        matches!(status, Status::Stopped | Status::Suspended | Status::Broken),
+        Error::VmBadState {
+            name: old.to_string(),
+            status: status.to_string(),
+            expected: "stopped, suspended, or broken".to_string(),
+        }
+    );
+
+    let new_dir = dirs::instance_dir(new)?;
+    if new_dir.exists() {
+        return Err(Error::VmAlreadyExists {
+            name: new.to_string(),
+        }
+        .into());
+    }
+
+    // Remove the old SSH config entry (usually already gone if stopped).
+    let _ = ssh_config::remove_entry(old).await;
+
+    // Move the directory.
+    tokio::fs::rename(&inst.dir, &new_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to rename instance directory {} → {}",
+                inst.dir.display(),
+                new_dir.display()
+            )
+        })?;
+
+    info!(old, new, "VM renamed");
+    Ok(())
+}
+
 pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
