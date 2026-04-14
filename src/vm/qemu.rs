@@ -166,10 +166,17 @@ pub async fn hostfwd_add(instance: &Instance, spec: ForwardSpec) -> anyhow::Resu
     let mut client = QmpClient::connect(&socket_path).await?;
     let cmd = format_hostfwd_add(spec);
     debug!(vm = %instance.name, %cmd, "hostfwd_add via QMP");
-    client
-        .execute_hmp(&cmd)
+    let resp = client
+        .execute_hmp_raw(&cmd)
         .await
         .with_context(|| format!("failed to add forward {spec}"))?;
+    // hostfwd_add is silent on success; any non-empty output is an error.
+    if let Some(text) = resp.get("return").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            bail!("hostfwd_add {spec} failed: {trimmed}");
+        }
+    }
     Ok(())
 }
 
@@ -179,10 +186,22 @@ pub async fn hostfwd_remove(instance: &Instance, spec: ForwardSpec) -> anyhow::R
     let mut client = QmpClient::connect(&socket_path).await?;
     let cmd = format_hostfwd_remove(spec);
     debug!(vm = %instance.name, %cmd, "hostfwd_remove via QMP");
-    client
-        .execute_hmp(&cmd)
+    let resp = client
+        .execute_hmp_raw(&cmd)
         .await
         .with_context(|| format!("failed to remove forward {spec}"))?;
+    // hostfwd_remove prints "host forwarding rule for ... removed" on success
+    // and "invalid host forwarding rule" (or similar) on failure. Treat the
+    // success string as OK; anything else is an error.
+    if let Some(text) = resp.get("return").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("host forwarding rule") {
+            bail!("hostfwd_remove {spec} failed: {trimmed}");
+        }
+        // An exact match on "host forwarding rule for X removed" is more
+        // precise, but QEMU versions wording this varies slightly; the
+        // prefix check plus empty-is-also-OK is robust.
+    }
     Ok(())
 }
 
@@ -267,7 +286,25 @@ impl QmpClient {
 
     /// Execute a Human Monitor (HMP) command via the QMP human-monitor-command
     /// wrapper. Used for HMP-only operations like `savevm`/`loadvm`.
+    ///
+    /// Treats any non-empty output as an HMP-level error. Most HMP commands
+    /// are silent on success, but commands like `hostfwd_add`/`hostfwd_remove`
+    /// print an informational message — use [`execute_hmp_raw`] for those.
     async fn execute_hmp(&mut self, command: &str) -> anyhow::Result<serde_json::Value> {
+        let resp = self.execute_hmp_raw(command).await?;
+        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
+            if !ret.trim().is_empty() {
+                bail!("HMP command '{command}' returned error: {}", ret.trim());
+            }
+        }
+        Ok(resp)
+    }
+
+    /// Execute an HMP command without treating non-empty output as an error.
+    ///
+    /// Returns the raw response so the caller can inspect the output string
+    /// against command-specific success/failure patterns.
+    async fn execute_hmp_raw(&mut self, command: &str) -> anyhow::Result<serde_json::Value> {
         let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
         let msg = format!(
             r#"{{"execute":"human-monitor-command","arguments":{{"command-line":"{escaped}"}}}}"#
@@ -276,13 +313,6 @@ impl QmpClient {
         let resp = self.read_response().await?;
         if let Some(error) = resp.get("error") {
             bail!("HMP command '{command}' failed: {error}");
-        }
-        // The "return" field of human-monitor-command is the HMP output as a string.
-        // If it's non-empty, it usually indicates an error from the HMP command itself.
-        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
-            if !ret.trim().is_empty() {
-                bail!("HMP command '{command}' returned error: {}", ret.trim());
-            }
         }
         Ok(resp)
     }

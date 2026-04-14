@@ -306,6 +306,7 @@ EMPTY=
                     script: Some("{{HOME}}/scripts/setup.sh".to_string()),
                 },
             ],
+            forwards: vec![],
             template_name: None,
         };
 

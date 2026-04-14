@@ -80,14 +80,19 @@ pub enum Command {
     /// View or change VM configuration.
     Config(Box<ConfigArgs>),
 
-    /// Forward ports from a running VM to the host.
+    /// Add, list, or remove host-to-guest port forwards on a running VM.
     ///
-    /// Each port is local[:remote]. If remote is omitted, it matches local.
+    /// Port specs use the form HOST[:GUEST][/PROTO]:
+    ///   agv forward myvm 8080               # host:8080 → VM:8080
+    ///   agv forward myvm 8080:3000          # host:8080 → VM:3000
+    ///   agv forward myvm 53/udp             # UDP
+    ///   agv forward myvm 5432 9090          # add two at once
+    ///   agv forward myvm --list             # show active forwards
+    ///   agv forward myvm --stop             # remove every active forward
+    ///   agv forward myvm --stop 8080        # remove a specific forward
     ///
-    /// Examples:
-    ///   agv forward myvm 8080               # VM:8080 → local:8080
-    ///   agv forward myvm 8080:3000          # VM:3000 → local:8080
-    ///   agv forward myvm 8080:3000 5432     # forward two ports
+    /// Runtime changes are ephemeral: on next start/resume the set is reset
+    /// to what the config declares in `forwards = [...]`.
     #[command(verbatim_doc_comment)]
     Forward(ForwardArgs),
 
@@ -335,6 +340,12 @@ pub struct ConfigSetArgs {
     /// New disk size (must be larger than current), e.g. 40G.
     #[arg(long)]
     pub disk: Option<String>,
+
+    /// Replace the persistent forwards list with a comma-separated set of
+    /// specs (HOST[:GUEST][/PROTO]). Pass an empty string to clear all
+    /// forwards. Takes effect on the next start/resume.
+    #[arg(long, value_name = "SPECS")]
+    pub forwards: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -350,12 +361,22 @@ pub struct DoctorArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct ForwardArgs {
-    /// Name of the VM to forward ports from.
+    /// Name of the VM.
     pub name: String,
 
-    /// Ports to forward: local[:remote]. Repeatable.
-    #[arg(required = true)]
+    /// Port specs (HOST[:GUEST][/PROTO]). With no flags, each spec is added;
+    /// with --stop, each spec is removed. Cannot be combined with --list.
+    #[arg(conflicts_with = "list")]
     pub ports: Vec<String>,
+
+    /// Show the active forwards on the VM.
+    #[arg(long, conflicts_with = "stop")]
+    pub list: bool,
+
+    /// Remove forwards. With port specs, only those are removed; with no
+    /// specs, every active forward (config and ad-hoc) is removed.
+    #[arg(long)]
+    pub stop: bool,
 }
 
 #[derive(Debug, clap::Args)]

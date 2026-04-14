@@ -98,6 +98,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         files: vec![],
         setup: vec![],
         provision: vec![],
+        forwards: vec![],
         template_name: None,
     }
 }
@@ -216,6 +217,7 @@ async fn create_marks_broken_on_failure() {
         files: vec![],
         setup: vec![],
         provision: vec![],
+        forwards: vec![],
         template_name: None,
     };
 
@@ -297,6 +299,7 @@ async fn create_with_start_and_provision() {
             ),
             script: None,
         }],
+        forwards: vec![],
     })
     .unwrap();
 
@@ -365,6 +368,7 @@ async fn suspend_and_resume_preserves_state() {
         files: vec![],
         setup: vec![],
         provision: vec![],
+        forwards: vec![],
     })
     .unwrap();
 
@@ -521,6 +525,7 @@ async fn provision_failure_then_retry_resumes() {
                 script: None,
             },
         ],
+        forwards: vec![],
     })
     .unwrap();
 

@@ -39,6 +39,13 @@ pub struct Config {
     /// Provisioning steps, executed in order after files are copied.
     #[serde(default)]
     pub provision: Vec<ProvisionStep>,
+
+    /// Host-to-guest port forwards, applied on start/resume.
+    ///
+    /// Each entry is `HOST[:GUEST][/PROTO]` (e.g. `"8080"`, `"5433:5432"`,
+    /// `"53/udp"`). Parsed and validated during [`resolve()`].
+    #[serde(default)]
+    pub forwards: Vec<String>,
 }
 
 /// Image source — either a parent image name or arch-specific cloud image URLs.
@@ -164,6 +171,13 @@ pub struct ResolvedConfig {
     #[serde(default)]
     pub provision: Vec<ProvisionStep>,
 
+    /// Host-to-guest port forwards (accumulated from full chain).
+    ///
+    /// Each entry is validated against [`crate::forward::ForwardSpec`] during
+    /// resolution, so downstream code can treat the list as well-formed.
+    #[serde(default)]
+    pub forwards: Vec<String>,
+
     /// Name of the template this VM was cloned from, if any.
     ///
     /// Set when a VM is created with `agv create --from <template>`.
@@ -214,6 +228,15 @@ pub fn resolve(config: Config) -> anyhow::Result<ResolvedConfig> {
     resolved.disk = crate::image::normalize_size(&resolved.disk)
         .context("invalid disk size")?;
 
+    // Validate forwards once at the end so parent + child + include conflicts
+    // all surface together, rather than reporting them piecemeal per layer.
+    let parsed = crate::forward::parse_specs(resolved.forwards.iter())
+        .context("invalid port forward in config")?;
+    crate::forward::validate_unique(&parsed).context("invalid port forward set in config")?;
+    // Normalize each entry to its canonical string form so the saved
+    // ResolvedConfig round-trips via load_resolved.
+    resolved.forwards = parsed.iter().map(ToString::to_string).collect();
+
     Ok(resolved)
 }
 
@@ -237,6 +260,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         files: child_files,
         setup: child_setup,
         provision: child_provision,
+        forwards: child_forwards,
     } = config;
 
     if let Some(parent_name) = from {
@@ -271,6 +295,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
         };
 
         // Merge child scalars on top of resolved parent.
@@ -283,6 +308,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         resolved.files.extend(child_files);
         resolved.setup.extend(child_setup);
         resolved.provision.extend(child_provision);
+        resolved.forwards.extend(child_forwards);
 
         Ok(resolved)
     } else {
@@ -322,6 +348,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
             template_name: None,
         };
 
@@ -332,6 +359,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         resolved.files.extend(child_files);
         resolved.setup.extend(child_setup);
         resolved.provision.extend(child_provision);
+        resolved.forwards.extend(child_forwards);
 
         Ok(resolved)
     }
@@ -410,6 +438,7 @@ fn apply_includes(
         resolved.files.extend(include_config.files);
         resolved.setup.extend(include_config.setup);
         resolved.provision.extend(include_config.provision);
+        resolved.forwards.extend(include_config.forwards);
     }
 
     Ok(())
@@ -432,6 +461,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
     let mut provision = parent.provision;
     provision.extend(child.provision);
 
+    let mut forwards = parent.forwards;
+    forwards.extend(child.forwards);
+
     ResolvedConfig {
         base_url: parent.base_url,
         base_checksum: parent.base_checksum,
@@ -449,6 +481,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         files,
         setup,
         provision,
+        forwards,
         template_name: None,
     }
 }
@@ -666,6 +699,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -708,6 +742,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -740,6 +775,7 @@ mod tests {
                 run: Some("echo child".to_string()),
                 script: None,
             }],
+            forwards: vec![],
         };
 
         let resolved = resolve(child).unwrap();
@@ -772,6 +808,7 @@ mod tests {
                 run: Some("echo project".to_string()),
                 script: None,
             }],
+            forwards: vec![],
         };
 
         let resolved = resolve(project).unwrap();
@@ -791,6 +828,138 @@ mod tests {
             .unwrap()
             .contains("claude.ai"));
         assert_eq!(resolved.provision[1].run.as_deref(), Some("echo project"));
+    }
+
+    #[test]
+    fn resolve_collects_and_normalizes_forwards() {
+        let config = Config {
+            base: Some(BaseConfig {
+                from: None,
+                include: vec![],
+                spec: None,
+                user: None,
+                aarch64: Some(ArchImage {
+                    url: "https://example.com/arm64.img".to_string(),
+                    checksum: "sha256:aaa".to_string(),
+                }),
+                x86_64: Some(ArchImage {
+                    url: "https://example.com/amd64.img".to_string(),
+                    checksum: "sha256:bbb".to_string(),
+                }),
+            }),
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec![
+                "8080".to_string(),
+                "  5433:5432  ".to_string(),
+                "53/udp".to_string(),
+            ],
+        };
+        let resolved = resolve(config).unwrap();
+        assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "53/udp"]);
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_forward() {
+        let config = Config {
+            base: Some(BaseConfig {
+                from: None,
+                include: vec![],
+                spec: None,
+                user: None,
+                aarch64: Some(ArchImage {
+                    url: "https://example.com/arm64.img".to_string(),
+                    checksum: "sha256:aaa".to_string(),
+                }),
+                x86_64: Some(ArchImage {
+                    url: "https://example.com/amd64.img".to_string(),
+                    checksum: "sha256:bbb".to_string(),
+                }),
+            }),
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec!["not-a-port".to_string()],
+        };
+        let err = resolve(config).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("port"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn resolve_rejects_duplicate_forward() {
+        let config = Config {
+            base: Some(BaseConfig {
+                from: None,
+                include: vec![],
+                spec: None,
+                user: None,
+                aarch64: Some(ArchImage {
+                    url: "https://example.com/arm64.img".to_string(),
+                    checksum: "sha256:aaa".to_string(),
+                }),
+                x86_64: Some(ArchImage {
+                    url: "https://example.com/amd64.img".to_string(),
+                    checksum: "sha256:bbb".to_string(),
+                }),
+            }),
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec!["8080".to_string(), "8080:3000".to_string()],
+        };
+        let err = resolve(config).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("duplicate"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn resolve_merges_forwards_through_inheritance() {
+        let child = Config {
+            base: Some(BaseConfig {
+                from: Some("ubuntu-24.04".to_string()),
+                ..Default::default()
+            }),
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec!["9000:9000".to_string()],
+        };
+        let resolved = resolve(child).unwrap();
+        assert_eq!(resolved.forwards, vec!["9000"]);
+    }
+
+    #[test]
+    fn merge_accumulates_forwards() {
+        let parent = ResolvedConfig {
+            base_url: String::new(),
+            base_checksum: String::new(),
+            skip_checksum: false,
+            memory: "2G".to_string(),
+            cpus: 2,
+            disk: "20G".to_string(),
+            user: "agent".to_string(),
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec!["8080".to_string()],
+            template_name: None,
+        };
+        let child = Config {
+            base: None,
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec!["9090".to_string()],
+        };
+        let result = merge(parent, child);
+        assert_eq!(result.forwards, vec!["8080", "9090"]);
     }
 
     #[test]
@@ -825,6 +994,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
             template_name: None,
         };
 
@@ -838,6 +1008,7 @@ mod tests {
             files: vec![],
             setup: vec![],
             provision: vec![],
+            forwards: vec![],
         };
 
         let result = merge(parent, child);
@@ -872,6 +1043,7 @@ mod tests {
                 run: Some("echo parent".to_string()),
                 script: None,
             }],
+            forwards: vec![],
             template_name: None,
         };
 
@@ -892,6 +1064,7 @@ mod tests {
                 run: Some("echo child".to_string()),
                 script: None,
             }],
+            forwards: vec![],
         };
 
         let result = merge(parent, child);
@@ -1066,6 +1239,7 @@ cpus = 4
                 run: Some("echo hello".to_string()),
                 script: None,
             }],
+            forwards: vec![],
             template_name: None,
         };
 

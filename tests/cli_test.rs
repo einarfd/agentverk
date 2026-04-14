@@ -344,7 +344,7 @@ fn forward_invalid_port_fails() {
         .args(["forward", "novm", "not_a_port"])
         .assert()
         .failure()
-        .stderr(contains("invalid port"));
+        .stderr(contains("not a valid port"));
 }
 
 // ── Cp ────────────────────────────────────────────────────────────────────────

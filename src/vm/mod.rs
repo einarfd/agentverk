@@ -4,6 +4,7 @@
 //! submodules for QEMU process management, cloud-init, and instance state.
 
 pub mod cloud_init;
+pub mod forwarding;
 pub mod instance;
 pub mod qemu;
 
@@ -57,6 +58,54 @@ async fn update_ssh_config(inst: &Instance, user: &str) {
 /// Print a completed-step line above the spinner, keeping previous output visible.
 fn step_done(spinner: &ProgressBar, msg: &str) {
     spinner.println(format!("  ✓ {msg}"));
+}
+
+/// Apply config-declared forwards to a newly-started VM and surface results.
+///
+/// Failures are non-fatal: the VM is already up, so a port collision should
+/// not mark it broken. Each failed spec is reported inline so the user can
+/// act on it (edit config, free the port) without having to re-check status.
+async fn apply_and_report_forwards(
+    inst: &Instance,
+    config: &ResolvedConfig,
+    spinner: &ProgressBar,
+) {
+    if config.forwards.is_empty() {
+        // Still clear any stale state left from a previous boot.
+        let _ = crate::forward::clear_active(&inst.forwards_path()).await;
+        return;
+    }
+    let specs = match crate::forward::parse_specs(config.forwards.iter()) {
+        Ok(s) => s,
+        Err(e) => {
+            spinner.println(format!(
+                "  ! Skipping forwards — failed to parse config: {e:#}"
+            ));
+            return;
+        }
+    };
+    match forwarding::apply_config_forwards(inst, &specs).await {
+        Ok(outcome) => {
+            if !outcome.applied.is_empty() {
+                step_done(
+                    spinner,
+                    &format!(
+                        "Applied {} forward{}",
+                        outcome.applied.len(),
+                        if outcome.applied.len() == 1 { "" } else { "s" }
+                    ),
+                );
+            }
+            for (spec, msg) in &outcome.failures {
+                spinner.println(format!("  ! Forward {spec} failed: {msg}"));
+            }
+        }
+        Err(e) => {
+            spinner.println(format!(
+                "  ! Failed to persist forwards state: {e:#}"
+            ));
+        }
+    }
 }
 
 /// Mark a VM as broken and persist the error to all the relevant places.
@@ -465,10 +514,11 @@ pub async fn config_set(
     memory: Option<&str>,
     cpus: Option<u32>,
     disk: Option<&str>,
+    forwards: Option<&str>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        memory.is_some() || cpus.is_some() || disk.is_some(),
-        "no changes specified — provide at least one of --memory, --cpus, --disk"
+        memory.is_some() || cpus.is_some() || disk.is_some() || forwards.is_some(),
+        "no changes specified — provide at least one of --memory, --cpus, --disk, --forwards"
     );
 
     let inst = Instance::open(name)?;
@@ -513,6 +563,18 @@ pub async fn config_set(
     }
     if let Some(n) = cpus {
         config.cpus = n;
+    }
+    if let Some(raw) = forwards {
+        let items: Vec<&str> = if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect()
+        };
+        let specs = crate::forward::parse_specs(items)
+            .context("invalid --forwards value")?;
+        crate::forward::validate_unique(&specs)
+            .context("invalid --forwards value")?;
+        config.forwards = specs.iter().map(ToString::to_string).collect();
     }
 
     // Save config; if this fails after a disk resize the state is inconsistent.
@@ -605,6 +667,8 @@ pub async fn start(
         );
     }
     inst.write_status(Status::Running).await?;
+
+    apply_and_report_forwards(&inst, &config, &spinner).await;
 
     // Run first boot (resumes from saved state if any) or wait for SSH.
     let first_boot_result = if inst.is_provisioned() {
@@ -968,6 +1032,8 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
     qemu::start_with_loadvm(&inst, &config.memory, config.cpus, Some("agv-suspend")).await?;
     inst.write_status(Status::Running).await?;
     step_done(&spinner, "Resumed VM");
+
+    apply_and_report_forwards(&inst, &config, &spinner).await;
 
     wait_for_ssh(&inst, &config.user, &spinner).await?;
     step_done(&spinner, "SSH is ready");
@@ -1506,6 +1572,7 @@ async fn create_from_template_inner(
         files: vec![],
         setup: vec![],
         provision: vec![],
+        forwards: vec![],
         template_name: Some(template_name.to_string()),
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;

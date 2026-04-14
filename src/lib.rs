@@ -73,27 +73,86 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Parse port specs like `"8080"` or `"8080:3000"` into `(local, remote)` pairs.
-fn parse_port_specs(specs: &[String]) -> anyhow::Result<Vec<(u16, u16)>> {
-    let mut ports = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let (local, remote) = if let Some((l, r)) = spec.split_once(':') {
-            let local: u16 = l
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid local port in '{spec}'"))?;
-            let remote: u16 = r
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid remote port in '{spec}'"))?;
-            (local, remote)
-        } else {
-            let port: u16 = spec
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid port '{spec}'"))?;
-            (port, port)
-        };
-        ports.push((local, remote));
+async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
+    if args.list {
+        let active = vm::forwarding::list(&args.name).await?;
+        if active.is_empty() {
+            if !quiet {
+                println!("No active forwards on '{}'.", args.name);
+            }
+            return Ok(());
+        }
+        let host_width = active
+            .iter()
+            .map(|a| a.host.to_string().len())
+            .max()
+            .unwrap_or(0);
+        for a in &active {
+            let arrow = if a.host == a.guest { "↔" } else { "→" };
+            println!(
+                "  host:{host:>w$} {arrow} VM:{guest} ({proto}, {origin})",
+                host = a.host,
+                w = host_width,
+                guest = a.guest,
+                proto = a.proto,
+                origin = a.origin,
+            );
+        }
+        return Ok(());
     }
-    Ok(ports)
+
+    if args.stop {
+        if args.ports.is_empty() {
+            let removed = vm::forwarding::stop_all(&args.name).await?;
+            if !quiet {
+                if removed.is_empty() {
+                    println!("No active forwards to stop on '{}'.", args.name);
+                } else {
+                    println!(
+                        "  ✓ Stopped {} forward{} on '{}'",
+                        removed.len(),
+                        if removed.len() == 1 { "" } else { "s" },
+                        args.name
+                    );
+                }
+            }
+        } else {
+            let specs = forward::parse_specs(&args.ports)?;
+            let removed = vm::forwarding::stop(&args.name, &specs).await?;
+            if !quiet {
+                for entry in &removed {
+                    println!(
+                        "  ✓ Removed host:{host} (was {spec}, {origin})",
+                        host = entry.host,
+                        spec = entry.spec(),
+                        origin = entry.origin,
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Add path.
+    if args.ports.is_empty() {
+        anyhow::bail!(
+            "no ports specified — pass ports to add, or use --list/--stop (see `agv forward --help`)"
+        );
+    }
+    let specs = forward::parse_specs(&args.ports)?;
+    let added = vm::forwarding::add(&args.name, &specs).await?;
+    if !quiet {
+        for entry in &added {
+            let arrow = if entry.host == entry.guest { "↔" } else { "→" };
+            println!(
+                "  ✓ host:{host} {arrow} VM:{guest} ({proto})",
+                host = entry.host,
+                guest = entry.guest,
+                proto = entry.proto,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn config_step_label(step: &config::ProvisionStep) -> String {
@@ -402,12 +461,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 let old_memory = inst_config.memory.clone();
                 let old_cpus = inst_config.cpus;
                 let old_disk = inst_config.disk.clone();
+                let old_forwards = inst_config.forwards.clone();
 
                 vm::config_set(
                     &s.name,
                     s.memory.as_deref(),
                     s.cpus,
                     s.disk.as_deref(),
+                    s.forwards.as_deref(),
                 )
                 .await?;
 
@@ -424,6 +485,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         "  Note: guest filesystem not resized — run growpart/resize2fs \
                          inside the VM to use the extra space."
                     );
+                }
+                if s.forwards.is_some() {
+                    let new = {
+                        let inst = vm::instance::Instance::open(&s.name)?;
+                        config::load_resolved(&inst.config_path())?.forwards
+                    };
+                    let old_fmt = if old_forwards.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        old_forwards.join(", ")
+                    };
+                    let new_fmt = if new.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        new.join(", ")
+                    };
+                    println!("  forwards: {old_fmt} → {new_fmt}");
                 }
                 println!("  ✓ VM '{}' updated", s.name);
                 Ok(())
@@ -483,31 +561,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
-        Command::Forward(args) => {
-            // Validate port specs before opening the VM.
-            let ports = parse_port_specs(&args.ports)?;
-
-            let inst = vm::instance::Instance::open(&args.name)?;
-            let status = inst.reconcile_status().await?;
-            if status != vm::instance::Status::Running {
-                return Err(not_running_error(&args.name, status));
-            }
-            let cfg = config::load_resolved(&inst.config_path())?;
-
-            if !quiet {
-                eprintln!("Forwarding:");
-                for (local, remote) in &ports {
-                    if local == remote {
-                        eprintln!("  localhost:{local} ↔ VM:{remote}");
-                    } else {
-                        eprintln!("  localhost:{local} → VM:{remote}");
-                    }
-                }
-                eprintln!("Press Ctrl+C to stop.");
-            }
-
-            ssh::port_forward(&inst, &cfg.user, &ports).await
-        }
+        Command::Forward(args) => forward_command(args, quiet).await,
         Command::Cp(args) => {
             // Validate path syntax before opening the VM.
             let src_is_vm = args.source.starts_with(':');
@@ -621,45 +675,6 @@ mod tests {
         let (opts, cmd) = split_ssh_args(&args);
         assert_eq!(opts, &[s("-N")]);
         assert!(cmd.is_empty());
-    }
-
-    #[test]
-    fn parse_port_specs_single() {
-        let specs = vec![s("8080")];
-        let ports = parse_port_specs(&specs).unwrap();
-        assert_eq!(ports, vec![(8080, 8080)]);
-    }
-
-    #[test]
-    fn parse_port_specs_pair() {
-        let specs = vec![s("8080:3000")];
-        let ports = parse_port_specs(&specs).unwrap();
-        assert_eq!(ports, vec![(8080, 3000)]);
-    }
-
-    #[test]
-    fn parse_port_specs_multiple() {
-        let specs = vec![s("8080"), s("5432:5433")];
-        let ports = parse_port_specs(&specs).unwrap();
-        assert_eq!(ports, vec![(8080, 8080), (5432, 5433)]);
-    }
-
-    #[test]
-    fn parse_port_specs_invalid_port() {
-        let specs = vec![s("not_a_port")];
-        let result = parse_port_specs(&specs);
-        assert!(result.is_err());
-        let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("invalid port"), "unexpected: {err}");
-    }
-
-    #[test]
-    fn parse_port_specs_invalid_pair() {
-        let specs = vec![s("8080:abc")];
-        let result = parse_port_specs(&specs);
-        assert!(result.is_err());
-        let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("invalid remote port"), "unexpected: {err}");
     }
 
     #[test]

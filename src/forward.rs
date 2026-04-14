@@ -14,7 +14,7 @@ use anyhow::{bail, Context as _};
 use serde::{Deserialize, Serialize};
 
 /// Transport protocol for a forward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Proto {
     #[default]

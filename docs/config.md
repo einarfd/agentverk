@@ -22,6 +22,7 @@ A config file can contain these sections:
 | `[[files]]` | Files to copy from the host into the VM |
 | `[[setup]]` | Commands run as root before provisioning |
 | `[[provision]]` | Commands run as your user after setup |
+| `forwards` | Host→guest port forwards applied on every start/resume |
 
 `[[files]]`, `[[setup]]`, and `[[provision]]` can each appear multiple times and run in
 the order listed. Sections from mixins (`include`) run before your own.
@@ -137,6 +138,28 @@ CLI equivalents: `--provision "SCRIPT"`, `--provision-script ./path`
 
 `setup` and `provision` steps from mixins run before your own steps, in the order the
 mixins are listed.
+
+## `forwards`
+
+Port forwards from the host into the VM, applied automatically on every `agv start`
+or `agv resume` via QEMU's user-mode networking.
+
+```toml
+forwards = [
+  "8080",         # host:8080 → VM:8080 (tcp, default)
+  "5433:5432",    # host:5433 → VM:5432
+  "53/udp",       # UDP
+  "9000:9000/udp",
+]
+```
+
+Each entry is `HOST[:GUEST][/PROTO]`. When `GUEST` is omitted it defaults to the same
+value as `HOST`; `PROTO` is `tcp` unless set to `udp`.
+
+Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
+the next start/resume resets the set back to what the config declares. To change the
+persistent set without editing the config file, use `agv config set --forwards "..."`
+(replaces the list wholesale).
 
 ## Template variables
 
