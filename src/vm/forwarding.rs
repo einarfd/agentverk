@@ -64,12 +64,13 @@ fn spawn_supervisor(vm: &str, spec: ForwardSpec) -> anyhow::Result<u32> {
 
 /// Check whether a process with this PID is still alive.
 fn is_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let Ok(pid_i32) = i32::try_from(pid) else {
+        return false;
+    };
+    let Some(p) = rustix::process::Pid::from_raw(pid_i32) else {
+        return false;
+    };
+    rustix::process::test_kill_process(p).is_ok()
 }
 
 /// Drop entries whose supervisor is no longer running, persisting the

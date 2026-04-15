@@ -268,15 +268,19 @@ pub async fn clear_active(path: &Path) -> anyhow::Result<()> {
 
 /// Send SIGTERM to a supervisor process group. Tolerates an already-dead PID.
 ///
-/// The supervisor was spawned in its own process group, so signalling
-/// `-pid` reaches the supervisor and any in-flight `ssh` child it spawned.
+/// The supervisor was spawned in its own process group, so signalling the
+/// group reaches the supervisor and any in-flight `ssh` child it spawned.
+/// Uses `rustix::process::kill_process_group` instead of shelling out to
+/// `kill(1)`, which has subtly different argument-parsing rules between
+/// Linux util-linux and macOS BSD `kill` for negative-PID arguments.
 pub fn kill_supervisor(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{pid}"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let Ok(pid_i32) = i32::try_from(pid) else {
+        return;
+    };
+    let Some(p) = rustix::process::Pid::from_raw(pid_i32) else {
+        return;
+    };
+    let _ = rustix::process::kill_process_group(p, rustix::process::Signal::TERM);
 }
 
 /// Best-effort: kill every supervisor listed in `path` and remove the file.

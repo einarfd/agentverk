@@ -16,6 +16,7 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["stream"] }
+rustix = { version = "1", features = ["process"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 serde_json = "1"
