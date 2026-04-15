@@ -668,8 +668,6 @@ pub async fn start(
     }
     inst.write_status(Status::Running).await?;
 
-    apply_and_report_forwards(&inst, &config, &spinner).await;
-
     // Run first boot (resumes from saved state if any) or wait for SSH.
     let first_boot_result = if inst.is_provisioned() {
         wait_for_ssh(&inst, &config.user, &spinner).await.map(|()| {
@@ -685,6 +683,11 @@ pub async fn start(
         mark_broken_with_error(&inst, &e).await;
         return Err(e);
     }
+
+    // Apply forwards only after SSH is up — the supervisors would otherwise
+    // burn through retry cycles waiting for sshd, and the success message
+    // would print before any forward could possibly work.
+    apply_and_report_forwards(&inst, &config, &spinner).await;
 
     update_ssh_config(&inst, &config.user).await;
 
@@ -1037,10 +1040,10 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
     inst.write_status(Status::Running).await?;
     step_done(&spinner, "Resumed VM");
 
-    apply_and_report_forwards(&inst, &config, &spinner).await;
-
     wait_for_ssh(&inst, &config.user, &spinner).await?;
     step_done(&spinner, "SSH is ready");
+
+    apply_and_report_forwards(&inst, &config, &spinner).await;
 
     update_ssh_config(&inst, &config.user).await;
 
