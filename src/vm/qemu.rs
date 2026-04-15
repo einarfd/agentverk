@@ -146,7 +146,7 @@ pub async fn force_stop(instance: &Instance) -> anyhow::Result<()> {
     };
 
     info!(vm = %instance.name, pid, "force-killing QEMU process");
-    let _ = kill_process(pid, "KILL");
+    let _ = kill_process(pid, rustix::process::Signal::KILL);
 
     // Brief sleep to let the OS clean up.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -675,24 +675,15 @@ async fn read_pid(instance: &Instance) -> anyhow::Result<u32> {
 
 /// Check whether a process with the given PID is alive.
 fn is_process_alive(pid: u32) -> bool {
-    // Use kill -0 via std::process since we just need a quick synchronous check.
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    crate::forward::pid_from_u32(pid)
+        .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
 }
 
 /// Send a signal to a process. Returns `true` if the signal was sent
 /// successfully, `false` if the process was not found.
-fn kill_process(pid: u32, signal: &str) -> bool {
-    std::process::Command::new("kill")
-        .args([&format!("-{signal}"), &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+fn kill_process(pid: u32, signal: rustix::process::Signal) -> bool {
+    crate::forward::pid_from_u32(pid)
+        .is_some_and(|p| rustix::process::kill_process(p, signal).is_ok())
 }
 
 /// Remove runtime files (PID, QMP socket, SSH port) — ignore errors.

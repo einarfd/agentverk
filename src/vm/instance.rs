@@ -361,15 +361,8 @@ impl Instance {
         let Ok(pid) = raw.trim().parse::<u32>() else {
             return false;
         };
-        // Use `kill -0` via the shell to check process existence without
-        // needing unsafe libc calls.
-        tokio::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .is_ok_and(|s| s.success())
+        crate::forward::pid_from_u32(pid)
+            .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
     }
 }
 

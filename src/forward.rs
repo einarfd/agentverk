@@ -266,6 +266,17 @@ pub async fn clear_active(path: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Convert a stored `u32` PID into the `rustix` PID newtype.
+///
+/// Returns `None` for 0 (which `rustix` rejects as the "calling process"
+/// sentinel) or values outside the `i32` range. Centralises the two
+/// fallible conversion steps every PID-using callsite would otherwise
+/// repeat.
+#[must_use]
+pub fn pid_from_u32(pid: u32) -> Option<rustix::process::Pid> {
+    rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)
+}
+
 /// Send SIGTERM to a supervisor process group. Tolerates an already-dead PID.
 ///
 /// The supervisor was spawned in its own process group, so signalling the
@@ -274,10 +285,7 @@ pub async fn clear_active(path: &Path) -> anyhow::Result<()> {
 /// `kill(1)`, which has subtly different argument-parsing rules between
 /// Linux util-linux and macOS BSD `kill` for negative-PID arguments.
 pub fn kill_supervisor(pid: u32) {
-    let Ok(pid_i32) = i32::try_from(pid) else {
-        return;
-    };
-    let Some(p) = rustix::process::Pid::from_raw(pid_i32) else {
+    let Some(p) = pid_from_u32(pid) else {
         return;
     };
     let _ = rustix::process::kill_process_group(p, rustix::process::Signal::TERM);
