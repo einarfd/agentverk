@@ -180,6 +180,10 @@ impl fmt::Display for Origin {
 }
 
 /// A forward currently active on a running VM.
+///
+/// Each active entry is backed by an agv-spawned supervisor process that
+/// runs a respawn loop around `ssh -N -L`. The `pid` is the supervisor's
+/// process group leader, so stopping the forward means group-killing `pid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveForward {
     pub host: u16,
@@ -187,16 +191,18 @@ pub struct ActiveForward {
     #[serde(default)]
     pub proto: Proto,
     pub origin: Origin,
+    pub pid: u32,
 }
 
 impl ActiveForward {
     #[must_use]
-    pub fn new(spec: ForwardSpec, origin: Origin) -> Self {
+    pub fn new(spec: ForwardSpec, origin: Origin, pid: u32) -> Self {
         Self {
             host: spec.host,
             guest: spec.guest,
             proto: spec.proto,
             origin,
+            pid,
         }
     }
 
@@ -258,6 +264,30 @@ pub async fn clear_active(path: &Path) -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("failed to remove {}", path.display())),
     }
+}
+
+/// Send SIGTERM to a supervisor process group. Tolerates an already-dead PID.
+///
+/// The supervisor was spawned in its own process group, so signalling
+/// `-pid` reaches the supervisor and any in-flight `ssh` child it spawned.
+pub fn kill_supervisor(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{pid}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Best-effort: kill every supervisor listed in `path` and remove the file.
+pub async fn kill_all_and_clear(path: &Path) {
+    let Ok(active) = read_active(path).await else {
+        return;
+    };
+    for entry in &active {
+        kill_supervisor(entry.pid);
+    }
+    let _ = clear_active(path).await;
 }
 
 #[cfg(test)]
@@ -414,8 +444,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("forwards.toml");
         let original = vec![
-            ActiveForward::new(ForwardSpec::new(8080, 8080, Proto::Tcp), Origin::Config),
-            ActiveForward::new(ForwardSpec::new(53, 53, Proto::Udp), Origin::Adhoc),
+            ActiveForward::new(ForwardSpec::new(8080, 8080, Proto::Tcp), Origin::Config, 12345),
+            ActiveForward::new(ForwardSpec::new(53, 53, Proto::Udp), Origin::Adhoc, 12345),
         ];
         write_active(&path, &original).await.unwrap();
         let loaded = read_active(&path).await.unwrap();
@@ -432,6 +462,7 @@ mod tests {
             &[ActiveForward::new(
                 ForwardSpec::new(8080, 8080, Proto::Tcp),
                 Origin::Config,
+                12345,
             )],
         )
         .await
@@ -440,6 +471,81 @@ mod tests {
         // Writing empty clears the file.
         write_active(&path, &[]).await.unwrap();
         assert!(!path.exists());
+    }
+
+    /// Spawn a long-sleeping child in its own process group so we can test
+    /// `kill_supervisor` against a real PID without depending on agv itself.
+    fn spawn_sleep() -> std::process::Child {
+        use std::os::unix::process::CommandExt as _;
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd.process_group(0);
+        cmd.spawn().expect("failed to spawn sleep for test")
+    }
+
+    fn pid_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    #[tokio::test]
+    async fn kill_supervisor_terminates_alive_pid() {
+        let mut child = spawn_sleep();
+        let pid = child.id();
+        assert!(pid_alive(pid), "sleep should be alive after spawn");
+        kill_supervisor(pid);
+        // Reap to avoid leaving a zombie; SIGTERM should make sleep exit.
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!status.success(), "sleep was killed, should not exit 0");
+        assert!(!pid_alive(pid), "pid should be dead after kill");
+    }
+
+    #[tokio::test]
+    async fn kill_supervisor_tolerates_dead_pid() {
+        let mut child = spawn_sleep();
+        let pid = child.id();
+        // Kill and reap first so the PID is definitely free.
+        kill_supervisor(pid);
+        let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+        // A second kill against an already-dead PID must not panic.
+        kill_supervisor(pid);
+    }
+
+    #[tokio::test]
+    async fn kill_all_and_clear_kills_listed_pids() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forwards.toml");
+
+        let child_a = spawn_sleep();
+        let child_b = spawn_sleep();
+        let pid_a = child_a.id();
+        let pid_b = child_b.id();
+        let entries = vec![
+            ActiveForward::new(ForwardSpec::new(8080, 8080, Proto::Tcp), Origin::Adhoc, pid_a),
+            ActiveForward::new(ForwardSpec::new(9090, 9090, Proto::Tcp), Origin::Config, pid_b),
+        ];
+        write_active(&path, &entries).await.unwrap();
+
+        kill_all_and_clear(&path).await;
+
+        // File is gone.
+        assert!(!path.exists(), "forwards.toml should be removed");
+        // Both children should die — reap them so they don't linger.
+        for mut child in [child_a, child_b] {
+            let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+        }
+        assert!(!pid_alive(pid_a));
+        assert!(!pid_alive(pid_b));
     }
 
     #[tokio::test]
@@ -454,6 +560,7 @@ mod tests {
             &[ActiveForward::new(
                 ForwardSpec::new(8080, 8080, Proto::Tcp),
                 Origin::Config,
+                12345,
             )],
         )
         .await

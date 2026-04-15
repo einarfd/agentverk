@@ -342,7 +342,9 @@ impl Instance {
             let _ = tokio::fs::remove_file(self.pid_path()).await;
             let _ = tokio::fs::remove_file(self.qmp_socket_path()).await;
             let _ = tokio::fs::remove_file(self.ssh_port_path()).await;
-            let _ = tokio::fs::remove_file(self.forwards_path()).await;
+            // Kill any forward supervisors before removing forwards.toml,
+            // otherwise they keep retrying against a VM that is gone.
+            crate::forward::kill_all_and_clear(&self.forwards_path()).await;
             // Remove the managed SSH config entry so `ssh <name>` doesn't
             // try to connect to a stale port.
             let _ = crate::ssh_config::remove_entry(&self.name).await;

@@ -111,6 +111,14 @@ pub enum Command {
     /// Check that all required external tools are installed.
     Doctor(DoctorArgs),
 
+    /// Internal: supervisor loop for a single port forward.
+    ///
+    /// Not meant for end users — spawned by `agv forward` and by
+    /// start/resume to keep an `ssh -N -L` tunnel alive. Exits when sent
+    /// SIGTERM/SIGINT or when agv stops the forward.
+    #[command(name = "__forward-daemon", hide = true)]
+    ForwardDaemon(ForwardDaemonArgs),
+
     /// Write a starter config file to a given path (use with `agv create --config`).
     Init(InitArgs),
 }
@@ -357,6 +365,15 @@ pub struct DoctorArgs {
     /// Remove the agv Include line from ~/.ssh/config.
     #[arg(long)]
     pub remove_ssh: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ForwardDaemonArgs {
+    /// Name of the VM to forward to.
+    pub name: String,
+
+    /// Forward spec in HOST[:GUEST][/PROTO] form.
+    pub spec: String,
 }
 
 #[derive(Debug, clap::Args)]

@@ -142,7 +142,9 @@ mixins are listed.
 ## `forwards`
 
 Port forwards from the host into the VM, applied automatically on every `agv start`
-or `agv resume` via QEMU's user-mode networking.
+or `agv resume`. Each forward runs as a small supervisor process around
+`ssh -N -L`, so services bound to `127.0.0.1` inside the guest are reachable —
+and the supervisor reconnects on its own if SSH drops temporarily.
 
 ```toml
 forwards = [

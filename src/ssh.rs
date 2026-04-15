@@ -351,7 +351,7 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
 // ---------------------------------------------------------------------------
 
 /// Read the SSH port from the instance's `ssh_port` file.
-async fn ssh_port(instance: &Instance) -> anyhow::Result<u16> {
+pub(crate) async fn ssh_port(instance: &Instance) -> anyhow::Result<u16> {
     let path = instance.ssh_port_path();
     let raw = tokio::fs::read_to_string(&path)
         .await
@@ -363,7 +363,7 @@ async fn ssh_port(instance: &Instance) -> anyhow::Result<u16> {
 }
 
 /// Build the common SSH arguments used by all operations.
-fn base_ssh_args(key_path: &Path, port: u16) -> Vec<String> {
+pub(crate) fn base_ssh_args(key_path: &Path, port: u16) -> Vec<String> {
     vec![
         "-i".to_string(),
         key_path.display().to_string(),

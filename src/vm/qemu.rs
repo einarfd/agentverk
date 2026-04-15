@@ -12,7 +12,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, info, warn};
 
-use crate::forward::{ForwardSpec, Proto};
 use crate::vm::instance::Instance;
 
 /// Spawn a QEMU process for the given VM instance.
@@ -155,76 +154,6 @@ pub async fn force_stop(instance: &Instance) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Add a host-to-guest port forward via QMP `hostfwd_add` on the running VM.
-///
-/// Uses the HMP `hostfwd_add` command targeting the `net0` user-mode netdev.
-/// The host port is bound on all interfaces (same as the SSH forward QEMU
-/// sets up at boot). Fails if the host port is already in use or already
-/// forwarded with the same protocol.
-pub async fn hostfwd_add(instance: &Instance, spec: ForwardSpec) -> anyhow::Result<()> {
-    let socket_path = instance.qmp_socket_path();
-    let mut client = QmpClient::connect(&socket_path).await?;
-    let cmd = format_hostfwd_add(spec);
-    debug!(vm = %instance.name, %cmd, "hostfwd_add via QMP");
-    let resp = client
-        .execute_hmp_raw(&cmd)
-        .await
-        .with_context(|| format!("failed to add forward {spec}"))?;
-    // hostfwd_add is silent on success; any non-empty output is an error.
-    if let Some(text) = resp.get("return").and_then(|v| v.as_str()) {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            bail!("hostfwd_add {spec} failed: {trimmed}");
-        }
-    }
-    Ok(())
-}
-
-/// Remove a previously-added host-to-guest port forward via QMP.
-pub async fn hostfwd_remove(instance: &Instance, spec: ForwardSpec) -> anyhow::Result<()> {
-    let socket_path = instance.qmp_socket_path();
-    let mut client = QmpClient::connect(&socket_path).await?;
-    let cmd = format_hostfwd_remove(spec);
-    debug!(vm = %instance.name, %cmd, "hostfwd_remove via QMP");
-    let resp = client
-        .execute_hmp_raw(&cmd)
-        .await
-        .with_context(|| format!("failed to remove forward {spec}"))?;
-    // hostfwd_remove prints "host forwarding rule for ... removed" on success
-    // and "invalid host forwarding rule" (or similar) on failure. Treat the
-    // success string as OK; anything else is an error.
-    if let Some(text) = resp.get("return").and_then(|v| v.as_str()) {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with("host forwarding rule") {
-            bail!("hostfwd_remove {spec} failed: {trimmed}");
-        }
-        // An exact match on "host forwarding rule for X removed" is more
-        // precise, but QEMU versions wording this varies slightly; the
-        // prefix check plus empty-is-also-OK is robust.
-    }
-    Ok(())
-}
-
-fn format_hostfwd_add(spec: ForwardSpec) -> String {
-    let proto = match spec.proto {
-        Proto::Tcp => "tcp",
-        Proto::Udp => "udp",
-    };
-    format!(
-        "hostfwd_add net0 {proto}::{host}-:{guest}",
-        host = spec.host,
-        guest = spec.guest,
-    )
-}
-
-fn format_hostfwd_remove(spec: ForwardSpec) -> String {
-    let proto = match spec.proto {
-        Proto::Tcp => "tcp",
-        Proto::Udp => "udp",
-    };
-    format!("hostfwd_remove net0 {proto}::{host}", host = spec.host)
-}
-
 // ---------------------------------------------------------------------------
 // QMP client
 // ---------------------------------------------------------------------------
@@ -286,25 +215,7 @@ impl QmpClient {
 
     /// Execute a Human Monitor (HMP) command via the QMP human-monitor-command
     /// wrapper. Used for HMP-only operations like `savevm`/`loadvm`.
-    ///
-    /// Treats any non-empty output as an HMP-level error. Most HMP commands
-    /// are silent on success, but commands like `hostfwd_add`/`hostfwd_remove`
-    /// print an informational message — use [`execute_hmp_raw`] for those.
     async fn execute_hmp(&mut self, command: &str) -> anyhow::Result<serde_json::Value> {
-        let resp = self.execute_hmp_raw(command).await?;
-        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
-            if !ret.trim().is_empty() {
-                bail!("HMP command '{command}' returned error: {}", ret.trim());
-            }
-        }
-        Ok(resp)
-    }
-
-    /// Execute an HMP command without treating non-empty output as an error.
-    ///
-    /// Returns the raw response so the caller can inspect the output string
-    /// against command-specific success/failure patterns.
-    async fn execute_hmp_raw(&mut self, command: &str) -> anyhow::Result<serde_json::Value> {
         let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
         let msg = format!(
             r#"{{"execute":"human-monitor-command","arguments":{{"command-line":"{escaped}"}}}}"#
@@ -313,6 +224,14 @@ impl QmpClient {
         let resp = self.read_response().await?;
         if let Some(error) = resp.get("error") {
             bail!("HMP command '{command}' failed: {error}");
+        }
+        // The "return" field of human-monitor-command is the HMP output as a
+        // string. Most HMP commands are silent on success — treat any
+        // non-empty output as an error.
+        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
+            if !ret.trim().is_empty() {
+                bail!("HMP command '{command}' returned error: {}", ret.trim());
+            }
         }
         Ok(resp)
     }
@@ -781,42 +700,15 @@ async fn cleanup_runtime_files(instance: &Instance) {
     let _ = tokio::fs::remove_file(instance.pid_path()).await;
     let _ = tokio::fs::remove_file(instance.qmp_socket_path()).await;
     let _ = tokio::fs::remove_file(instance.ssh_port_path()).await;
-    let _ = tokio::fs::remove_file(instance.forwards_path()).await;
+    // Use the supervisor-aware cleanup so any leftover forward supervisors
+    // are torn down (vm::stop usually does this earlier, but cleanup runs
+    // from QEMU-only paths too — e.g. force_stop after a stale PID).
+    crate::forward::kill_all_and_clear(&instance.forwards_path()).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_hostfwd_add_tcp_same_port() {
-        let s = ForwardSpec::new(8080, 8080, Proto::Tcp);
-        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 tcp::8080-:8080");
-    }
-
-    #[test]
-    fn format_hostfwd_add_tcp_distinct_ports() {
-        let s = ForwardSpec::new(8080, 3000, Proto::Tcp);
-        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 tcp::8080-:3000");
-    }
-
-    #[test]
-    fn format_hostfwd_add_udp() {
-        let s = ForwardSpec::new(53, 5353, Proto::Udp);
-        assert_eq!(format_hostfwd_add(s), "hostfwd_add net0 udp::53-:5353");
-    }
-
-    #[test]
-    fn format_hostfwd_remove_tcp() {
-        let s = ForwardSpec::new(8080, 3000, Proto::Tcp);
-        assert_eq!(format_hostfwd_remove(s), "hostfwd_remove net0 tcp::8080");
-    }
-
-    #[test]
-    fn format_hostfwd_remove_udp() {
-        let s = ForwardSpec::new(53, 53, Proto::Udp);
-        assert_eq!(format_hostfwd_remove(s), "hostfwd_remove net0 udp::53");
-    }
 
     #[tokio::test]
     async fn allocate_free_port_returns_nonzero() {

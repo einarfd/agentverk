@@ -11,6 +11,7 @@ pub mod dirs;
 pub mod doctor;
 pub mod error;
 pub mod forward;
+pub mod forward_daemon;
 pub mod image;
 pub mod images;
 pub mod init;
@@ -562,6 +563,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
         Command::Forward(args) => forward_command(args, quiet).await,
+        Command::ForwardDaemon(args) => {
+            let spec: forward::ForwardSpec = args.spec.parse()?;
+            forward_daemon::run(&args.name, spec).await
+        }
         Command::Cp(args) => {
             // Validate path syntax before opening the VM.
             let src_is_vm = args.source.starts_with(':');

@@ -976,6 +976,9 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
             expected: "running".to_string(),
         }
     );
+    // Tear down forward supervisors before QEMU exits, so they don't spend
+    // a few seconds retrying against a dying SSH server.
+    forwarding::stop_all_for_instance(&inst).await;
     if force {
         qemu::force_stop(&inst).await?;
     } else {
@@ -1002,6 +1005,7 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
             expected: "running".to_string(),
         }
     );
+    forwarding::stop_all_for_instance(&inst).await;
     qemu::suspend(&inst).await?;
     inst.write_status(Status::Suspended).await?;
     let _ = ssh_config::remove_entry(name).await;
@@ -1113,7 +1117,12 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
             force,
             "VM '{name}' is running — stop it first, or pass --force to destroy it anyway"
         );
+        forwarding::stop_all_for_instance(&inst).await;
         let _ = qemu::force_stop(&inst).await;
+    } else {
+        // Even on a stopped/broken VM, sweep any stale supervisors that
+        // a previous run might have left in forwards.toml.
+        forwarding::stop_all_for_instance(&inst).await;
     }
 
     let _ = ssh_config::remove_entry(name).await;

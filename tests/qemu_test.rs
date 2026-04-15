@@ -6,7 +6,6 @@
 
 use std::path::PathBuf;
 
-use agv::forward::{ForwardSpec, Proto};
 use agv::vm::instance::Instance;
 use agv::vm::{cloud_init, qemu};
 
@@ -207,49 +206,5 @@ async fn qemu_start_writes_pid_and_port() {
     assert!(instance.qmp_socket_path().exists(), "QMP socket should exist");
 
     // Clean up — force stop the running process.
-    qemu::force_stop(&instance).await.unwrap();
-}
-
-#[tokio::test]
-async fn hostfwd_add_and_remove_via_qmp() {
-    if !qemu_available() {
-        eprintln!("QEMU not installed — skipping hostfwd_add_and_remove_via_qmp");
-        return;
-    }
-
-    let dir = tempfile::tempdir().unwrap();
-    let instance = setup_instance(dir.path(), "test-hostfwd").await.unwrap();
-
-    qemu::start(&instance, "512M", 1).await.unwrap();
-    // Give QEMU a brief moment to finish initializing QMP before we connect.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    // Pick a port that's likely free; QEMU will reject if taken, which is
-    // an acceptable failure mode for this smoke test.
-    let spec = ForwardSpec::new(0, 22, Proto::Tcp);
-    let chosen_host_port = {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        port
-    };
-    let spec = ForwardSpec { host: chosen_host_port, ..spec };
-
-    qemu::hostfwd_add(&instance, spec).await.expect("hostfwd_add should succeed");
-
-    // Re-adding the same forward should fail — QEMU rejects duplicates.
-    let dup = qemu::hostfwd_add(&instance, spec).await;
-    assert!(dup.is_err(), "duplicate hostfwd_add should fail, got {dup:?}");
-
-    qemu::hostfwd_remove(&instance, spec)
-        .await
-        .expect("hostfwd_remove should succeed");
-
-    // QEMU is lenient about removing an already-gone rule (returns nothing);
-    // our wrapper mirrors that — double-remove is not an error.
-    qemu::hostfwd_remove(&instance, spec)
-        .await
-        .expect("second hostfwd_remove should be a no-op, not fail");
-
     qemu::force_stop(&instance).await.unwrap();
 }
