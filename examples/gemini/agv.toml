@@ -21,10 +21,8 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # in a .env file next to this one, then uncomment:
 #
 # [[provision]]
-# run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
-#
-# [[provision]]
-# run = "gh repo clone org/myrepo ~/myrepo"
-#
-# [[provision]]
-# run = "gh auth setup-git"  # configure git credential helper
+# run = [
+#   "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
+#   "gh auth setup-git",                    # configure git credential helper
+#   "gh repo clone org/myrepo ~/myrepo",
+# ]

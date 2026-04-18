@@ -29,15 +29,11 @@ include = ["devtools", "gh"]
 spec    = "large"
 
 [[provision]]
-run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
-
-[[provision]]
-run = "gh repo clone org/myrepo ~/myrepo"
-
-# Configure git credential helper so plain `git` commands work too.
-# Must run after `gh auth login`.
-[[provision]]
-run = "gh auth setup-git"
+run = [
+  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
+  "gh auth setup-git",                    # configure git credential helper
+  "gh repo clone org/myrepo ~/myrepo",
+]
 ```
 
 ```sh
@@ -147,10 +143,10 @@ own machines works equally well inside an agent VM.
 
 ```toml
 [[provision]]
-run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
-
-[[provision]]
-run = "gh repo clone org/dotfiles ~/dotfiles && ~/dotfiles/install.sh"
+run = [
+  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
+  "gh repo clone org/dotfiles ~/dotfiles && ~/dotfiles/install.sh",
+]
 ```
 
 This is the most flexible option: the install script can set up shell config, git

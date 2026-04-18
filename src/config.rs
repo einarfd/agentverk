@@ -33,11 +33,11 @@ pub struct Config {
     pub files: Vec<FileEntry>,
 
     /// Setup steps, executed as root before provisioning.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_provision_steps")]
     pub setup: Vec<ProvisionStep>,
 
     /// Provisioning steps, executed in order after files are copied.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_provision_steps")]
     pub provision: Vec<ProvisionStep>,
 
     /// Host-to-guest port forwards, applied on start/resume.
@@ -127,6 +127,77 @@ pub struct ProvisionStep {
     pub script: Option<String>,
 }
 
+/// Input shape for `run`: a single string or a list of strings.
+///
+/// A list expands into multiple `ProvisionStep`s, one per entry, preserving
+/// order. This lets users write several commands in one `[[setup]]` or
+/// `[[provision]]` block without repeating the header.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RunField {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+/// Raw shape of a step as parsed from TOML, before `run = [...]` is
+/// expanded into multiple [`ProvisionStep`]s.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProvisionStep {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    run: Option<RunField>,
+    #[serde(default)]
+    script: Option<String>,
+}
+
+/// Deserialize a `Vec<ProvisionStep>`, expanding any `run = [...]` array
+/// form into multiple single-string steps.
+fn deserialize_provision_steps<'de, D>(deserializer: D) -> Result<Vec<ProvisionStep>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let raw = Vec::<RawProvisionStep>::deserialize(deserializer)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for step in raw {
+        match step.run {
+            Some(RunField::Single(cmd)) => out.push(ProvisionStep {
+                source: step.source,
+                run: Some(cmd),
+                script: step.script,
+            }),
+            Some(RunField::Multiple(cmds)) => {
+                if cmds.is_empty() {
+                    return Err(D::Error::custom(
+                        "`run` array must not be empty — use `run = \"...\"` for a single command or list one or more commands",
+                    ));
+                }
+                if step.script.is_some() {
+                    return Err(D::Error::custom(
+                        "`run = [...]` cannot be combined with `script` in the same block",
+                    ));
+                }
+                for cmd in cmds {
+                    out.push(ProvisionStep {
+                        source: step.source.clone(),
+                        run: Some(cmd),
+                        script: None,
+                    });
+                }
+            }
+            None => out.push(ProvisionStep {
+                source: step.source,
+                run: None,
+                script: step.script,
+            }),
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Resolved config — fully flattened, no Options
 // ---------------------------------------------------------------------------
@@ -164,11 +235,11 @@ pub struct ResolvedConfig {
     pub files: Vec<FileEntry>,
 
     /// Setup steps run as root (accumulated from full chain).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_provision_steps")]
     pub setup: Vec<ProvisionStep>,
 
     /// Provisioning steps (accumulated from full chain).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_provision_steps")]
     pub provision: Vec<ProvisionStep>,
 
     /// Host-to-guest port forwards (accumulated from full chain).
@@ -1261,5 +1332,111 @@ cpus = 4
             reloaded.provision[0].run.as_deref(),
             Some("echo hello")
         );
+    }
+
+    #[test]
+    fn run_as_string_parses_as_single_step() {
+        let toml_str = r#"
+[[provision]]
+run = "echo one"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provision.len(), 1);
+        assert_eq!(config.provision[0].run.as_deref(), Some("echo one"));
+    }
+
+    #[test]
+    fn run_as_array_expands_to_multiple_steps() {
+        let toml_str = r#"
+[[provision]]
+run = ["echo one", "echo two", "echo three"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provision.len(), 3);
+        assert_eq!(config.provision[0].run.as_deref(), Some("echo one"));
+        assert_eq!(config.provision[1].run.as_deref(), Some("echo two"));
+        assert_eq!(config.provision[2].run.as_deref(), Some("echo three"));
+        // All expanded steps carry no script.
+        assert!(config.provision.iter().all(|s| s.script.is_none()));
+    }
+
+    #[test]
+    fn run_as_array_works_for_setup_too() {
+        let toml_str = r#"
+[[setup]]
+run = ["apt-get update", "apt-get install -y ripgrep"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.setup.len(), 2);
+        assert_eq!(config.setup[0].run.as_deref(), Some("apt-get update"));
+        assert_eq!(
+            config.setup[1].run.as_deref(),
+            Some("apt-get install -y ripgrep")
+        );
+    }
+
+    #[test]
+    fn mixed_string_and_array_blocks_concatenate_in_order() {
+        let toml_str = r#"
+[[provision]]
+run = ["first", "second"]
+
+[[provision]]
+run = "third"
+
+[[provision]]
+run = ["fourth", "fifth"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let cmds: Vec<_> = config
+            .provision
+            .iter()
+            .map(|s| s.run.as_deref().unwrap())
+            .collect();
+        assert_eq!(cmds, vec!["first", "second", "third", "fourth", "fifth"]);
+    }
+
+    #[test]
+    fn empty_run_array_is_an_error() {
+        let toml_str = r"
+[[provision]]
+run = []
+";
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn run_array_combined_with_script_is_an_error() {
+        let toml_str = r#"
+[[provision]]
+run = ["echo one"]
+script = "./setup.sh"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot be combined with `script`"), "got: {err}");
+    }
+
+    #[test]
+    fn resolved_config_also_accepts_array_form() {
+        // A hand-edited instance config.toml using the array form should
+        // still load correctly via load_resolved's code path.
+        let toml_str = r#"
+base_url = "https://example.com/base.img"
+base_checksum = "sha256:abc"
+memory = "2G"
+cpus = 2
+disk = "20G"
+user = "agent"
+
+[[provision]]
+run = ["echo one", "echo two"]
+"#;
+        let resolved: ResolvedConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(resolved.provision.len(), 2);
+        assert_eq!(resolved.provision[0].run.as_deref(), Some("echo one"));
+        assert_eq!(resolved.provision[1].run.as_deref(), Some("echo two"));
     }
 }

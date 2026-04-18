@@ -17,20 +17,14 @@ spec    = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 source = "{{HOME}}/.gitconfig"
 dest   = "/home/{{AGV_USER}}/.gitconfig"
 
-# Authenticate with GitHub using a token from .env or the environment.
+# Provisioning steps, run in order as your user after setup.
 # The token is passed via stdin so it does not appear in the process list.
+# `run = [...]` lets you list several commands in one block — each entry
+# becomes its own step (same semantics as writing separate blocks).
 [[provision]]
-run = "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'"
-
-# Configure git's credential helper so plain `git` commands also authenticate.
-# Must run after `gh auth login`.
-[[provision]]
-run = "gh auth setup-git"
-
-# Clone your repository.
-[[provision]]
-run = "gh repo clone org/myrepo ~/myrepo"
-
-# Run any project-specific setup.
-[[provision]]
-run = "cd ~/myrepo && ./bootstrap.sh"
+run = [
+  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
+  "gh auth setup-git",                    # configure git credential helper
+  "gh repo clone org/myrepo ~/myrepo",
+  "cd ~/myrepo && ./bootstrap.sh",        # project-specific setup
+]

@@ -114,6 +114,22 @@ CLI equivalents: `--setup "SCRIPT"`, `--setup-script ./path`
 `run` is an inline shell script; multiline strings (using `"""`) work fine.
 `script` is a path to a local file that is copied into the VM and executed.
 
+`run` can also take an array of strings to save repeated `[[setup]]` headers —
+each entry becomes its own step, in order:
+
+```toml
+[[setup]]
+run = [
+  "apt-get update",
+  "apt-get install -y ripgrep fd-find",
+  "systemctl disable --now unattended-upgrades",
+]
+```
+
+This is equivalent to writing three `[[setup]]` blocks — retry granularity and
+interactive-mode prompts work per entry. A block uses exactly one of `run` or
+`script`.
+
 ## `[[provision]]`
 
 Commands run as **your user** (default: `agent`) after setup completes and SSH is
@@ -135,6 +151,18 @@ script = "./user-setup.sh"   # local script, copied in and executed as your user
 ```
 
 CLI equivalents: `--provision "SCRIPT"`, `--provision-script ./path`
+
+As with `[[setup]]`, `run` can be an array of strings — each entry becomes its
+own step:
+
+```toml
+[[provision]]
+run = [
+  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
+  "gh auth setup-git",
+  "gh repo clone org/myrepo ~/myrepo",
+]
+```
 
 `setup` and `provision` steps from mixins run before your own steps, in the order the
 mixins are listed.
