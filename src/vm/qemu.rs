@@ -686,11 +686,23 @@ fn kill_process(pid: u32, signal: rustix::process::Signal) -> bool {
         .is_some_and(|p| rustix::process::kill_process(p, signal).is_ok())
 }
 
-/// Remove runtime files (PID, QMP socket, SSH port) — ignore errors.
+/// Remove runtime files (PID, QMP socket, SSH port).
+///
+/// Best-effort cleanup: a missing file is expected (nothing to remove), but
+/// any unexpected error is logged at debug level so it surfaces in verbose
+/// mode without noise in the normal path.
 async fn cleanup_runtime_files(instance: &Instance) {
-    let _ = tokio::fs::remove_file(instance.pid_path()).await;
-    let _ = tokio::fs::remove_file(instance.qmp_socket_path()).await;
-    let _ = tokio::fs::remove_file(instance.ssh_port_path()).await;
+    for path in [
+        instance.pid_path(),
+        instance.qmp_socket_path(),
+        instance.ssh_port_path(),
+    ] {
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                debug!(path = %path.display(), error = %e, "cleanup: failed to remove runtime file");
+            }
+        }
+    }
     // Use the supervisor-aware cleanup so any leftover forward supervisors
     // are torn down (vm::stop usually does this earlier, but cleanup runs
     // from QEMU-only paths too — e.g. force_stop after a stale PID).

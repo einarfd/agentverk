@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use indicatif::ProgressBar;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,9 @@ async fn update_ssh_config(inst: &Instance, user: &str) {
         },
         Err(_) => return,
     };
-    let _ = ssh_config::add_entry(&inst.name, port, user, &inst.ssh_key_path()).await;
+    if let Err(e) = ssh_config::add_entry(&inst.name, port, user, &inst.ssh_key_path()).await {
+        warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to update managed SSH config");
+    }
 }
 
 /// Print a completed-step line above the spinner, keeping previous output visible.
@@ -72,7 +74,9 @@ async fn apply_and_report_forwards(
 ) {
     if config.forwards.is_empty() {
         // Still clear any stale state left from a previous boot.
-        let _ = crate::forward::clear_active(&inst.forwards_path()).await;
+        if let Err(e) = crate::forward::clear_active(&inst.forwards_path()).await {
+            debug!(vm = %inst.name, error = %format!("{e:#}"), "failed to clear stale forwards state");
+        }
         return;
     }
     let specs = match crate::forward::parse_specs(config.forwards.iter()) {
@@ -114,11 +118,17 @@ async fn apply_and_report_forwards(
 /// Updates: status → broken, `error.log`, `provision_state.error`.
 async fn mark_broken_with_error(inst: &Instance, error: &anyhow::Error) {
     let msg = format!("{error:#}");
-    let _ = inst.write_status(Status::Broken).await;
-    let _ = tokio::fs::write(inst.error_log_path(), &msg).await;
+    if let Err(e) = inst.write_status(Status::Broken).await {
+        warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to persist broken status");
+    }
+    if let Err(e) = tokio::fs::write(inst.error_log_path(), &msg).await {
+        warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to write error.log");
+    }
     let mut state = inst.read_provision_state().await;
     state.error = Some(msg);
-    let _ = inst.write_provision_state(&state).await;
+    if let Err(e) = inst.write_provision_state(&state).await {
+        warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to persist provision_state");
+    }
 }
 
 /// Append output text to the provision log file.

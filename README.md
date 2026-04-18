@@ -86,6 +86,7 @@ Commands:
   suspend   Suspend a running VM (save full state to disk)
   resume    Resume a suspended VM
   destroy   Destroy a VM and delete all its data
+  rename    Rename a VM (must be stopped or suspended)
   ssh       Open an SSH session to a running VM
   cp        Copy files between the host and a running VM
   forward   Add, list, or remove host-to-guest port forwards on a running VM

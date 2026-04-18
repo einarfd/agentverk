@@ -45,6 +45,8 @@ CLI equivalents:
 | `include = ["devtools", "claude"]` | `--include devtools --include claude` |
 | `spec = "large"` | `--spec large` |
 
+The `user` field has no CLI equivalent — it can only be set in the config file.
+
 All `include` fields accumulate — each mixin adds its own `files`, `setup`, and `provision`
 steps before your own.
 
