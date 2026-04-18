@@ -1,7 +1,29 @@
+# Build output
 /target
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE
 *.swp
 *.swo
 *~
-.DS_Store
+*.orig
+*.rej
+.idea/
+.vscode/
+.zed/
+*.iml
+
+# AI / agent tooling
 .ai/
-.env
+.claude/
+.cursor/
+.aider*
+
+# OS cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
