@@ -1,25 +1,46 @@
 //! agv — create and manage QEMU VMs for AI agents.
+//!
+//! This crate is the implementation of the `agv` CLI. It is **not** intended
+//! for use as a library — the public module surface exists so the CLI binary
+//! (`src/main.rs`) and the integration tests under `tests/` can reach
+//! internals. Items are marked `#[doc(hidden)]` to make that intent
+//! explicit on docs.rs.
+//!
+//! No semver guarantees are offered for anything other than the CLI behavior
+//! itself. If you have a library use case, please open an issue so we can
+//! shape an intentional public API rather than leaking internals.
 
-#![expect(
-    clippy::missing_errors_doc,
-    reason = "application code, not a library: ~70 # Errors blocks would add little for callers"
-)]
-
+#[doc(hidden)]
 pub mod cli;
+#[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
 pub mod dirs;
+#[doc(hidden)]
 pub mod doctor;
+#[doc(hidden)]
 pub mod error;
+#[doc(hidden)]
 pub mod forward;
+#[doc(hidden)]
 pub mod forward_daemon;
+#[doc(hidden)]
 pub mod image;
+#[doc(hidden)]
 pub mod images;
+#[doc(hidden)]
 pub mod init;
+#[doc(hidden)]
 pub mod interactive;
+#[doc(hidden)]
 pub mod specs;
+#[doc(hidden)]
 pub mod ssh;
+#[doc(hidden)]
 pub mod ssh_config;
+#[doc(hidden)]
 pub mod template;
+#[doc(hidden)]
 pub mod vm;
 
 use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs};
@@ -179,6 +200,7 @@ fn config_step_label(step: &config::ProvisionStep) -> String {
     clippy::too_many_lines,
     reason = "main subcommand dispatcher; splitting into per-command functions would add boilerplate without improving readability"
 )]
+#[doc(hidden)]
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     dirs::ensure_dirs().await?;
 
