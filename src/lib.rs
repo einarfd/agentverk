@@ -606,20 +606,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             if args.remove_ssh {
                 return ssh_config::remove_include();
             }
-            doctor::run()?;
-            // Check SSH config integration.
-            println!();
-            match ssh_config::is_include_installed() {
-                Ok(true) => println!("  SSH config Include: ✓ installed"),
-                Ok(false) => {
-                    println!("  SSH config Include: not set up");
-                    println!("    Run: agv doctor --setup-ssh");
-                    println!("    This lets you ssh into VMs by name (e.g. ssh myvm) and");
-                    println!("    enables IDE remote development (VS Code, JetBrains, etc.).");
-                }
-                Err(_) => {}
-            }
-            Ok(())
+            doctor::run()
+
         }
         Command::Init(args) => {
             init::run(args.template.as_deref(), &args.output, args.force)

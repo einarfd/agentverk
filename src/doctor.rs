@@ -3,6 +3,12 @@
 //! Searches PATH for every external tool `agv` depends on and reports
 //! what is missing together with platform-specific install instructions.
 
+use anstyle::{AnsiColor, Style};
+
+const GREEN: Style = AnsiColor::Green.on_default();
+const RED: Style = AnsiColor::Red.on_default();
+const YELLOW: Style = AnsiColor::Yellow.on_default();
+
 struct Check {
     label: &'static str,
     /// Binary names to search — the check passes if *any* candidate is found.
@@ -121,21 +127,22 @@ pub fn run() -> anyhow::Result<()> {
 
     for (i, check) in checks.iter().enumerate() {
         if check.candidates.iter().any(|b| is_available(b)) {
-            println!("  {:<col$}  ✓", check.label);
+            anstream::println!("  {:<col$}  {GREEN}✓{GREEN:#}", check.label);
         } else {
-            println!("  {:<col$}  ✗", check.label);
+            anstream::println!("  {:<col$}  {RED}✗{RED:#}", check.label);
             issues += 1;
             missing_indices.push(i);
         }
     }
 
     if issues == 0 {
-        println!();
-        println!("  All dependencies found.");
+        anstream::println!();
+        anstream::println!("  {GREEN}All dependencies found.{GREEN:#}");
+        print_ssh_include_status();
         return Ok(());
     }
 
-    println!();
+    anstream::println!();
 
     // Print install hints, deduplicating when multiple missing tools share
     // the same hint (e.g. qemu-system-* and qemu-img both come from QEMU).
@@ -144,16 +151,40 @@ pub fn run() -> anyhow::Result<()> {
         let hint = checks[i].install_hint;
         if !printed.contains(&hint) {
             printed.push(hint);
-            println!("  {} — install with:", checks[i].label);
+            anstream::println!("  {} — install with:", checks[i].label);
             for line in hint.lines() {
-                println!("    {line}");
+                anstream::println!("    {line}");
             }
-            println!();
+            anstream::println!();
         }
     }
 
     let noun = if issues == 1 { "issue" } else { "issues" };
-    println!("  {issues} {noun} found.");
+    anstream::println!("  {YELLOW}{issues} {noun} found.{YELLOW:#}");
+    print_ssh_include_status();
 
     Ok(())
+}
+
+/// Append the SSH-config-Include status line to the dependency report.
+///
+/// Called from [`run`] so all doctor output stays in one place. Errors
+/// reading the managed config are treated as silent (the user sees no line)
+/// — the Include is best-effort and should never cause doctor to fail.
+fn print_ssh_include_status() {
+    anstream::println!();
+    match crate::ssh_config::is_include_installed() {
+        Ok(true) => anstream::println!(
+            "  SSH config Include: {GREEN}✓ installed{GREEN:#}"
+        ),
+        Ok(false) => {
+            anstream::println!(
+                "  SSH config Include: {YELLOW}⚠ not set up{YELLOW:#}"
+            );
+            anstream::println!("    Run: agv doctor --setup-ssh");
+            anstream::println!("    This lets you ssh into VMs by name (e.g. ssh myvm) and");
+            anstream::println!("    enables IDE remote development (VS Code, JetBrains, etc.).");
+        }
+        Err(_) => {}
+    }
 }
