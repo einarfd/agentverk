@@ -478,10 +478,14 @@ fn step_label(step: &ProvisionStep) -> String {
     }
     if let Some(ref script) = step.run {
         let first_line = script.lines().next().unwrap_or(script).trim();
-        return if first_line.len() > 40 {
-            format!("{}...", &first_line[..40])
+        // Truncate by char (not byte) so a multi-byte char at the 40th
+        // position does not panic on slice.
+        let mut chars = first_line.chars();
+        let truncated: String = chars.by_ref().take(40).collect();
+        return if chars.next().is_some() {
+            format!("{truncated}...")
         } else {
-            first_line.to_string()
+            truncated
         };
     }
     "unknown".to_string()
@@ -531,5 +535,180 @@ mod tests {
     #[test]
     fn parent_dir_of_nested() {
         assert_eq!(parent_dir_of("/a/b/c/d"), "/a/b/c");
+    }
+
+    // -----------------------------------------------------------------------
+    // shell_escape — correctness + shell-injection safety
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shell_escape_empty_string() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    #[test]
+    fn shell_escape_plain_ascii() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_with_spaces() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_escape_single_quote_uses_end_escape_reopen_idiom() {
+        // The idiom: close quote, escaped quote, reopen quote.
+        assert_eq!(shell_escape("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn shell_escape_multiple_single_quotes() {
+        assert_eq!(shell_escape("a'b'c"), r"'a'\''b'\''c'");
+    }
+
+    #[test]
+    fn shell_escape_quote_at_start() {
+        assert_eq!(shell_escape("'foo"), r"''\''foo'");
+    }
+
+    #[test]
+    fn shell_escape_quote_at_end() {
+        assert_eq!(shell_escape("foo'"), r"'foo'\'''");
+    }
+
+    #[test]
+    fn shell_escape_only_a_single_quote() {
+        assert_eq!(shell_escape("'"), r"''\'''");
+    }
+
+    /// The actual security property: the escaped form, embedded in a
+    /// `sh -c '<escaped>'` command, must produce the original string.
+    /// This covers shell metacharacters — `$`, `` ` ``, `;`, `|`, `*`, `&`,
+    /// newline, backslash — which should all pass through literally.
+    #[test]
+    fn shell_escape_roundtrips_through_sh_for_malicious_inputs() {
+        let inputs = [
+            "hello",
+            "hello world",
+            "it's fine",
+            "$HOME should not expand",
+            "`whoami` should not run",
+            "$(whoami) should not run",
+            "; rm -rf / ; echo pwned",
+            "a | b & c && d || e",
+            "wild*card?[set]",
+            "back\\slash",
+            "new\nline\tstuff",
+            "mixed 'quotes\" and `backticks` and $vars",
+        ];
+
+        for input in inputs {
+            let escaped = shell_escape(input);
+            let script = format!("printf '%s' {escaped}");
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .expect("failed to spawn sh");
+            assert!(
+                output.status.success(),
+                "sh exited non-zero for input {input:?}: stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let got = String::from_utf8(output.stdout)
+                .expect("sh stdout was not utf8");
+            assert_eq!(
+                got, input,
+                "shell round-trip mismatch for input {input:?} (escaped as {escaped:?})"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // step_label — precedence, truncation, UTF-8 safety
+    // -----------------------------------------------------------------------
+
+    fn step(
+        source: Option<&str>,
+        script: Option<&str>,
+        run: Option<&str>,
+    ) -> ProvisionStep {
+        ProvisionStep {
+            source: source.map(str::to_string),
+            script: script.map(str::to_string),
+            run: run.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn step_label_source_wins_over_everything() {
+        let s = step(Some("claude"), Some("./bootstrap.sh"), Some("echo hi"));
+        assert_eq!(step_label(&s), "claude");
+    }
+
+    #[test]
+    fn step_label_script_wins_over_run() {
+        let s = step(None, Some("./bootstrap.sh"), Some("echo hi"));
+        assert_eq!(step_label(&s), "./bootstrap.sh");
+    }
+
+    #[test]
+    fn step_label_short_run_returned_as_is() {
+        let s = step(None, None, Some("apt-get install -y ripgrep"));
+        assert_eq!(step_label(&s), "apt-get install -y ripgrep");
+    }
+
+    #[test]
+    fn step_label_long_run_is_truncated_with_ellipsis() {
+        // 41-char input: "a" repeated 41 times.
+        let long = "a".repeat(41);
+        let s = step(None, None, Some(&long));
+        assert_eq!(step_label(&s), format!("{}...", "a".repeat(40)));
+    }
+
+    #[test]
+    fn step_label_exactly_40_chars_not_truncated() {
+        let exact = "a".repeat(40);
+        let s = step(None, None, Some(&exact));
+        assert_eq!(step_label(&s), exact);
+    }
+
+    #[test]
+    fn step_label_multiline_run_takes_first_line_only() {
+        let s = step(None, None, Some("cd /tmp\n./build.sh"));
+        assert_eq!(step_label(&s), "cd /tmp");
+    }
+
+    #[test]
+    fn step_label_trims_leading_and_trailing_whitespace() {
+        let s = step(None, None, Some("   echo hi   "));
+        assert_eq!(step_label(&s), "echo hi");
+    }
+
+    #[test]
+    fn step_label_none_everywhere_is_unknown() {
+        let s = step(None, None, None);
+        assert_eq!(step_label(&s), "unknown");
+    }
+
+    /// Regression test: `&first_line[..40]` byte-sliced the string, which
+    /// panicked when byte 40 fell inside a multi-byte UTF-8 char. Truncation
+    /// is now char-based.
+    #[test]
+    fn step_label_does_not_panic_on_utf8_boundary() {
+        // "é" is 2 bytes. Put 39 ASCII chars followed by "é" + filler: byte 40
+        // lands mid-char. Total chars > 40 so truncation kicks in.
+        let tricky = format!("{}é{}", "a".repeat(39), "b".repeat(20));
+        let s = step(None, None, Some(&tricky));
+        let label = step_label(&s);
+        assert!(
+            label.ends_with("..."),
+            "expected truncation ellipsis, got {label:?}"
+        );
+        assert!(
+            label.chars().count() <= 43, // 40 chars + "..."
+            "label too long: {label:?}"
+        );
     }
 }
