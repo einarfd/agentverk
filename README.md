@@ -18,7 +18,13 @@ To install to a custom location:
 curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --dest ~/.local/bin
 ```
 
-**From source** (requires Rust 1.85+):
+**From crates.io** (if you already have Rust 1.85+):
+
+```sh
+cargo install agv
+```
+
+**From source** (latest `main`, requires Rust 1.85+):
 
 ```sh
 git clone https://github.com/einarfd/agentverk.git
