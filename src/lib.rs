@@ -289,12 +289,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 } else {
                     status
                 };
-                // Best-effort: show "?" if config can't be read.
+                // Best-effort: show "?" if config can't be read, but leave
+                // a debug trace so `agv -v ls` surfaces the parse/IO error
+                // instead of silently hiding it behind "?".
                 let (memory, cpus, disk_max) =
-                    config::load_resolved(&inst.config_path()).map_or_else(
-                        |_| ("?".to_string(), "?".to_string(), "?".to_string()),
-                        |c| (c.memory, c.cpus.to_string(), c.disk),
-                    );
+                    match config::load_resolved(&inst.config_path()) {
+                        Ok(c) => (c.memory, c.cpus.to_string(), c.disk),
+                        Err(e) => {
+                            tracing::debug!(
+                                vm = %inst.name,
+                                error = %format!("{e:#}"),
+                                "failed to read instance config for ls row"
+                            );
+                            ("?".to_string(), "?".to_string(), "?".to_string())
+                        }
+                    };
                 // Actual on-disk size of the qcow2 file. qcow2 grows as the
                 // guest writes, so this is much more useful than the maximum.
                 let disk_used = tokio::fs::metadata(inst.disk_path())

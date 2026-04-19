@@ -8,6 +8,21 @@ set -eu
 REPO="einarfd/agentverk"
 DEST="${1:-}"
 
+# Color output when stdout is a TTY and NO_COLOR is not set. Leaves the
+# variables empty otherwise, so unstyled output falls through unchanged
+# for logs, CI captures, and NO_COLOR users.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED=$(printf '\033[31m')
+    GREEN=$(printf '\033[32m')
+    YELLOW=$(printf '\033[33m')
+    RESET=$(printf '\033[0m')
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    RESET=""
+fi
+
 # Parse --dest flag
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -26,7 +41,7 @@ case "$OS" in
         case "$ARCH" in
             arm64|aarch64) TARGET="aarch64-apple-darwin" ;;
             *)
-                echo "error: unsupported macOS architecture: $ARCH" >&2
+                echo "${RED}error:${RESET} unsupported macOS architecture: $ARCH" >&2
                 echo "agv supports Apple Silicon (arm64) Macs." >&2
                 exit 1
                 ;;
@@ -37,14 +52,14 @@ case "$OS" in
             x86_64)  TARGET="x86_64-unknown-linux-musl" ;;
             aarch64) TARGET="aarch64-unknown-linux-musl" ;;
             *)
-                echo "error: unsupported Linux architecture: $ARCH" >&2
+                echo "${RED}error:${RESET} unsupported Linux architecture: $ARCH" >&2
                 echo "agv supports x86_64 and aarch64 Linux." >&2
                 exit 1
                 ;;
         esac
         ;;
     *)
-        echo "error: unsupported OS: $OS" >&2
+        echo "${RED}error:${RESET} unsupported OS: $OS" >&2
         echo "agv supports macOS and Linux." >&2
         exit 1
         ;;
@@ -76,17 +91,17 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then
     wget -q --show-progress -O "$BIN" "$URL"
 else
-    echo "error: neither curl nor wget found. Please install one and retry." >&2
+    echo "${RED}error:${RESET} neither curl nor wget found. Please install one and retry." >&2
     exit 1
 fi
 
 chmod +x "$BIN"
-echo "Installed agv to $BIN"
+echo "${GREEN}Installed${RESET} agv to $BIN"
 echo ""
 
 # Verify the binary runs
 if ! "$BIN" --version >/dev/null 2>&1; then
-    echo "warning: installed binary did not respond to --version. It may not work on this system." >&2
+    echo "${YELLOW}warning:${RESET} installed binary did not respond to --version. It may not work on this system." >&2
 fi
 
 # PATH hint if DEST not in PATH
@@ -107,4 +122,4 @@ echo ""
 "$BIN" doctor || true
 
 echo ""
-echo "Done! Run 'agv --help' to get started."
+echo "${GREEN}Done!${RESET} Run 'agv --help' to get started."
