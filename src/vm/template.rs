@@ -20,7 +20,8 @@ use crate::{dirs, image, ssh};
 use super::cloud_init;
 use super::instance::{Instance, Status};
 use super::qemu;
-use super::{run_first_boot, status_spinner, step_done, wait_for_ssh};
+use super::provision::{run_first_boot, wait_for_ssh};
+use super::{status_spinner, step_done};
 
 /// Persistent metadata stored alongside each template disk image.
 #[derive(Debug, Serialize, Deserialize)]
