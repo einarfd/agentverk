@@ -429,7 +429,7 @@ pub async fn list_cache() -> anyhow::Result<Vec<CacheEntry>> {
 
     while let Some(entry) = dir.next_entry().await? {
         let filename = entry.file_name().to_string_lossy().into_owned();
-        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        let size = entry.metadata().await.map_or(0, |m| m.len());
         // Partial downloads are always shown as unused so cache ls reflects
         // the true state of the cache directory.
         let in_use = entry.path().extension().is_none_or(|e| e != "part")
@@ -466,7 +466,7 @@ pub async fn clean_cache() -> anyhow::Result<Vec<(String, u64)>> {
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         let filename = entry.file_name().to_string_lossy().into_owned();
-        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        let size = entry.metadata().await.map_or(0, |m| m.len());
 
         // Always delete partial downloads — they are never usable.
         let is_partial = path.extension().is_some_and(|e| e == "part");
