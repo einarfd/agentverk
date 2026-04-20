@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use agv::vm::instance::{Instance, Phase, Status};
 use agv::{config, dirs, ssh, vm};
+use serial_test::serial;
 
 /// Counter to generate unique filenames across concurrent tests.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -260,6 +261,7 @@ async fn create_marks_broken_on_failure() {
 ///   cargo test `create_with_start_and_provision` -- --include-ignored --nocapture
 #[tokio::test]
 #[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
 async fn create_with_start_and_provision() {
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping create_with_start_and_provision");
@@ -339,6 +341,118 @@ async fn create_with_start_and_provision() {
     cleanup(name).await;
 }
 
+/// Same happy-path check as `create_with_start_and_provision`, but against
+/// the `fedora-43` base to verify non-debian families boot and provision
+/// end-to-end: cloud-init applies our seed, SSH comes up, file injection
+/// via SCP works, and a provision step runs successfully.
+///
+/// Also exercises the `[os_families.fedora]` dispatch on the `devtools`
+/// mixin — if the resolver accidentally shipped apt-get to fedora, the
+/// setup phase would fail.
+///
+/// To run:
+///   cargo test `fedora_base_boots_and_provisions` -- --include-ignored --nocapture
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
+async fn fedora_base_boots_and_provisions() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping fedora_base_boots_and_provisions");
+        return;
+    }
+
+    dirs::ensure_dirs().await.unwrap();
+
+    let name = "_test-fedora";
+    cleanup(name).await;
+
+    // Inject a marker file to confirm file copy works on a non-debian guest.
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let test_file = tmp_dir.path().join("agv-test-inject.txt");
+    tokio::fs::write(&test_file, "injected-by-agv-on-fedora")
+        .await
+        .unwrap();
+
+    let config = config::resolve(config::Config {
+        base: Some(config::BaseConfig {
+            from: Some("fedora-43".to_string()),
+            include: vec!["devtools".to_string()],
+            ..Default::default()
+        }),
+        vm: Some(config::VmConfig {
+            memory: Some("2G".to_string()),
+            cpus: Some(2),
+            disk: Some("10G".to_string()),
+        }),
+        files: vec![config::FileEntry {
+            source: test_file.to_str().unwrap().to_string(),
+            dest: "/home/agent/.config/agv-test/agv-test-inject.txt".to_string(),
+        }],
+        setup: vec![],
+        provision: vec![config::ProvisionStep {
+            source: None,
+            run: Some(
+                "cat /home/agent/.config/agv-test/agv-test-inject.txt && command -v dnf >/dev/null && echo dnf-present".to_string(),
+            ),
+            script: None,
+        }],
+        forwards: vec![],
+        os_families: None,
+        supports: None,
+    })
+    .unwrap();
+
+    // Sanity: the resolver should have inherited the fedora family and
+    // pulled in the dnf setup step (not the apt one).
+    assert_eq!(config.os_family, "fedora");
+    let dnf_step_present = config
+        .setup
+        .iter()
+        .filter_map(|s| s.run.as_deref())
+        .any(|cmd| cmd.starts_with("dnf install"));
+    assert!(
+        dnf_step_present,
+        "expected devtools' fedora setup step; got: {:?}",
+        config
+            .setup
+            .iter()
+            .filter_map(|s| s.run.clone())
+            .collect::<Vec<_>>()
+    );
+
+    vm::create(name, &config, true, false, false, true)
+        .await
+        .unwrap();
+
+    let inst_dir = dirs::instance_dir(name).unwrap();
+    let inst = Instance {
+        name: name.to_string(),
+        dir: inst_dir,
+    };
+
+    let status = inst.read_status().await.unwrap();
+    assert_eq!(status, Status::Running);
+    assert!(inst.pid_path().exists());
+    assert!(inst.ssh_port_path().exists());
+
+    // The provision step cats the injected file and checks dnf is on PATH.
+    let log = tokio::fs::read_to_string(inst.provision_log_path())
+        .await
+        .unwrap();
+    assert!(
+        log.contains("injected-by-agv-on-fedora"),
+        "provision.log should contain injected file content on fedora:\n{log}"
+    );
+    assert!(
+        log.contains("dnf-present"),
+        "provision.log should confirm dnf is installed on fedora:\n{log}"
+    );
+
+    assert!(inst.is_provisioned(), "instance should be marked provisioned");
+
+    cleanup(name).await;
+}
+
 /// Verify that suspend saves VM state and resume restores it.
 ///
 /// Creates a marker file in /run (tmpfs/RAM-backed), suspends the VM, resumes
@@ -348,6 +462,7 @@ async fn create_with_start_and_provision() {
 ///      not reset by a reboot)
 #[tokio::test]
 #[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
 async fn suspend_and_resume_preserves_state() {
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping suspend_and_resume_preserves_state");
@@ -468,10 +583,7 @@ async fn suspend_and_resume_preserves_state() {
 /// `agv start --retry` resumes from that step (skipping completed ones).
 #[tokio::test]
 #[ignore = "downloads a real cloud image and boots a VM — slow"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "linear integration test that exercises the full retry flow end-to-end"
-)]
+#[serial(vm_boot)]
 async fn provision_failure_then_retry_resumes() {
     if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
         eprintln!("required tools not installed — skipping provision_failure_then_retry_resumes");

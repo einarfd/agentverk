@@ -67,8 +67,20 @@ See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex,
 agv create --include devtools --include claude --start myvm  # uses the default spec (medium: 2G RAM, 2 vCPUs, 20G disk)
 ```
 
-Use `agv images` to see all available mixins, and `agv specs` to see size presets.
-`agv create` does **not** pick up `agv.toml` from the current directory — you must pass `--config` explicitly.
+**Picking a base image** — Ubuntu 24.04 is the default if `--image` is omitted.
+`--image ubuntu`, `--image debian`, and `--image fedora` are shorthands for the
+current canonical versions (`ubuntu-24.04`, `debian-12`, `fedora-43`). Mixins
+like `devtools`, `nodejs`, `gh`, `rust`, `zsh`, and `oh-my-zsh` work across
+every supported family, so `--image fedora --include devtools` is as
+straightforward as the Ubuntu case.
+
+```sh
+agv create --image fedora --include devtools --start myfedora
+```
+
+Use `agv images` to see all available base images and mixins, and `agv specs`
+to see size presets. `agv create` does **not** pick up `agv.toml` from the
+current directory — you must pass `--config` explicitly.
 
 **IDE integration** — set up once, then every running VM is accessible by name from
 VS Code, JetBrains, plain `ssh`, and any other SSH-based tool:
