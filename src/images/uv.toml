@@ -1,6 +1,12 @@
 # uv (Python package manager) mixin.
 # Installs uv for the default user.
 # Use via: include = ["uv"]
+#
+# The install script downloads a glibc-linked binary, so Alpine (musl)
+# is not supported. Declared explicitly so the error surfaces at
+# config-resolve time rather than mid-provisioning.
+
+supports = ["debian", "fedora"]
 
 [[provision]]
 run = "curl -LsSf https://astral.sh/uv/install.sh | sh"

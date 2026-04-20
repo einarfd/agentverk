@@ -1,12 +1,9 @@
 # GitHub CLI mixin.
-# Installs the gh CLI using the official GitHub apt repository.
+# Installs the gh CLI from GitHub's official package repositories.
 # Use via: include = ["gh"]
-#
-# Debian-only for now — the setup step uses `apt-get`. A fedora/alpine
-# port would use `dnf` / `apk` and is welcome as a follow-up.
-supports = ["debian"]
 
-[[setup]]
+[os_families.debian]
+[[os_families.debian.setup]]
 run = """curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
   && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -14,3 +11,8 @@ run = """curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gp
   > /etc/apt/sources.list.d/github-cli.list \
   && apt-get update \
   && apt-get install -y gh"""
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = """curl -fsSL -o /etc/yum.repos.d/gh-cli.repo https://cli.github.com/packages/rpm/gh-cli.repo \
+  && dnf install -y gh"""

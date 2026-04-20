@@ -17,10 +17,13 @@ All notable changes to `agv` will be documented here. This project follows
   keep the existing top-level shape unchanged. See `docs/config.md`
   for the full schema.
 - **Fedora 43 base image.** `agv create --image fedora-43` boots a
-  Fedora Cloud Base (Generic) VM. The `devtools` mixin now ships a
-  fedora variant (using `dnf` instead of `apt-get`), so
-  `agv create --image fedora-43 --include devtools <name>` works
-  out of the box.
+  Fedora Cloud Base (Generic) VM, verified to boot and SSH cleanly.
+- **Fedora-ready mixins.** `devtools`, `gh`, `nodejs`, `rust`, `zsh`,
+  and (transitively) `oh-my-zsh` now ship `[os_families.fedora]`
+  sections alongside the existing debian ones, so every config example
+  in `examples/` works unchanged against `fedora-43`. `uv` declares
+  `supports = ["debian", "fedora"]` (its install script downloads a
+  glibc binary, so musl/Alpine would silently fail).
 
 ### Changed
 
@@ -28,10 +31,9 @@ All notable changes to `agv` will be documented here. This project follows
   The bundled `ubuntu-24.04` and `debian-12` declare `os_family = "debian"`.
   Saved instance `config.toml` files from v0.1.0 default to `"debian"`
   on load, so existing VMs keep working.
-- Apt-only mixins (`gh`, `nodejs`, `rust`, `zsh`, `oh-my-zsh`) now declare
-  `supports = ["debian"]`. Users trying them with a non-debian base get a
-  clean config-resolve-time error instead of mid-provisioning failures.
-  Fedora / alpine ports of these mixins are follow-up work.
+- `oh-my-zsh` now depends on the `zsh` mixin via `[base] include = ["zsh"]`
+  instead of duplicating zsh's install + `chsh` steps. Family support
+  is inherited from zsh automatically.
 
 ### Known limitations
 

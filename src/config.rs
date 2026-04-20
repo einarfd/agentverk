@@ -1847,28 +1847,22 @@ run = "apt-get install -y foo"
     }
 
     #[test]
-    fn fedora_base_plus_debian_only_mixin_errors_with_clear_message() {
-        // The gh mixin declares `supports = ["debian"]`. Using it with
-        // fedora-43 should fail at config-resolve time with a helpful
-        // message, not silently ship apt-get commands that would fail
-        // mid-provisioning.
-        let cfg = Config {
-            base: Some(BaseConfig {
-                from: Some("fedora-43".to_string()),
-                include: vec!["gh".to_string()],
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+    fn unsupported_family_errors_with_clear_message() {
+        // The uv mixin declares `supports = ["debian", "fedora"]` (its
+        // install script downloads a glibc binary). Using it with a
+        // hypothetical alpine base should fail at config-resolve time
+        // with a helpful message, not silently ship a glibc binary
+        // that would fail to execute on musl.
+        let cfg = root_config(Some("alpine"), vec!["uv".to_string()]);
         let err = resolve(cfg).unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("gh"), "message should name the mixin: {msg}");
+        assert!(msg.contains("uv"), "message should name the mixin: {msg}");
         assert!(
-            msg.contains("fedora"),
+            msg.contains("alpine"),
             "message should name the resolved family: {msg}"
         );
         assert!(
-            msg.contains("debian"),
+            msg.contains("debian") && msg.contains("fedora"),
             "message should list supported families: {msg}"
         );
     }

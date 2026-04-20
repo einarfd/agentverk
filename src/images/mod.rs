@@ -286,13 +286,18 @@ mod tests {
 
     #[test]
     fn lookup_builtin_rust() {
-        let config = lookup("rust").unwrap();
-        assert!(config.is_some(), "rust should be a built-in image");
-
-        let config = config.unwrap();
+        let config = lookup("rust").unwrap().unwrap();
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "rust should have setup steps");
+        // Top-level provision (rustup) is distro-agnostic; setup (build
+        // deps) lives under [os_families.*].
+        assert!(!config.provision.is_empty(), "rust should have provision steps");
+        let families = config
+            .os_families
+            .as_ref()
+            .expect("rust should declare os_families");
+        assert!(families.contains_key("debian"));
+        assert!(families.contains_key("fedora"));
     }
 
     #[test]
@@ -308,34 +313,45 @@ mod tests {
 
     #[test]
     fn lookup_builtin_gh() {
-        let config = lookup("gh").unwrap();
-        assert!(config.is_some(), "gh should be a built-in image");
-        let config = config.unwrap();
+        let config = lookup("gh").unwrap().unwrap();
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "gh should have setup steps");
+        let families = config
+            .os_families
+            .as_ref()
+            .expect("gh should declare os_families");
+        assert!(families.contains_key("debian"));
+        assert!(families.contains_key("fedora"));
     }
 
     #[test]
     fn lookup_builtin_zsh() {
-        let config = lookup("zsh").unwrap();
-        assert!(config.is_some(), "zsh should be a built-in image");
-        let config = config.unwrap();
+        let config = lookup("zsh").unwrap().unwrap();
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "zsh should have setup steps");
-        assert!(config.provision.is_empty(), "zsh should have no provision steps");
+        let families = config
+            .os_families
+            .as_ref()
+            .expect("zsh should declare os_families");
+        assert!(families.contains_key("debian"));
+        assert!(families.contains_key("fedora"));
     }
 
     #[test]
     fn lookup_builtin_oh_my_zsh() {
-        let config = lookup("oh-my-zsh").unwrap();
-        assert!(config.is_some(), "oh-my-zsh should be a built-in image");
-        let config = config.unwrap();
-        assert!(config.base.is_none());
+        let config = lookup("oh-my-zsh").unwrap().unwrap();
+        // oh-my-zsh now depends on zsh via `include = ["zsh"]`.
+        let base = config.base.expect("oh-my-zsh should have [base]");
+        assert!(
+            base.include.contains(&"zsh".to_string()),
+            "oh-my-zsh should include zsh"
+        );
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "oh-my-zsh should have setup steps");
-        assert!(!config.provision.is_empty(), "oh-my-zsh should have provision steps");
+        // Its own provision step still installs oh-my-zsh.
+        assert!(
+            !config.provision.is_empty(),
+            "oh-my-zsh should have its own provision step"
+        );
     }
 
     #[test]
@@ -343,8 +359,12 @@ mod tests {
         let config = lookup("nodejs").unwrap().unwrap();
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "nodejs should have setup steps");
-        assert!(config.provision.is_empty(), "nodejs should have no provision steps");
+        let families = config
+            .os_families
+            .as_ref()
+            .expect("nodejs should declare os_families");
+        assert!(families.contains_key("debian"));
+        assert!(families.contains_key("fedora"));
     }
 
     #[test]

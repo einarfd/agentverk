@@ -1,14 +1,17 @@
 # Rust toolchain mixin.
-# Installs Rust via rustup for the default user.
+# Installs build dependencies via the system package manager, then runs
+# rustup (distro-agnostic) as the default user.
 # Use via: include = ["rust"]
-#
-# Debian-only for now — the setup step installs build deps via `apt-get`.
-# The rustup download itself is distro-agnostic, so a fedora/alpine port
-# mostly needs replacing the setup step's package names.
-supports = ["debian"]
 
-[[setup]]
-run = "apt-get update && apt-get install -y curl gcc pkg-config libssl-dev"
-
+# rustup handles every glibc Linux the same way, so the install itself
+# is a top-level (family-agnostic) provision step.
 [[provision]]
 run = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+
+[os_families.debian]
+[[os_families.debian.setup]]
+run = "apt-get update && apt-get install -y curl gcc pkg-config libssl-dev"
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = "dnf install -y curl gcc pkgconf-pkg-config openssl-devel"
