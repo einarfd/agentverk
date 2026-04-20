@@ -47,6 +47,13 @@ CLI equivalents:
 
 The `user` field has no CLI equivalent — it can only be set in the config file.
 
+**Shorthands**: `--image ubuntu`, `--image debian`, and `--image fedora` are
+accepted as aliases for the current canonical versions (`ubuntu-24.04`,
+`debian-12`, `fedora-43`). Aliases resolve at CLI-parse time; the VM's
+saved config records the concrete URL, so they never introduce ambiguity
+after creation. For stability in scripts, prefer the canonical names —
+aliases may move when a newer release ships.
+
 All `include` fields accumulate — each mixin adds its own `files`, `setup`, and `provision`
 steps before your own.
 

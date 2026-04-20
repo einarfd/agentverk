@@ -8,6 +8,12 @@ All notable changes to `agv` will be documented here. This project follows
 
 ### Added
 
+- **`--image` shorthand aliases.** `--image ubuntu`, `--image debian`, and
+  `--image fedora` now resolve to the current canonical versions
+  (`ubuntu-24.04`, `debian-12`, `fedora-43`). Aliases are pure CLI sugar
+  — the saved instance config records the concrete URL, so there's no
+  lingering ambiguity. For script stability, prefer the canonical names;
+  aliases will move when a newer release ships.
 - **OS-family schema for mixins.** Base images now declare `os_family`
   (`"debian"`, `"fedora"`, `"alpine"`, …) and mixins can declare which
   families they support, either explicitly via `supports = [...]` or

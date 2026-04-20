@@ -45,6 +45,30 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("zsh", ZSH_TOML),
 ];
 
+/// Shorthand aliases for base images — purely CLI-time sugar so users can
+/// type `--image ubuntu` instead of `--image ubuntu-24.04`.
+///
+/// Aliases resolve to the canonical name before lookup; they never appear
+/// in saved instance configs, and `agv images` lists canonical names only.
+/// When we bump a distro (e.g. Ubuntu 26.04), moving an alias is a
+/// deliberate, documented change in the CHANGELOG — scripts that want
+/// stability should pin to the canonical name.
+const ALIASES: &[(&str, &str)] = &[
+    ("ubuntu", "ubuntu-24.04"),
+    ("debian", "debian-12"),
+    ("fedora", "fedora-43"),
+];
+
+/// Resolve a possible alias to its canonical image name.
+///
+/// Returns the input unchanged if it isn't a known alias.
+fn resolve_alias(name: &str) -> &str {
+    ALIASES
+        .iter()
+        .find_map(|&(alias, canonical)| (alias == name).then_some(canonical))
+        .unwrap_or(name)
+}
+
 /// Whether an image definition is a full image or a mixin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageType {
@@ -101,10 +125,13 @@ pub enum ImageSource {
 
 /// Look up an image definition by name.
 ///
-/// Search order: user images dir → built-in images.
+/// Search order: user images dir → alias table → built-in images.
+/// Aliases only apply to the built-in side — a user-provided file wins
+/// over an alias even if its name matches one.
+///
 /// Returns `None` if no image with that name exists.
 pub fn lookup(name: &str) -> anyhow::Result<Option<Config>> {
-    // Check user images first — they override built-in.
+    // Check user images first — they override both built-ins and aliases.
     if let Ok(user_dir) = dirs::images_dir() {
         let user_path = user_dir.join(format!("{name}.toml"));
         if user_path.exists() {
@@ -116,11 +143,15 @@ pub fn lookup(name: &str) -> anyhow::Result<Option<Config>> {
         }
     }
 
+    // Resolve any alias before consulting the built-in registry, so
+    // `--image ubuntu` routes to the same config as `--image ubuntu-24.04`.
+    let canonical = resolve_alias(name);
+
     // Check built-in images.
     for &(builtin_name, toml_str) in BUILTIN_IMAGES {
-        if builtin_name == name {
+        if builtin_name == canonical {
             let config: Config = toml::from_str(toml_str)
-                .with_context(|| format!("failed to parse built-in image '{name}'"))?;
+                .with_context(|| format!("failed to parse built-in image '{canonical}'"))?;
             return Ok(Some(config));
         }
     }
@@ -398,6 +429,53 @@ mod tests {
     fn lookup_nonexistent() {
         let config = lookup("does-not-exist-12345").unwrap();
         assert!(config.is_none());
+    }
+
+    #[test]
+    fn alias_ubuntu_resolves_to_ubuntu_24_04() {
+        let via_alias = lookup("ubuntu").unwrap().unwrap();
+        let via_canonical = lookup("ubuntu-24.04").unwrap().unwrap();
+        let base_alias = via_alias.base.unwrap();
+        let base_canonical = via_canonical.base.unwrap();
+        assert_eq!(base_alias.os_family, base_canonical.os_family);
+        assert_eq!(
+            base_alias.aarch64.as_ref().map(|a| a.url.clone()),
+            base_canonical.aarch64.as_ref().map(|a| a.url.clone()),
+        );
+    }
+
+    #[test]
+    fn alias_debian_resolves_to_debian_12() {
+        let via_alias = lookup("debian").unwrap().unwrap();
+        let via_canonical = lookup("debian-12").unwrap().unwrap();
+        assert_eq!(
+            via_alias.base.as_ref().and_then(|b| b.os_family.clone()),
+            via_canonical.base.as_ref().and_then(|b| b.os_family.clone()),
+        );
+    }
+
+    #[test]
+    fn alias_fedora_resolves_to_fedora_43() {
+        let via_alias = lookup("fedora").unwrap().unwrap();
+        let via_canonical = lookup("fedora-43").unwrap().unwrap();
+        assert_eq!(
+            via_alias.base.as_ref().and_then(|b| b.os_family.clone()),
+            via_canonical.base.as_ref().and_then(|b| b.os_family.clone()),
+        );
+    }
+
+    #[test]
+    fn list_all_does_not_duplicate_aliases() {
+        // Aliases are resolve-time sugar; they should not appear as
+        // separate entries in `agv images` output.
+        let images = list_all().unwrap();
+        let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
+        for alias in ["ubuntu", "debian", "fedora"] {
+            assert!(
+                !names.contains(&alias),
+                "alias '{alias}' should not appear in list_all output"
+            );
+        }
     }
 
     #[test]
