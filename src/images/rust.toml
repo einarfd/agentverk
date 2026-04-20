@@ -1,6 +1,11 @@
 # Rust toolchain mixin.
 # Installs Rust via rustup for the default user.
 # Use via: include = ["rust"]
+#
+# Debian-only for now — the setup step installs build deps via `apt-get`.
+# The rustup download itself is distro-agnostic, so a fedora/alpine port
+# mostly needs replacing the setup step's package names.
+supports = ["debian"]
 
 [[setup]]
 run = "apt-get update && apt-get install -y curl gcc pkg-config libssl-dev"

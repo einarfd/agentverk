@@ -1816,6 +1816,64 @@ run = "apt-get install -y foo"
     }
 
     #[test]
+    fn fedora_base_plus_devtools_picks_dnf_steps() {
+        // End-to-end smoke: resolving fedora-43 with the devtools mixin
+        // should produce dnf setup commands (not apt-get) and carry the
+        // correct os_family on the ResolvedConfig.
+        let cfg = Config {
+            base: Some(BaseConfig {
+                from: Some("fedora-43".to_string()),
+                include: vec!["devtools".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let resolved = resolve(cfg).expect("fedora-43 + devtools should resolve");
+        assert_eq!(resolved.os_family, "fedora");
+        // Exactly one setup step from devtools, the dnf one.
+        assert_eq!(resolved.setup.len(), 1);
+        let run = resolved.setup[0]
+            .run
+            .as_deref()
+            .expect("devtools setup step should have `run`");
+        assert!(
+            run.starts_with("dnf install"),
+            "expected dnf command, got: {run}"
+        );
+        assert!(
+            !run.contains("apt-get"),
+            "should not pick up debian apt-get command"
+        );
+    }
+
+    #[test]
+    fn fedora_base_plus_debian_only_mixin_errors_with_clear_message() {
+        // The gh mixin declares `supports = ["debian"]`. Using it with
+        // fedora-43 should fail at config-resolve time with a helpful
+        // message, not silently ship apt-get commands that would fail
+        // mid-provisioning.
+        let cfg = Config {
+            base: Some(BaseConfig {
+                from: Some("fedora-43".to_string()),
+                include: vec!["gh".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = resolve(cfg).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("gh"), "message should name the mixin: {msg}");
+        assert!(
+            msg.contains("fedora"),
+            "message should name the resolved family: {msg}"
+        );
+        assert!(
+            msg.contains("debian"),
+            "message should list supported families: {msg}"
+        );
+    }
+
+    #[test]
     fn resolved_config_loads_with_default_os_family_for_legacy() {
         // A v0.1.0-era saved instance config has no os_family field; loading
         // should default it to "debian" so existing VMs keep working.

@@ -1,6 +1,11 @@
 # Development tools mixin.
-# Installs common build dependencies: git, curl, build-essential.
+# Installs git, curl, git-delta, build tools, fzf, direnv.
 # Use via: include = ["devtools"]
 
-[[setup]]
+[os_families.debian]
+[[os_families.debian.setup]]
 run = "apt-get update && apt-get install -y git git-delta curl build-essential fzf direnv"
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = "dnf install -y git git-delta curl gcc gcc-c++ make fzf direnv"

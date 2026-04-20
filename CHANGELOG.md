@@ -16,6 +16,11 @@ All notable changes to `agv` will be documented here. This project follows
   picks the section matching the base image. Distro-agnostic mixins
   keep the existing top-level shape unchanged. See `docs/config.md`
   for the full schema.
+- **Fedora 43 base image.** `agv create --image fedora-43` boots a
+  Fedora Cloud Base (Generic) VM. The `devtools` mixin now ships a
+  fedora variant (using `dnf` instead of `apt-get`), so
+  `agv create --image fedora-43 --include devtools <name>` works
+  out of the box.
 
 ### Changed
 
@@ -23,6 +28,17 @@ All notable changes to `agv` will be documented here. This project follows
   The bundled `ubuntu-24.04` and `debian-12` declare `os_family = "debian"`.
   Saved instance `config.toml` files from v0.1.0 default to `"debian"`
   on load, so existing VMs keep working.
+- Apt-only mixins (`gh`, `nodejs`, `rust`, `zsh`, `oh-my-zsh`) now declare
+  `supports = ["debian"]`. Users trying them with a non-debian base get a
+  clean config-resolve-time error instead of mid-provisioning failures.
+  Fedora / alpine ports of these mixins are follow-up work.
+
+### Known limitations
+
+- Alpine support is not yet shipped. Alpine's cloud images are UEFI-only
+  on both x86_64 and aarch64, but agv currently only configures UEFI
+  firmware for aarch64. Adding x86_64 UEFI is a prerequisite and will
+  arrive in a follow-up.
 
 ## [0.1.0] - 2026-04-19
 

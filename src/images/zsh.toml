@@ -1,6 +1,11 @@
 # Zsh mixin.
 # Installs zsh and sets it as the default shell for the VM user.
 # Use via: include = ["zsh"]
+#
+# Debian-only for now — uses `apt-get` and assumes `/etc/passwd` exists in
+# the form debian/ubuntu expects. A fedora/alpine port would use `dnf` /
+# `apk` to install zsh, then `chsh` (or `usermod --shell` on alpine).
+supports = ["debian"]
 
 [[setup]]
 run = "apt-get update && apt-get install -y zsh && chsh -s $(which zsh) {{AGV_USER}}"

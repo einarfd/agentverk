@@ -3,6 +3,10 @@
 # Required by the gemini and openclaw mixins, and useful for any project
 # that needs a modern Node.js runtime.
 # Use via: include = ["nodejs"]
+#
+# Debian-only for now — uses the NodeSource `deb.nodesource.com` script.
+# Follow-ups welcome for fedora (`rpm.nodesource.com`) and alpine (`apk`).
+supports = ["debian"]
 
 [[setup]]
 run = "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"

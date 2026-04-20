@@ -67,7 +67,9 @@ checksum = "..."
 
 Child images (those with `from = "..."`) inherit `os_family` from their
 parent automatically — you only need to set it on the root image. Currently
-shipped os_families: `debian` (Ubuntu, Debian).
+shipped os_families: `debian` (Ubuntu 24.04, Debian 12) and `fedora`
+(Fedora 43). Alpine support is planned but requires x86_64 UEFI support
+in the QEMU layer first.
 
 ## `[vm]`
 

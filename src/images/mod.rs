@@ -13,6 +13,7 @@ use crate::dirs;
 
 const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
 const DEBIAN_12_TOML: &str = include_str!("debian-12.toml");
+const FEDORA_43_TOML: &str = include_str!("fedora-43.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
 const CODEX_TOML: &str = include_str!("codex.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
@@ -29,6 +30,7 @@ const OH_MY_ZSH_TOML: &str = include_str!("oh-my-zsh.toml");
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
     ("debian-12", DEBIAN_12_TOML),
+    ("fedora-43", FEDORA_43_TOML),
     ("claude", CLAUDE_TOML),
     ("codex", CODEX_TOML),
     ("devtools", DEVTOOLS_TOML),
@@ -224,6 +226,19 @@ mod tests {
     }
 
     #[test]
+    fn lookup_builtin_fedora_43() {
+        let config = lookup("fedora-43").unwrap();
+        assert!(config.is_some(), "fedora-43 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "fedora-43 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+        assert_eq!(base.os_family.as_deref(), Some("fedora"));
+    }
+
+    #[test]
     fn lookup_builtin_claude() {
         let config = lookup("claude").unwrap();
         assert!(config.is_some(), "claude should be a built-in image");
@@ -243,7 +258,19 @@ mod tests {
         let config = config.unwrap();
         assert!(config.base.is_none());
         assert!(config.vm.is_none());
-        assert!(!config.setup.is_empty(), "devtools should have setup steps");
+        // devtools is per-family now — setup lives under [os_families.*].
+        let families = config
+            .os_families
+            .as_ref()
+            .expect("devtools should declare os_families sections");
+        assert!(
+            families.contains_key("debian"),
+            "devtools should support debian"
+        );
+        assert!(
+            families.contains_key("fedora"),
+            "devtools should support fedora"
+        );
     }
 
     #[test]
@@ -359,6 +386,7 @@ mod tests {
         let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
         assert!(names.contains(&"ubuntu-24.04"));
         assert!(names.contains(&"debian-12"));
+        assert!(names.contains(&"fedora-43"));
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"devtools"));
