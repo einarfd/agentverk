@@ -50,6 +50,25 @@ The `user` field has no CLI equivalent — it can only be set in the config file
 All `include` fields accumulate — each mixin adds its own `files`, `setup`, and `provision`
 steps before your own.
 
+### `os_family`
+
+Root images (the ones with `aarch64` / `x86_64` URL sections) must declare an
+`os_family`. It tells the resolver which `[os_families.<name>]` mixin sections
+to apply, and lets mixins declare which package-manager dialect they assume.
+
+```toml
+[base]
+os_family = "debian"   # or "fedora", "alpine", etc.
+
+[base.aarch64]
+url      = "..."
+checksum = "..."
+```
+
+Child images (those with `from = "..."`) inherit `os_family` from their
+parent automatically — you only need to set it on the root image. Currently
+shipped os_families: `debian` (Ubuntu, Debian).
+
 ## `[vm]`
 
 Override individual resource settings on top of the named `spec`. This section is
@@ -168,6 +187,86 @@ run = [
 
 `setup` and `provision` steps from mixins run before your own steps, in the order the
 mixins are listed.
+
+## `supports` and `[os_families.<name>]` (mixin authors)
+
+A mixin can target one or more OS families. The base image declares its
+`os_family`; each mixin must be reachable from there.
+
+**Distro-agnostic mixin** (works on every family):
+
+```toml
+# Just top-level steps. No `supports` and no `[os_families.*]`.
+[[provision]]
+run = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+```
+
+**Same script, only on listed families** — use `supports`. Catches things
+like precompiled binaries that won't run on Alpine (musl) even though the
+install script looks distro-agnostic:
+
+```toml
+supports = ["debian", "fedora"]   # alpine users get a clear error
+
+[[provision]]
+run = "curl -fsSL https://example.com/install.sh | bash"
+```
+
+**Different script per family** — use `[os_families.<name>]`:
+
+```toml
+[os_families.debian]
+[[os_families.debian.setup]]
+run = "apt-get update && apt-get install -y git curl build-essential"
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = "dnf install -y git curl gcc make"
+
+[os_families.alpine]
+[[os_families.alpine.setup]]
+run = "apk add --no-cache git curl build-base"
+```
+
+The resolver picks the section matching the base's `os_family`. The implicit
+support list is exactly the family keys present.
+
+**Shared setup + per-family install** — combine top-level steps with
+`[os_families.*]` sections. Top-level steps run for every supported family;
+the matching family section's steps are appended afterward:
+
+```toml
+supports = ["debian", "fedora"]
+
+[[provision]]
+run = "mkdir -p ~/.foo"            # runs on both
+
+[os_families.debian]
+[[os_families.debian.setup]]
+run = "apt-get install -y libfoo"
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = "dnf install -y libfoo"
+```
+
+**Rules**:
+
+- If a `[os_families.<name>]` section has steps, that family must also appear
+  in `supports` (when `supports` is set). Otherwise the mixin would
+  silently ship steps for an unsupported family.
+- A mixin with `[os_families.*]` sections but no `supports` implicitly
+  supports exactly those family keys.
+- A mixin with neither is treated as distro-agnostic and runs on every
+  family.
+
+When the resolved family isn't supported, the resolver fails fast with:
+
+```
+mixin 'devtools' does not support os_family 'alpine'
+  base image os_family: alpine
+  mixin supports: debian, fedora
+```
 
 ## `forwards`
 

@@ -95,6 +95,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         cpus: 1,
         disk: "2G".to_string(),
         user: "agent".to_string(),
+        os_family: "debian".to_string(),
         files: vec![],
         setup: vec![],
         provision: vec![],
@@ -214,6 +215,7 @@ async fn create_marks_broken_on_failure() {
         cpus: 1,
         disk: "2G".to_string(),
         user: "agent".to_string(),
+        os_family: "debian".to_string(),
         files: vec![],
         setup: vec![],
         provision: vec![],
@@ -300,6 +302,8 @@ async fn create_with_start_and_provision() {
             script: None,
         }],
         forwards: vec![],
+    os_families: None,
+    supports: None,
     })
     .unwrap();
 
@@ -369,6 +373,8 @@ async fn suspend_and_resume_preserves_state() {
         setup: vec![],
         provision: vec![],
         forwards: vec![],
+    os_families: None,
+    supports: None,
     })
     .unwrap();
 
@@ -526,6 +532,8 @@ async fn provision_failure_then_retry_resumes() {
             },
         ],
         forwards: vec![],
+    os_families: None,
+    supports: None,
     })
     .unwrap();
 

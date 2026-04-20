@@ -40,6 +40,15 @@ struct TemplateMetadata {
     disk: String,
     /// Default username for VMs cloned from this template.
     user: String,
+    /// OS family inherited from the source VM. Falls back to `"debian"`
+    /// when missing so templates created before this field existed (v0.1.0)
+    /// still load — every such template was Debian-family in practice.
+    #[serde(default = "default_template_os_family")]
+    os_family: String,
+}
+
+fn default_template_os_family() -> String {
+    "debian".to_string()
 }
 
 /// Summary information about an available template.
@@ -168,6 +177,7 @@ pub async fn create_template(
         cpus: config.cpus,
         disk: config.disk.clone(),
         user: config.user.clone(),
+        os_family: config.os_family.clone(),
     };
     let meta_toml =
         toml::to_string_pretty(&meta).context("failed to serialize template metadata")?;
@@ -425,6 +435,7 @@ async fn create_from_template_inner(
         cpus,
         disk: disk.to_string(),
         user: meta.user.clone(),
+        os_family: meta.os_family.clone(),
         files: vec![],
         setup: vec![],
         provision: vec![],

@@ -285,6 +285,7 @@ EMPTY=
             cpus: 2,
             disk: "20G".to_string(),
             user: "agent".to_string(),
+            os_family: "debian".to_string(),
             files: vec![FileEntry {
                 source: "{{HOME}}/.ssh/id_ed25519".to_string(),
                 dest: "/home/agent/.ssh/id_ed25519".to_string(),
