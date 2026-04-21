@@ -42,8 +42,9 @@ pub struct Config {
 
     /// Host-to-guest port forwards, applied on start/resume.
     ///
-    /// Each entry is `HOST[:GUEST][/PROTO]` (e.g. `"8080"`, `"5433:5432"`,
-    /// `"53/udp"`). Parsed and validated during [`resolve()`].
+    /// Each entry is `HOST[:GUEST]` (e.g. `"8080"`, `"5433:5432"`). TCP
+    /// is implicit — the underlying `ssh -L` tunnel is TCP-only.
+    /// Parsed and validated during [`resolve()`].
     #[serde(default)]
     pub forwards: Vec<String>,
 
@@ -80,7 +81,7 @@ pub struct Config {
     /// Named auto-allocated forwards, keyed by a short identifier used as
     /// the filename for the allocated host port (`<instance>/<name>_port`).
     ///
-    /// Unlike `forwards = [...]` (which takes explicit `HOST[:GUEST][/PROTO]`
+    /// Unlike `forwards = [...]` (which takes explicit `HOST[:GUEST]`
     /// strings), `auto_forwards` let a mixin declare "I need a tunnel to guest
     /// port X under a stable name" without picking a host port — agv
     /// allocates one at VM start so multiple VMs can't collide. Mirrors the
@@ -1226,14 +1227,14 @@ mod tests {
             forwards: vec![
                 "8080".to_string(),
                 "  5433:5432  ".to_string(),
-                "53/udp".to_string(),
+                "9000:3000".to_string(),
             ],
             os_families: None,
         supports: None,
         auto_forwards: None,
         };
         let resolved = resolve(config).unwrap();
-        assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "53/udp"]);
+        assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "9000:3000"]);
     }
 
     #[test]

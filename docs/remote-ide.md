@@ -75,7 +75,6 @@ returns immediately — the forward lives on QEMU, not on your terminal:
 ```sh
 agv forward myvm 8080              # host:8080 → VM:8080
 agv forward myvm 3000:8080         # host:3000 → VM:8080
-agv forward myvm 53/udp            # UDP
 ```
 
 Then open `http://localhost:8080` (or `3000`) in your browser.

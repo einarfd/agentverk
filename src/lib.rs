@@ -112,11 +112,10 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<
         for a in &active {
             let arrow = if a.host == a.guest { "↔" } else { "→" };
             println!(
-                "  host:{host:>w$} {arrow} VM:{guest} ({proto}, {origin})",
+                "  host:{host:>w$} {arrow} VM:{guest} ({origin})",
                 host = a.host,
                 w = host_width,
                 guest = a.guest,
-                proto = a.proto,
                 origin = a.origin,
             );
         }
@@ -167,10 +166,9 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<
         for entry in &added {
             let arrow = if entry.host == entry.guest { "↔" } else { "→" };
             println!(
-                "  ✓ host:{host} {arrow} VM:{guest} ({proto})",
+                "  ✓ host:{host} {arrow} VM:{guest}",
                 host = entry.host,
                 guest = entry.guest,
-                proto = entry.proto,
             );
         }
     }

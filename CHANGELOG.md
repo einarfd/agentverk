@@ -6,6 +6,16 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Port forward specs no longer accept a `/proto` suffix.** The `/tcp` and
+  `/udp` suffixes were accepted historically but never functional — every
+  forward was tunneled over TCP regardless. The `Proto` enum and proto
+  field are gone from `ForwardSpec` / `ActiveForward`; forwards.toml state
+  files from older agv versions still load (the now-unknown `proto` field
+  is silently ignored by serde). A legacy `53/udp` in a config file now
+  fails at parse time with a message explaining to drop the suffix.
+
 ### Added
 
 - **`[auto_forwards.<name>]` schema** for mixins. A mixin can declare

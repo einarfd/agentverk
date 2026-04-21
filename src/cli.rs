@@ -82,10 +82,11 @@ pub enum Command {
 
     /// Add, list, or remove host-to-guest port forwards on a running VM.
     ///
-    /// Port specs use the form HOST[:GUEST][/PROTO]:
+    /// Port specs use the form HOST[:GUEST]. TCP is implicit — the
+    /// underlying `ssh -L` tunnel is TCP-only.
+    ///
     ///   agv forward myvm 8080               # host:8080 → VM:8080
     ///   agv forward myvm 8080:3000          # host:8080 → VM:3000
-    ///   agv forward myvm 53/udp             # UDP
     ///   agv forward myvm 5432 9090          # add two at once
     ///   agv forward myvm --list             # show active forwards
     ///   agv forward myvm --stop             # remove every active forward
@@ -350,7 +351,7 @@ pub struct ConfigSetArgs {
     pub disk: Option<String>,
 
     /// Replace the persistent forwards list with a comma-separated set of
-    /// specs (HOST[:GUEST][/PROTO]). Pass an empty string to clear all
+    /// specs (HOST[:GUEST]). Pass an empty string to clear all
     /// forwards. Takes effect on the next start/resume.
     #[arg(long, value_name = "SPECS")]
     pub forwards: Option<String>,
@@ -372,7 +373,7 @@ pub struct ForwardDaemonArgs {
     /// Name of the VM to forward to.
     pub name: String,
 
-    /// Forward spec in HOST[:GUEST][/PROTO] form.
+    /// Forward spec in HOST[:GUEST] form.
     pub spec: String,
 }
 
@@ -381,7 +382,7 @@ pub struct ForwardArgs {
     /// Name of the VM.
     pub name: String,
 
-    /// Port specs (HOST[:GUEST][/PROTO]). With no flags, each spec is added;
+    /// Port specs (HOST[:GUEST]). With no flags, each spec is added;
     /// with --stop, each spec is removed. Cannot be combined with --list.
     #[arg(conflicts_with = "list")]
     pub ports: Vec<String>,

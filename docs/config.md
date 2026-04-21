@@ -286,15 +286,14 @@ and the supervisor reconnects on its own if SSH drops temporarily.
 
 ```toml
 forwards = [
-  "8080",         # host:8080 → VM:8080 (tcp, default)
+  "8080",         # host:8080 → VM:8080
   "5433:5432",    # host:5433 → VM:5432
-  "53/udp",       # UDP
-  "9000:9000/udp",
+  "9000:9000",    # host:9000 → VM:9000 (same port, explicit)
 ]
 ```
 
-Each entry is `HOST[:GUEST][/PROTO]`. When `GUEST` is omitted it defaults to the same
-value as `HOST`; `PROTO` is `tcp` unless set to `udp`.
+Each entry is `HOST[:GUEST]`. When `GUEST` is omitted it defaults to the same
+value as `HOST`. TCP is implicit — the underlying `ssh -L` tunnel is TCP-only.
 
 Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
 the next start/resume resets the set back to what the config declares. To change the

@@ -68,7 +68,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **QEMU**: `src/vm/qemu.rs` — process spawning and QMP protocol
 - **Port forwarding runtime**: `src/vm/forwarding.rs` — add/list/stop on a running VM, spawns supervisors, persists to `<instance>/forwards.toml`
 - **Forward supervisor**: `src/forward_daemon.rs` — long-running loop around `ssh -N -L`, respawns on exit. Invoked as the hidden CLI subcommand `__forward-daemon`.
-- **Port forwarding types**: `src/forward.rs` — `ForwardSpec` parser (`HOST[:GUEST][/PROTO]`), active-forwards state file I/O, supervisor `kill_supervisor`/`kill_all_and_clear` helpers
+- **Port forwarding types**: `src/forward.rs` — `ForwardSpec` parser (`HOST[:GUEST]`), active-forwards state file I/O, supervisor `kill_supervisor`/`kill_all_and_clear` helpers
 - **Cloud-init**: `src/vm/cloud_init.rs` — seed image generation (user setup, SSH keys, hostname only)
 - **SSH**: `src/ssh.rs` — shells out to system `ssh`/`scp` for sessions, commands, and file copy
 - **Images**: `src/image.rs` — download, cache, checksum, qcow2 overlays

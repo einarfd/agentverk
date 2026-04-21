@@ -20,7 +20,7 @@ use anyhow::{bail, Context as _};
 use std::collections::BTreeMap;
 
 use crate::config::AutoForward;
-use crate::forward::{self, ActiveForward, ForwardSpec, Origin, Proto};
+use crate::forward::{self, ActiveForward, ForwardSpec, Origin};
 use crate::vm::instance::{Instance, Status};
 
 /// Ensure the VM is running and return an opened [`Instance`].
@@ -136,15 +136,13 @@ pub async fn add(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<Active
 
     let inst = open_running(name).await?;
     let mut active = sweep_dead(&inst).await?;
-    let existing: HashSet<(u16, forward::Proto)> =
-        active.iter().map(|a| (a.host, a.proto)).collect();
+    let existing: HashSet<u16> = active.iter().map(|a| a.host).collect();
 
     for spec in specs {
-        if existing.contains(&(spec.host, spec.proto)) {
+        if existing.contains(&spec.host) {
             bail!(
-                "forward for host port {}/{} is already active — use `agv forward {name} --stop {}` first",
+                "forward for host port {} is already active — use `agv forward {name} --stop {}` first",
                 spec.host,
-                spec.proto,
                 spec,
             );
         }
@@ -179,17 +177,14 @@ pub async fn stop(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<Activ
     let mut removed: Vec<ActiveForward> = Vec::new();
 
     for spec in specs {
-        match active
-            .iter()
-            .position(|a| a.host == spec.host && a.proto == spec.proto)
-        {
+        match active.iter().position(|a| a.host == spec.host) {
             Some(idx) => {
                 let entry = active.remove(idx);
                 forward::kill_supervisor(entry.pid);
                 removed.push(entry);
                 forward::write_active(&inst.forwards_path(), &active).await?;
             }
-            None => unknown.push(format!("{}/{}", spec.host, spec.proto)),
+            None => unknown.push(format!("{}", spec.host)),
         }
     }
 
@@ -271,9 +266,6 @@ pub async fn apply_auto_forwards(
     let mut active = forward::read_active(&inst.forwards_path()).await?;
 
     for (name, af) in auto_forwards {
-        // TCP is implicit — the underlying `ssh -L` tunnel is TCP-only.
-        let proto = Proto::Tcp;
-
         let host_port = match super::qemu::allocate_free_port().await {
             Ok(p) => p,
             Err(e) => {
@@ -284,7 +276,7 @@ pub async fn apply_auto_forwards(
             }
         };
 
-        let spec = ForwardSpec::new(host_port, af.guest_port, proto);
+        let spec = ForwardSpec::new(host_port, af.guest_port);
         let pid = match spawn_supervisor(&inst.name, spec) {
             Ok(pid) => pid,
             Err(e) => {
@@ -342,12 +334,12 @@ mod tests {
 
         let entries = vec![
             ActiveForward::new(
-                ForwardSpec::new(8080, 8080, forward::Proto::Tcp),
+                ForwardSpec::new(8080, 8080),
                 forward::Origin::Adhoc,
                 dead_pid,
             ),
             ActiveForward::new(
-                ForwardSpec::new(9090, 9090, forward::Proto::Tcp),
+                ForwardSpec::new(9090, 9090),
                 forward::Origin::Config,
                 alive_pid,
             ),
@@ -370,7 +362,7 @@ mod tests {
         let inst = test_instance(dir.path());
         let alive_pid = std::process::id();
         let entries = vec![ActiveForward::new(
-            ForwardSpec::new(8080, 8080, forward::Proto::Tcp),
+            ForwardSpec::new(8080, 8080),
             forward::Origin::Adhoc,
             alive_pid,
         )];
