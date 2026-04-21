@@ -13,7 +13,9 @@
 
 use std::collections::HashSet;
 use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context as _};
 
@@ -36,13 +38,33 @@ async fn open_running(name: &str) -> anyhow::Result<Instance> {
     Ok(inst)
 }
 
+/// Override for the agv binary path used to spawn `__forward-daemon`
+/// supervisors. `None` (the default) means use `std::env::current_exe()`.
+///
+/// Integration tests set this to `CARGO_BIN_EXE_agv` because inside
+/// `cargo test` `current_exe()` returns the libtest binary, and invoking
+/// it with `__forward-daemon` args silently no-ops (libtest treats them
+/// as a test filter that matches nothing).
+static AGV_BIN_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the agv binary path used by the forward supervisor spawner.
+///
+/// Intended for integration tests only. Safe to call multiple times with
+/// the same path; the first wins.
+pub fn set_agv_binary_for_tests(path: &Path) {
+    let _ = AGV_BIN_OVERRIDE.set(path.to_path_buf());
+}
+
 /// Spawn a forward supervisor for one spec and return its PID.
 ///
 /// The supervisor is detached: stdio is redirected to /dev/null, it runs
 /// in its own process group so we can group-kill it later, and the parent
 /// does not wait on it (the OS reaps the zombie when agv exits).
 fn spawn_supervisor(vm: &str, spec: ForwardSpec) -> anyhow::Result<u32> {
-    let exe = std::env::current_exe().context("failed to locate agv binary")?;
+    let exe = match AGV_BIN_OVERRIDE.get() {
+        Some(p) => p.clone(),
+        None => std::env::current_exe().context("failed to locate agv binary")?,
+    };
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("__forward-daemon")
         .arg(vm)

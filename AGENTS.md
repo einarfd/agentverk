@@ -49,7 +49,8 @@ Tests fall into three categories. Pick the right one when adding a new test:
   tools are missing). Use VM names prefixed `_test-` and call `cleanup(name)` at the
   start and end.
 - **Examples:** `create_with_start_and_provision`, `suspend_and_resume_preserves_state`,
-  `provision_failure_then_retry_resumes`, `fedora_base_boots_and_provisions`
+  `provision_failure_then_retry_resumes`, `fedora_base_boots_and_provisions`,
+  `auto_forwards_end_to_end`
 
 **Decision rule:**
 - Pure logic with no external state → category 1

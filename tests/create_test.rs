@@ -457,6 +457,180 @@ async fn fedora_base_boots_and_provisions() {
     cleanup(name).await;
 }
 
+/// End-to-end test for `[auto_forwards]`: a mixin declares a named
+/// forward plus a systemd user service listening on that guest port,
+/// agv allocates a host port at start, and an HTTP request from the
+/// host through the SSH tunnel reaches the service inside the guest.
+///
+/// This is the smallest test that would have caught the
+/// `create_inner`-skipping-apply-forwards bug — the forwards supervisor
+/// has to actually come up during `agv create --start`, not just on
+/// subsequent `agv start` invocations.
+///
+/// Uses `python3 -m http.server` as the guest-side service (stdlib on
+/// debian, no extra packages) instead of a full `gui-xfce` stack, so
+/// the test cost stays in the same league as the existing boot tests.
+///
+/// To run:
+///   cargo test `auto_forwards_end_to_end` -- --include-ignored --nocapture
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
+async fn auto_forwards_end_to_end() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping auto_forwards_end_to_end");
+        return;
+    }
+
+    dirs::ensure_dirs().await.unwrap();
+
+    // Drop a test mixin into the user images dir. It declares a named
+    // auto_forward and starts python's http.server on the guest port.
+    let images_dir = dirs::images_dir().unwrap();
+    tokio::fs::create_dir_all(&images_dir).await.unwrap();
+    let mixin_name = "_agv-test-autofwd";
+    let mixin_path = images_dir.join(format!("{mixin_name}.toml"));
+    // System service rather than user service — the latter's
+    // `loginctl enable-linger` + mid-session `systemctl --user enable --now`
+    // is a known-flaky pattern that can race with pam_systemd on first
+    // provisioning. System services start reliably via a single
+    // `systemctl enable --now`.
+    let mixin_contents = r#"
+[auto_forwards.httptest]
+guest_port = 9001
+
+[[provision]]
+run = """
+set -eu
+sudo tee /etc/systemd/system/agv-test-http.service >/dev/null <<'UNIT'
+[Unit]
+Description=agv auto_forwards end-to-end test HTTP server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m http.server --bind 127.0.0.1 9001
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now agv-test-http
+"""
+"#;
+    tokio::fs::write(&mixin_path, mixin_contents).await.unwrap();
+
+    let name = "_test-auto-forwards";
+    cleanup(name).await;
+
+    // The forward supervisor re-execs the agv binary via `__forward-daemon`.
+    // Inside `cargo test` `current_exe()` returns the test binary (libtest),
+    // which silently treats those args as a test filter and exits — no
+    // supervisor, no error. Point the spawner at the real agv binary.
+    agv::vm::forwarding::set_agv_binary_for_tests(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_agv"
+    )));
+
+    let config = config::resolve(config::Config {
+        base: Some(config::BaseConfig {
+            from: Some("debian-12".to_string()),
+            include: vec![mixin_name.to_string()],
+            ..Default::default()
+        }),
+        vm: Some(config::VmConfig {
+            memory: Some("1G".to_string()),
+            cpus: Some(2),
+            disk: Some("10G".to_string()),
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+
+    vm::create(name, &config, true, false, false, true).await.unwrap();
+
+    let inst_dir = dirs::instance_dir(name).unwrap();
+    let inst = Instance {
+        name: name.to_string(),
+        dir: inst_dir,
+    };
+
+    assert_eq!(inst.read_status().await.unwrap(), Status::Running);
+
+    // The auto_forward plumbing should have allocated a host port and
+    // written it to <instance>/httptest_port.
+    let port_path = inst.auto_forward_port_path("httptest");
+    assert!(
+        port_path.exists(),
+        "expected auto_forward port file at {}",
+        port_path.display()
+    );
+    let port: u16 = tokio::fs::read_to_string(&port_path)
+        .await
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("port file should contain a valid u16");
+    assert!(port > 0);
+
+    // Hit the python http.server inside the guest via the SSH tunnel.
+    // Retry for up to 30s because the guest's systemd user service
+    // may take a moment to come up after first boot.
+    let url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let mut body = None;
+    for _ in 0..30 {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                body = Some(resp.text().await.unwrap_or_default());
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let Some(body) = body else {
+        // Collect diagnostics from both sides so a regression is actionable.
+        let service_status = ssh::run_cmd(
+            &inst,
+            &config.user,
+            &["systemctl status agv-test-http --no-pager -l || true".to_string()],
+        )
+        .await
+        .unwrap_or_else(|e| format!("<ssh failed: {e:#}>"));
+        let journal = ssh::run_cmd(
+            &inst,
+            &config.user,
+            &["sudo journalctl -u agv-test-http --no-pager -n 50 || true".to_string()],
+        )
+        .await
+        .unwrap_or_else(|e| format!("<ssh failed: {e:#}>"));
+        let forwards_toml = tokio::fs::read_to_string(inst.forwards_path())
+            .await
+            .unwrap_or_else(|e| format!("<read failed: {e}>"));
+
+        panic!(
+            "never got a 200 OK from the tunneled python http.server.\n\
+             \n\
+             host port (from {path:?}): {port}\n\
+             \n\
+             ---- <instance>/forwards.toml ----\n{forwards_toml}\n\
+             ---- guest: systemctl status agv-test-http ----\n{service_status}\n\
+             ---- guest: journalctl -u agv-test-http ----\n{journal}",
+            path = port_path.display(),
+        );
+    };
+    assert!(
+        body.contains("Directory listing") || body.contains("<title>"),
+        "expected python http.server index page, got: {body}"
+    );
+
+    cleanup(name).await;
+    let _ = tokio::fs::remove_file(&mixin_path).await;
+}
+
 /// Verify that suspend saves VM state and resume restores it.
 ///
 /// Creates a marker file in /run (tmpfs/RAM-backed), suspends the VM, resumes
