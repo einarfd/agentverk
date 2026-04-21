@@ -168,6 +168,9 @@ pub enum Origin {
     Config,
     /// Added at runtime via `agv forward`.
     Adhoc,
+    /// Created by a mixin via `[auto_forwards.<name>]` — the host port was
+    /// auto-allocated at VM start and written to `<instance>/<name>_port`.
+    Auto,
 }
 
 impl fmt::Display for Origin {
@@ -175,6 +178,7 @@ impl fmt::Display for Origin {
         match self {
             Self::Config => write!(f, "config"),
             Self::Adhoc => write!(f, "adhoc"),
+            Self::Auto => write!(f, "auto"),
         }
     }
 }

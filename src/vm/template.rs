@@ -440,6 +440,7 @@ async fn create_from_template_inner(
         setup: vec![],
         provision: vec![],
         forwards: vec![],
+        auto_forwards: std::collections::BTreeMap::new(),
         template_name: Some(template_name.to_string()),
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;

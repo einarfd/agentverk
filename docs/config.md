@@ -301,6 +301,42 @@ the next start/resume resets the set back to what the config declares. To change
 persistent set without editing the config file, use `agv config set --forwards "..."`
 (replaces the list wholesale).
 
+## `[auto_forwards.<name>]` (mixin authors)
+
+Named, auto-allocated port forwards — agv picks a free host port at VM
+start and writes it to `<instance>/<name>_port` for other commands or
+scripts to read. Unlike `forwards = [...]` (which takes explicit
+`HOST[:GUEST][/PROTO]` strings), `auto_forwards` let a mixin declare
+"I need a tunnel to guest port X under a stable name" without having to
+pick a host port — so multiple VMs using the same mixin never collide.
+
+This mirrors the pattern SSH already uses internally: the SSH port is
+auto-allocated at VM start, written to `<instance>/ssh_port`, and stays
+stable for the VM's lifetime. `auto_forwards` extends that mechanism to
+arbitrary protocols declared by mixins.
+
+```toml
+# Inside a mixin — e.g. a hypothetical `gui-xfce` that exposes RDP.
+[auto_forwards.rdp]
+guest_port = 3389
+```
+
+TCP is implicit — the underlying tunnel is `ssh -L`, which is TCP-only.
+
+**Discovery**:
+
+- `agv inspect <vm>` shows each auto-forward's host port on a running VM.
+- `agv forward <vm> --list` lists them alongside other active forwards
+  (Origin: `auto`).
+- The port is also on disk at `<instance>/<name>_port` for scripts.
+
+**Rules**:
+
+- Names must match `[a-z][a-z0-9_]*` — they become filenames.
+- A name can only be declared once across the whole inheritance +
+  include chain; duplicates fail at resolve time rather than fighting
+  over the port-file path.
+
 ## Template variables
 
 Config values support `{{VAR}}` substitution. This is the main way to pass secrets or

@@ -8,6 +8,14 @@ All notable changes to `agv` will be documented here. This project follows
 
 ### Added
 
+- **`[auto_forwards.<name>]` schema** for mixins. A mixin can declare
+  "I need a tunnel to guest port X under a stable name" without picking a
+  host port, and agv allocates one at VM start, writes it to
+  `<instance>/<name>_port`, and spawns an SSH-tunnel supervisor that
+  persists for the VM's lifetime. Mirrors the SSH port pattern so
+  protocols like RDP / VNC / a computer-use control plane become mixin
+  material without any additional plumbing changes. Surfaces in
+  `agv inspect` and `agv forward --list` (Origin: `auto`).
 - **`--image` shorthand aliases.** `--image ubuntu`, `--image debian`, and
   `--image fedora` now resolve to the current canonical versions
   (`ubuntu-24.04`, `debian-12`, `fedora-43`). Aliases are pure CLI sugar

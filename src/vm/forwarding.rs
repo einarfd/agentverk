@@ -17,7 +17,10 @@ use std::process::Stdio;
 
 use anyhow::{bail, Context as _};
 
-use crate::forward::{self, ActiveForward, ForwardSpec, Origin};
+use std::collections::BTreeMap;
+
+use crate::config::AutoForward;
+use crate::forward::{self, ActiveForward, ForwardSpec, Origin, Proto};
 use crate::vm::instance::{Instance, Status};
 
 /// Ensure the VM is running and return an opened [`Instance`].
@@ -219,6 +222,97 @@ pub async fn stop_all(name: &str) -> anyhow::Result<Vec<ActiveForward>> {
 /// is already gone or going.
 pub async fn stop_all_for_instance(inst: &Instance) {
     forward::kill_all_and_clear(&inst.forwards_path()).await;
+    // Also remove the per-auto-forward port files so they don't mislead
+    // consumers after the VM is stopped. Swallow errors — the files may
+    // not exist, and the cleanup is best-effort.
+    let _ = remove_auto_forward_port_files(inst).await;
+}
+
+async fn remove_auto_forward_port_files(inst: &Instance) -> anyhow::Result<()> {
+    let mut entries = tokio::fs::read_dir(&inst.dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.ends_with("_port") && name != "ssh_port" {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Result of applying auto-allocated forwards on start/resume.
+pub struct AutoForwardOutcome {
+    pub applied: Vec<(String, ActiveForward)>,
+    pub failures: Vec<(String, String)>,
+}
+
+/// Apply the resolved config's `auto_forwards` to a freshly started VM.
+///
+/// For each declared name, allocate a free host port, spawn a supervisor,
+/// append to the active-forwards state file (so it's cleaned up on stop
+/// alongside every other forward), and write the host port to
+/// `<instance>/<name>_port`.
+///
+/// Call this *after* `apply_config_forwards` so the state file has already
+/// been reset for this boot. Failures are non-fatal per-entry — the VM is
+/// up, so surface the specific entry that couldn't allocate.
+pub async fn apply_auto_forwards(
+    inst: &Instance,
+    auto_forwards: &BTreeMap<String, AutoForward>,
+) -> anyhow::Result<AutoForwardOutcome> {
+    let mut outcome = AutoForwardOutcome {
+        applied: Vec::with_capacity(auto_forwards.len()),
+        failures: Vec::new(),
+    };
+    if auto_forwards.is_empty() {
+        return Ok(outcome);
+    }
+
+    let mut active = forward::read_active(&inst.forwards_path()).await?;
+
+    for (name, af) in auto_forwards {
+        // TCP is implicit — the underlying `ssh -L` tunnel is TCP-only.
+        let proto = Proto::Tcp;
+
+        let host_port = match super::qemu::allocate_free_port().await {
+            Ok(p) => p,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((name.clone(), format!("port allocation failed: {e:#}")));
+                continue;
+            }
+        };
+
+        let spec = ForwardSpec::new(host_port, af.guest_port, proto);
+        let pid = match spawn_supervisor(&inst.name, spec) {
+            Ok(pid) => pid,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((name.clone(), format!("supervisor spawn failed: {e:#}")));
+                continue;
+            }
+        };
+
+        let entry = ActiveForward::new(spec, Origin::Auto, pid);
+        active.push(entry);
+        forward::write_active(&inst.forwards_path(), &active).await?;
+
+        // Publish the allocated host port for consumers (`agv gui`, scripts).
+        tokio::fs::write(inst.auto_forward_port_path(name), host_port.to_string())
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write auto-forward port file {}",
+                    inst.auto_forward_port_path(name).display()
+                )
+            })?;
+
+        outcome.applied.push((name.clone(), entry));
+    }
+
+    Ok(outcome)
 }
 
 #[cfg(test)]

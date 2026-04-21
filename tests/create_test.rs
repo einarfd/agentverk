@@ -101,6 +101,7 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         setup: vec![],
         provision: vec![],
         forwards: vec![],
+        auto_forwards: std::collections::BTreeMap::new(),
         template_name: None,
     }
 }
@@ -221,6 +222,7 @@ async fn create_marks_broken_on_failure() {
         setup: vec![],
         provision: vec![],
         forwards: vec![],
+        auto_forwards: std::collections::BTreeMap::new(),
         template_name: None,
     };
 
@@ -306,6 +308,7 @@ async fn create_with_start_and_provision() {
         forwards: vec![],
     os_families: None,
     supports: None,
+    auto_forwards: None,
     })
     .unwrap();
 
@@ -399,6 +402,7 @@ async fn fedora_base_boots_and_provisions() {
         forwards: vec![],
         os_families: None,
         supports: None,
+    auto_forwards: None,
     })
     .unwrap();
 
@@ -490,6 +494,7 @@ async fn suspend_and_resume_preserves_state() {
         forwards: vec![],
     os_families: None,
     supports: None,
+    auto_forwards: None,
     })
     .unwrap();
 
@@ -646,6 +651,7 @@ async fn provision_failure_then_retry_resumes() {
         forwards: vec![],
     os_families: None,
     supports: None,
+    auto_forwards: None,
     })
     .unwrap();
 

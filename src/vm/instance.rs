@@ -247,6 +247,17 @@ impl Instance {
         self.dir.join("forwards.toml")
     }
 
+    /// Path to the auto-allocated host port for a named auto-forward.
+    ///
+    /// Mixins declare `[auto_forwards.<name>]`; at VM start agv picks a free
+    /// host port, writes the decimal port number here, and spawns an SSH
+    /// tunnel. Consumers (`agv gui`, third-party scripts) can read this
+    /// file to discover the port without needing to parse `forwards.toml`.
+    #[must_use]
+    pub fn auto_forward_port_path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}_port"))
+    }
+
     /// Path to the legacy provisioned marker file.
     ///
     /// Newer VMs use `provision_state` instead. This file is kept for

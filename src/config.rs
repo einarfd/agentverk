@@ -76,6 +76,45 @@ pub struct Config {
     /// distro-agnostic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_families: Option<BTreeMap<String, FamilySteps>>,
+
+    /// Named auto-allocated forwards, keyed by a short identifier used as
+    /// the filename for the allocated host port (`<instance>/<name>_port`).
+    ///
+    /// Unlike `forwards = [...]` (which takes explicit `HOST[:GUEST][/PROTO]`
+    /// strings), `auto_forwards` let a mixin declare "I need a tunnel to guest
+    /// port X under a stable name" without picking a host port — agv
+    /// allocates one at VM start so multiple VMs can't collide. Mirrors the
+    /// pattern SSH already uses internally: a free host port is chosen at
+    /// boot, written to a file in the instance dir, and kept stable for the
+    /// VM's lifetime.
+    ///
+    /// Example (a `gui-xfce` mixin exposing RDP):
+    ///
+    /// ```toml
+    /// [auto_forwards.rdp]
+    /// guest_port = 3389
+    /// ```
+    ///
+    /// Keys must match `[a-z][a-z0-9_]*` — they become filenames and can
+    /// appear in user-facing output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_forwards: Option<BTreeMap<String, AutoForward>>,
+}
+
+/// Declaration of a named auto-allocated forward.
+///
+/// The resolver accumulates these across the inheritance + include chain,
+/// and at VM start each one gets a free host port allocated, an SSH-tunnel
+/// supervisor spawned, and `<instance>/<name>_port` written.
+///
+/// TCP is implicit. If we ever add UDP tunneling (would need socat or a
+/// similar wrapper around `ssh -L`), a `proto` field can be added as a
+/// backwards-compatible extension with `"tcp"` as the default.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoForward {
+    /// Port the service listens on inside the VM.
+    pub guest_port: u16,
 }
 
 /// Per-family steps inside a `[os_families.<name>]` section of a mixin.
@@ -314,6 +353,15 @@ pub struct ResolvedConfig {
     #[serde(default)]
     pub forwards: Vec<String>,
 
+    /// Named auto-allocated forwards (accumulated from full chain).
+    ///
+    /// At VM start, each entry gets a free host port allocated (written to
+    /// `<instance>/<name>_port`) and an SSH-tunnel supervisor spawned.
+    /// Mixins declare these so multiple VMs each get a distinct host port
+    /// without users having to pick them manually.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auto_forwards: BTreeMap<String, AutoForward>,
+
     /// Name of the template this VM was cloned from, if any.
     ///
     /// Set when a VM is created with `agv create --from <template>`.
@@ -410,6 +458,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         forwards: child_forwards,
         os_families: _,
         supports: _,
+        auto_forwards: child_auto_forwards,
     } = config;
 
     if let Some(parent_name) = from {
@@ -447,6 +496,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             forwards: vec![],
             os_families: None,
             supports: None,
+            auto_forwards: None,
         };
 
         // Merge child scalars on top of resolved parent.
@@ -460,6 +510,9 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         resolved.setup.extend(child_setup);
         resolved.provision.extend(child_provision);
         resolved.forwards.extend(child_forwards);
+        if let Some(map) = child_auto_forwards {
+            merge_auto_forwards(&mut resolved.auto_forwards, map, "child config")?;
+        }
 
         Ok(resolved)
     } else {
@@ -506,6 +559,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             setup: vec![],
             provision: vec![],
             forwards: vec![],
+            auto_forwards: BTreeMap::new(),
             template_name: None,
         };
 
@@ -517,9 +571,60 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         resolved.setup.extend(child_setup);
         resolved.provision.extend(child_provision);
         resolved.forwards.extend(child_forwards);
+        if let Some(map) = child_auto_forwards {
+            merge_auto_forwards(&mut resolved.auto_forwards, map, "root config")?;
+        }
 
         Ok(resolved)
     }
+}
+
+/// Merge `from` into `into`, erroring if any key already exists.
+///
+/// Names are intentionally unique per VM — two mixins that both wanted a
+/// named forward called `rdp` would conflict on the filename
+/// `<instance>/rdp_port` and on the host port allocation. Surface that
+/// at resolve time with a clear error.
+fn merge_auto_forwards(
+    into: &mut BTreeMap<String, AutoForward>,
+    from: BTreeMap<String, AutoForward>,
+    source_label: &str,
+) -> anyhow::Result<()> {
+    for (name, forward) in from {
+        validate_auto_forward_name(&name)?;
+        if into.contains_key(&name) {
+            bail!(
+                "duplicate auto_forward '{name}' declared by {source_label} — \
+                 another layer already declared it"
+            );
+        }
+        into.insert(name, forward);
+    }
+    Ok(())
+}
+
+/// Enforce a minimal shape for `auto_forward` keys: lowercase ASCII, digits,
+/// and underscores, starting with a letter. The name is used as a filename
+/// segment (`<instance>/<name>_port`) and shows up in user-facing output.
+fn validate_auto_forward_name(name: &str) -> anyhow::Result<()> {
+    let mut chars = name.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("auto_forward name must not be empty"))?;
+    if !first.is_ascii_lowercase() {
+        bail!(
+            "auto_forward name '{name}' must start with a lowercase ASCII letter"
+        );
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            bail!(
+                "auto_forward name '{name}' contains invalid character {c:?} \
+                 (allowed: a-z, 0-9, _)"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Apply include modules to a resolved config.
@@ -667,6 +772,16 @@ fn apply_includes(
                 resolved.provision.extend(family_steps.provision);
             }
         }
+
+        // Merge this include's auto_forwards into the resolved map, erroring
+        // on duplicates across mixins.
+        if let Some(map) = include_config.auto_forwards {
+            merge_auto_forwards(
+                &mut resolved.auto_forwards,
+                map,
+                &format!("mixin '{name}'"),
+            )?;
+        }
     }
 
     Ok(())
@@ -691,6 +806,11 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
 
     let mut forwards = parent.forwards;
     forwards.extend(child.forwards);
+
+    // Parent's auto_forwards carry through; any child additions are merged
+    // in later (in resolve_inner) so duplicate-key detection can name the
+    // source layer properly.
+    let auto_forwards = parent.auto_forwards;
 
     ResolvedConfig {
         base_url: parent.base_url,
@@ -718,6 +838,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         setup,
         provision,
         forwards,
+        auto_forwards,
         template_name: None,
     }
 }
@@ -939,6 +1060,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let resolved = resolve(config).unwrap();
@@ -985,6 +1107,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let resolved = resolve(config).unwrap();
@@ -1020,6 +1143,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let resolved = resolve(child).unwrap();
@@ -1055,6 +1179,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let resolved = resolve(project).unwrap();
@@ -1105,6 +1230,7 @@ mod tests {
             ],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
         let resolved = resolve(config).unwrap();
         assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "53/udp"]);
@@ -1135,6 +1261,7 @@ mod tests {
             forwards: vec!["not-a-port".to_string()],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1166,6 +1293,7 @@ mod tests {
             forwards: vec!["8080".to_string(), "8080:3000".to_string()],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1186,6 +1314,7 @@ mod tests {
             forwards: vec!["9000:9000".to_string()],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
         let resolved = resolve(child).unwrap();
         assert_eq!(resolved.forwards, vec!["9000"]);
@@ -1206,6 +1335,7 @@ mod tests {
             setup: vec![],
             provision: vec![],
             forwards: vec!["8080".to_string()],
+            auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
         };
         let child = Config {
@@ -1217,6 +1347,7 @@ mod tests {
             forwards: vec!["9090".to_string()],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
         let result = merge(parent, child);
         assert_eq!(result.forwards, vec!["8080", "9090"]);
@@ -1256,6 +1387,7 @@ mod tests {
             setup: vec![],
             provision: vec![],
             forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
         };
 
@@ -1272,6 +1404,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let result = merge(parent, child);
@@ -1308,6 +1441,7 @@ mod tests {
                 script: None,
             }],
             forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
         };
 
@@ -1331,6 +1465,7 @@ mod tests {
             forwards: vec![],
             os_families: None,
         supports: None,
+        auto_forwards: None,
         };
 
         let result = merge(parent, child);
@@ -1507,6 +1642,7 @@ cpus = 4
                 script: None,
             }],
             forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
         };
 
@@ -1665,6 +1801,7 @@ run = ["echo one", "echo two"]
             forwards: vec![],
             os_families: None,
             supports: None,
+            auto_forwards: None,
         }
     }
 
@@ -1865,6 +2002,110 @@ run = "apt-get install -y foo"
             msg.contains("debian") && msg.contains("fedora"),
             "message should list supported families: {msg}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // auto_forwards schema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_forwards_parse_from_mixin() {
+        let toml_str = r"
+[auto_forwards.rdp]
+guest_port = 3389
+
+[auto_forwards.vnc]
+guest_port = 5900
+";
+        let mixin: Config = toml::from_str(toml_str).unwrap();
+        let auto = mixin
+            .auto_forwards
+            .as_ref()
+            .expect("auto_forwards should parse");
+        assert_eq!(auto.len(), 2);
+        assert_eq!(auto["rdp"].guest_port, 3389);
+        assert_eq!(auto["vnc"].guest_port, 5900);
+    }
+
+    #[test]
+    fn auto_forwards_resolve_through_inheritance_and_includes() {
+        // A child config that declares its own auto_forward and also
+        // uses uv which doesn't have any — the merged ResolvedConfig should
+        // carry just the child's declaration.
+        let toml_str = r#"
+[base]
+from = "ubuntu-24.04"
+
+[auto_forwards.vnc]
+guest_port = 5900
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let resolved = resolve(cfg).unwrap();
+        assert_eq!(resolved.auto_forwards.len(), 1);
+        assert_eq!(resolved.auto_forwards["vnc"].guest_port, 5900);
+    }
+
+    #[test]
+    fn auto_forwards_duplicate_keys_across_layers_error() {
+        // A root image declaring auto_forwards.foo and a user config also
+        // declaring auto_forwards.foo — resolver rejects so the filename
+        // `<instance>/foo_port` can't be ambiguous.
+        let toml_str = r#"
+[base]
+from = "ubuntu-24.04"
+
+[auto_forwards.foo]
+guest_port = 1234
+"#;
+        // Pre-populate the resolved state by resolving once — this is
+        // a synthetic duplicate test since no built-in declares foo.
+        // Construct a synthetic dup via a user config that declares the
+        // same key twice-with-indirection is impossible in TOML; instead,
+        // test the merge_auto_forwards helper directly.
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let resolved = resolve(cfg).unwrap();
+        assert_eq!(resolved.auto_forwards.len(), 1);
+
+        // Directly exercise the validator.
+        let mut into: BTreeMap<String, AutoForward> = BTreeMap::new();
+        into.insert("foo".to_string(), AutoForward { guest_port: 1 });
+        let mut from: BTreeMap<String, AutoForward> = BTreeMap::new();
+        from.insert("foo".to_string(), AutoForward { guest_port: 2 });
+        let err = merge_auto_forwards(&mut into, from, "test").unwrap_err();
+        assert!(format!("{err:#}").contains("duplicate auto_forward 'foo'"));
+    }
+
+    #[test]
+    fn auto_forward_rejects_unknown_toml_fields() {
+        // `deny_unknown_fields` on AutoForward means a typo / stale field
+        // (e.g. a leftover `proto`) surfaces as a clear parse error rather
+        // than being silently ignored.
+        let toml_str = r#"
+[auto_forwards.rdp]
+guest_port = 3389
+proto = "tcp"
+"#;
+        let err = toml::from_str::<Config>(toml_str).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field") && msg.contains("proto"),
+            "expected unknown-field error mentioning 'proto', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn auto_forward_name_validation_rejects_uppercase_and_hyphens() {
+        for bad in ["RDP", "rdp-1", "1rdp", "rd.p", ""] {
+            let err = validate_auto_forward_name(bad).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("auto_forward name"),
+                "expected validation error for {bad:?}, got: {msg}"
+            );
+        }
+        for good in ["rdp", "vnc", "claude_control", "port9000"] {
+            validate_auto_forward_name(good).unwrap();
+        }
     }
 
     #[test]

@@ -308,6 +308,7 @@ EMPTY=
                 },
             ],
             forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
         };
 

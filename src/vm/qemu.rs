@@ -303,7 +303,7 @@ fn detect_image_format(path: &Path) -> anyhow::Result<&'static str> {
     }
 }
 
-async fn allocate_free_port() -> anyhow::Result<u16> {
+pub(super) async fn allocate_free_port() -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .context("failed to bind to ephemeral port")?;

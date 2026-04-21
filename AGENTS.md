@@ -114,7 +114,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 
 `~/.local/share/agv/` (XDG-compliant, same on all platforms). Override with `AGV_DATA_DIR`.
 
-Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `forwards.toml` (present when forwards are active; lists each forward's spec, origin, and supervisor PID), `efi-vars.fd` (aarch64 only).
+Instance state lives in `instances/<name>/` with files: `disk.qcow2`, `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `pid`, `ssh_port`, `qmp.sock`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `forwards.toml` (present when forwards are active; lists each forward's spec, origin, and supervisor PID), `<name>_port` files (one per declared `[auto_forwards.<name>]`, holding the auto-allocated host port for the VM's lifetime), `efi-vars.fd` (aarch64 only).
 
 The data dir also contains `ssh_config` — a managed SSH config file with Host entries for running VMs (see `ssh_config.rs`).
 

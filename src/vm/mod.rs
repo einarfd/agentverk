@@ -80,42 +80,70 @@ async fn apply_and_report_forwards(
     config: &ResolvedConfig,
     spinner: &ProgressBar,
 ) {
+    // Config forwards first (resets the state file for this boot).
     if config.forwards.is_empty() {
         // Still clear any stale state left from a previous boot.
         if let Err(e) = crate::forward::clear_active(&inst.forwards_path()).await {
             debug!(vm = %inst.name, error = %format!("{e:#}"), "failed to clear stale forwards state");
         }
-        return;
+    } else {
+        let specs = match crate::forward::parse_specs(config.forwards.iter()) {
+            Ok(s) => s,
+            Err(e) => {
+                spinner.println(format!(
+                    "  ! Skipping forwards — failed to parse config: {e:#}"
+                ));
+                return;
+            }
+        };
+        match forwarding::apply_config_forwards(inst, &specs).await {
+            Ok(outcome) => {
+                if !outcome.applied.is_empty() {
+                    step_done(
+                        spinner,
+                        &format!(
+                            "Applied {} forward{}",
+                            outcome.applied.len(),
+                            if outcome.applied.len() == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+                for (spec, msg) in &outcome.failures {
+                    spinner.println(format!("  ! Forward {spec} failed: {msg}"));
+                }
+            }
+            Err(e) => {
+                spinner.println(format!(
+                    "  ! Failed to persist forwards state: {e:#}"
+                ));
+            }
+        }
     }
-    let specs = match crate::forward::parse_specs(config.forwards.iter()) {
-        Ok(s) => s,
-        Err(e) => {
-            spinner.println(format!(
-                "  ! Skipping forwards — failed to parse config: {e:#}"
-            ));
-            return;
-        }
-    };
-    match forwarding::apply_config_forwards(inst, &specs).await {
-        Ok(outcome) => {
-            if !outcome.applied.is_empty() {
-                step_done(
-                    spinner,
-                    &format!(
-                        "Applied {} forward{}",
-                        outcome.applied.len(),
-                        if outcome.applied.len() == 1 { "" } else { "s" }
-                    ),
-                );
+
+    // Auto-allocated forwards — mixins' named tunnels (e.g. RDP, VNC).
+    // Runs after config forwards so they share one forwards.toml state
+    // file that's cleanly reset at the start of each boot.
+    if !config.auto_forwards.is_empty() {
+        match forwarding::apply_auto_forwards(inst, &config.auto_forwards).await {
+            Ok(outcome) => {
+                for (name, entry) in &outcome.applied {
+                    step_done(
+                        spinner,
+                        &format!(
+                            "Auto-forward {name}: 127.0.0.1:{} → guest:{}",
+                            entry.host, entry.guest
+                        ),
+                    );
+                }
+                for (name, msg) in &outcome.failures {
+                    spinner.println(format!("  ! Auto-forward {name} failed: {msg}"));
+                }
             }
-            for (spec, msg) in &outcome.failures {
-                spinner.println(format!("  ! Forward {spec} failed: {msg}"));
+            Err(e) => {
+                spinner.println(format!(
+                    "  ! Failed to apply auto-forwards: {e:#}"
+                ));
             }
-        }
-        Err(e) => {
-            spinner.println(format!(
-                "  ! Failed to persist forwards state: {e:#}"
-            ));
         }
     }
 }
@@ -270,6 +298,12 @@ async fn create_inner(
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
     run_first_boot(inst, config, interactive_mode, verbose, quiet, &spinner).await?;
+
+    // Apply config-declared and auto-allocated forwards. Must run after
+    // SSH is up (the supervisors tunnel through sshd). Same step runs in
+    // `start` and `resume` — keeping it here means `agv create --start`
+    // yields a VM with its forwards already live.
+    apply_and_report_forwards(inst, config, &spinner).await;
 
     // Update managed SSH config so IDEs can connect by VM name.
     update_ssh_config(inst, &config.user).await;
@@ -504,6 +538,21 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
         let port = port_raw.trim();
         if !port.is_empty() {
             println!("  {:<w$}  localhost:{port}", "SSH port");
+        }
+    }
+
+    // Auto-allocated forwards (e.g. from a `gui-xfce` mixin exposing RDP).
+    // Only meaningful on a running VM — when the VM is stopped the port
+    // files are cleaned up, so the BTreeMap lookup is fine either way.
+    if status == Status::Running && !config.auto_forwards.is_empty() {
+        for name in config.auto_forwards.keys() {
+            let raw = tokio::fs::read_to_string(inst.auto_forward_port_path(name))
+                .await
+                .unwrap_or_default();
+            let port = raw.trim();
+            if !port.is_empty() {
+                println!("  {:<w$}  localhost:{port}", format!("{name} port"));
+            }
         }
     }
 
