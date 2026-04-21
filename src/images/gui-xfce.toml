@@ -1,0 +1,154 @@
+# XFCE desktop over TigerVNC + noVNC mixin.
+#
+# Serves an XFCE desktop over HTTP in the browser — no native RDP / VNC
+# client needed on the host. `agv gui <vm>` opens a browser tab at
+# http://127.0.0.1:<auto_port>/vnc.html?autoconnect=1 and you land
+# straight in the desktop.
+#
+# Auth model:
+#
+#   VNC and the websockify HTTP proxy both bind 127.0.0.1 inside the
+#   guest. The only way to reach them is through the SSH-tunnel
+#   supervisor spawned by `[auto_forwards.gui]`, and that tunnel is
+#   gated by the VM's unique ed25519 SSH key. So there's no password
+#   on the VNC server — the tunnel is the auth boundary. No credential
+#   ever hits the URL, the browser history, or local storage.
+#
+# Use via: include = ["gui-xfce"]
+
+[auto_forwards.gui]
+guest_port = 6080
+
+[os_families.debian]
+[[os_families.debian.setup]]
+run = """
+apt-get update
+apt-get install -y --no-install-recommends \\
+  xfce4 xfce4-goodies dbus-x11 xdg-utils \\
+  tigervnc-standalone-server tigervnc-common \\
+  novnc websockify python3-numpy
+"""
+
+[[os_families.debian.provision]]
+run = """
+set -eu
+mkdir -p ~/.vnc
+
+# xstartup is read by the tigervncserver wrapper on session start.
+cat > ~/.vnc/xstartup <<'XSTART'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec dbus-launch --exit-with-session xfce4-session
+XSTART
+chmod 0755 ~/.vnc/xstartup
+
+# Systemd user services so the stack comes up at login and resumes
+# automatically after `agv suspend` / `agv resume`.
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/agv-gui-vnc.service <<'VNC'
+[Unit]
+Description=agv GUI: TigerVNC X server on :1 running XFCE
+After=dbus.socket
+
+[Service]
+# `tigervncserver -fg` runs the Perl wrapper in the foreground and
+# reads ~/.vnc/xstartup to launch xfce4-session. We clean up any
+# stale lock for :1 first so restarts after a crash work.
+Type=simple
+ExecStartPre=-/usr/bin/tigervncserver -kill :1
+ExecStart=/usr/bin/tigervncserver :1 -fg \\
+  -SecurityTypes None -localhost yes \\
+  -geometry 1440x900 -depth 24
+ExecStopPost=-/usr/bin/tigervncserver -kill :1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+VNC
+
+cat > ~/.config/systemd/user/agv-gui-web.service <<'WEB'
+[Unit]
+Description=agv GUI: websockify + noVNC HTML5 bridge
+After=agv-gui-vnc.service
+Requires=agv-gui-vnc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc/ 127.0.0.1:6080 127.0.0.1:5901
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+WEB
+
+# User services need linger enabled so they start at boot without a
+# login. enable-linger requires root; use NOPASSWD sudo.
+sudo loginctl enable-linger "$(id -un)"
+systemctl --user daemon-reload
+systemctl --user enable --now agv-gui-vnc agv-gui-web
+"""
+
+[os_families.fedora]
+[[os_families.fedora.setup]]
+run = """
+dnf install -y @xfce-desktop xdg-utils tigervnc-server novnc python3-websockify
+"""
+
+[[os_families.fedora.provision]]
+run = """
+set -eu
+mkdir -p ~/.vnc
+
+cat > ~/.vnc/xstartup <<'XSTART'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec dbus-launch --exit-with-session xfce4-session
+XSTART
+chmod 0755 ~/.vnc/xstartup
+
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/agv-gui-vnc.service <<'VNC'
+[Unit]
+Description=agv GUI: TigerVNC X server on :1 running XFCE
+After=dbus.socket
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/vncserver -kill :1
+ExecStart=/usr/bin/vncserver :1 -fg \\
+  -SecurityTypes None -localhost yes \\
+  -geometry 1440x900 -depth 24
+ExecStopPost=-/usr/bin/vncserver -kill :1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+VNC
+
+cat > ~/.config/systemd/user/agv-gui-web.service <<'WEB'
+[Unit]
+Description=agv GUI: websockify + noVNC HTML5 bridge
+After=agv-gui-vnc.service
+Requires=agv-gui-vnc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc/ 127.0.0.1:6080 127.0.0.1:5901
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+WEB
+
+sudo loginctl enable-linger "$(id -un)"
+systemctl --user daemon-reload
+systemctl --user enable --now agv-gui-vnc agv-gui-web
+"""

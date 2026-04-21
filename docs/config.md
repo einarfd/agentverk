@@ -300,6 +300,49 @@ the next start/resume resets the set back to what the config declares. To change
 persistent set without editing the config file, use `agv config set --forwards "..."`
 (replaces the list wholesale).
 
+## Desktop / GUI access
+
+The `gui-xfce` mixin installs XFCE + TigerVNC + noVNC inside the VM,
+all bound to `127.0.0.1`. It declares `[auto_forwards.gui] guest_port
+= 6080`, so agv allocates a free host port and spawns an SSH-tunnel
+supervisor at VM start. `agv gui <name>` reads the allocated port and
+opens `http://127.0.0.1:<port>/vnc.html?autoconnect=1&resize=scale`
+in the system default browser — you land straight in the XFCE desktop.
+
+No native remote-desktop client needed; the browser handles rendering,
+keyboard, clipboard, full-screen. Works identically on macOS, Linux,
+and Windows hosts.
+
+```toml
+[base]
+from    = "ubuntu-24.04"
+include = ["devtools", "gui-xfce"]
+spec    = "large"    # XFCE + browser benefits from the bigger preset
+```
+
+```sh
+agv create --config agv.toml --start myvm
+agv gui myvm
+```
+
+**Auth model**: the VNC server runs with `-SecurityTypes None` and
+binds `127.0.0.1` only. The only way to reach it is through the SSH
+tunnel, which is gated by the VM's unique ed25519 key. So no password
+is ever embedded in a URL, saved to browser history, or stored in
+localStorage — the SSH tunnel is the auth boundary (same reasoning
+we already use for the `forwards` mechanism).
+
+**Browsers on Ubuntu — avoid snaps**: Ubuntu 24.04 packages Firefox
+(and Chromium) as snaps. Snap confinement expects the launching
+process to sit in a cgroup hierarchy rooted at a login manager
+(gdm/lightdm/sddm), and our XFCE session is started directly from a
+systemd-user service. Snaps detect that and refuse to launch with
+an error like `... is not a snap cgroup for tag snap.firefox.firefox`.
+Install browsers via Mozilla's apt repo (Firefox .deb) or via
+Flatpak (`flatpak install flathub org.mozilla.firefox`) instead.
+Debian (where Firefox/Chromium are plain .debs) and Fedora are
+unaffected.
+
 ## `[auto_forwards.<name>]` (mixin authors)
 
 Named, auto-allocated port forwards — agv picks a free host port at VM

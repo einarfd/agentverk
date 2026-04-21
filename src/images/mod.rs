@@ -18,6 +18,7 @@ const CLAUDE_TOML: &str = include_str!("claude.toml");
 const CODEX_TOML: &str = include_str!("codex.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
 const DOCKER_TOML: &str = include_str!("docker.toml");
+const GUI_XFCE_TOML: &str = include_str!("gui-xfce.toml");
 const GEMINI_TOML: &str = include_str!("gemini.toml");
 const GH_TOML: &str = include_str!("gh.toml");
 const NODEJS_TOML: &str = include_str!("nodejs.toml");
@@ -35,6 +36,7 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("codex", CODEX_TOML),
     ("devtools", DEVTOOLS_TOML),
     ("docker", DOCKER_TOML),
+    ("gui-xfce", GUI_XFCE_TOML),
     ("gemini", GEMINI_TOML),
     ("gh", GH_TOML),
     ("nodejs", NODEJS_TOML),

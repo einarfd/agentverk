@@ -59,6 +59,16 @@ pub enum Command {
     /// Open an SSH session to a running VM.
     Ssh(SshArgs),
 
+    /// Open the VM's XFCE desktop in the host browser.
+    ///
+    /// Requires the VM to include a GUI mixin (e.g. `gui-xfce`). The mixin
+    /// runs `TigerVNC` + `noVNC` inside the guest, bound to `127.0.0.1`
+    /// and with `-SecurityTypes None`. agv tunnels the HTTP port through SSH
+    /// and opens the browser at the tunneled URL — the SSH tunnel (with
+    /// the VM's unique ed25519 key) is the auth boundary, so no password
+    /// ever hits the URL or browser history.
+    Gui(GuiArgs),
+
     /// List all VMs.
     Ls,
 
@@ -267,6 +277,17 @@ pub struct SshArgs {
     /// Use -- to separate ssh options from a remote command.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct GuiArgs {
+    /// Name of the VM whose desktop to open.
+    pub name: String,
+
+    /// Print the URL but don't open the browser. Useful when you want
+    /// to copy-paste the URL into a specific browser or profile.
+    #[arg(long)]
+    pub no_launch: bool,
 }
 
 #[derive(Debug, clap::Args)]

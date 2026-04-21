@@ -21,6 +21,8 @@ pub mod doctor;
 #[doc(hidden)]
 pub mod error;
 #[doc(hidden)]
+pub mod gui;
+#[doc(hidden)]
 pub mod forward;
 #[doc(hidden)]
 pub mod forward_daemon;
@@ -281,6 +283,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (ssh_opts, command) = split_ssh_args(&args.args);
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
+        Command::Gui(args) => gui::run(&args.name, args.no_launch).await,
         Command::Ls => {
             // Gathered into rows so we can compute column widths after.
             struct Row {

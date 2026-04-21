@@ -106,6 +106,7 @@ Commands:
   destroy   Destroy a VM and delete all its data
   rename    Rename a VM (must be stopped or suspended)
   ssh       Open an SSH session to a running VM
+  gui       Open the VM's XFCE desktop in the browser (requires the gui-xfce mixin)
   cp        Copy files between the host and a running VM
   forward   Add, list, or remove host-to-guest port forwards on a running VM
   ls        List all VMs

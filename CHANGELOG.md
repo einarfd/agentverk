@@ -18,6 +18,17 @@ All notable changes to `agv` will be documented here. This project follows
 
 ### Added
 
+- **`gui-xfce` mixin + `agv gui` command.** Opt-in browser-based
+  XFCE desktop, declared by `include = ["gui-xfce"]`. The guest runs
+  TigerVNC (X server + XFCE session) + noVNC (HTML5 client) +
+  websockify, all bound to `127.0.0.1`. The port rides a
+  `[auto_forwards.gui]` SSH tunnel, gated by the VM's ed25519 key, so
+  the VNC server runs with `-SecurityTypes None` — no password ever
+  appears in a URL, browser history, or localStorage. `agv gui <vm>`
+  just opens the browser at
+  `http://127.0.0.1:<port>/vnc.html?autoconnect=1&resize=scale`.
+  Single step; same UX on macOS, Linux, Windows. Supports debian and
+  fedora families.
 - **`[auto_forwards.<name>]` schema** for mixins. A mixin can declare
   "I need a tunnel to guest port X under a stable name" without picking a
   host port, and agv allocates one at VM start, writes it to
