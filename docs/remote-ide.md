@@ -53,6 +53,14 @@ appear in **File → Open Remote** with no additional configuration.
 1. File → Remote Development → SSH.
 2. Enter `myvm` as the host. Connection details are filled from SSH config.
 
+## Browser-based desktop
+
+If you need an actual graphical desktop (running a browser inside the VM,
+using GUI tools, etc.) rather than just editing files, add the `gui-xfce`
+mixin and use `agv gui <name>` to open an XFCE desktop in your host
+browser. The same SSH-key auth boundary applies. See
+[`docs/config.md`](config.md#desktop--gui-access) for details.
+
 ## Neovim / terminal editors
 
 Just SSH in:

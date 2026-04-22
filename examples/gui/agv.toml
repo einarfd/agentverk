@@ -1,0 +1,23 @@
+# Browser-based XFCE desktop inside the VM.
+#
+# After `agv create --config agv.toml --start myvm`, run:
+#
+#   agv gui myvm
+#
+# to open the desktop in your default browser. No native VNC/RDP client is
+# needed on the host — the SSH tunnel (gated by the VM's ed25519 key) is the
+# auth boundary, so the in-guest VNC server runs without a password.
+#
+# See docs/config.md ("Desktop / GUI access") for the auth model and the
+# Ubuntu-snap browser caveat.
+
+[base]
+from    = "debian-12"
+include = ["devtools", "gui-xfce"]
+spec    = "large"  # XFCE + a browser benefits from the bigger preset
+
+# Override resource settings if needed:
+# [vm]
+# memory = "16G"
+# cpus   = 8
+# disk   = "80G"

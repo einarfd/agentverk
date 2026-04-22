@@ -315,10 +315,15 @@ and Windows hosts.
 
 ```toml
 [base]
-from    = "ubuntu-24.04"
+from    = "debian-12"
 include = ["devtools", "gui-xfce"]
 spec    = "large"    # XFCE + browser benefits from the bigger preset
 ```
+
+Fedora is equally well-supported; Ubuntu works too but see the snap caveat
+below before relying on `firefox` / `chromium` from the default repos. If
+you just want headless development against the VM, prefer
+[`docs/remote-ide.md`](remote-ide.md) over the browser desktop.
 
 ```sh
 agv create --config agv.toml --start myvm

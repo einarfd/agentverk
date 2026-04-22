@@ -59,7 +59,7 @@ agv create --config agv.toml --start myvm          # create and start the VM
 agv ssh myvm                                       # open a shell inside the VM
 ```
 
-See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex, and OpenClaw.
+See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex, OpenClaw, and a browser-based XFCE desktop.
 
 **Without a config file** — pass everything on the command line:
 
@@ -91,6 +91,19 @@ ssh myvm                 # connect directly by VM name
 ```
 
 See [`docs/remote-ide.md`](docs/remote-ide.md) for IDE-specific setup.
+
+**Desktop / GUI access** — add the `gui-xfce` mixin and open the VM's
+XFCE desktop in your default browser. No native VNC/RDP client needed on
+the host; the SSH tunnel (keyed by the VM's ed25519 key) is the auth
+boundary.
+
+```sh
+agv create --include devtools --include gui-xfce --start myvm
+agv gui myvm
+```
+
+See [`examples/gui/agv.toml`](examples/gui/agv.toml) for a ready-to-use
+config and [`docs/config.md`](docs/config.md) for the auth model.
 
 ## Usage
 
