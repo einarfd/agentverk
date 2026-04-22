@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-22
+
 ### Changed
 
 - **Port forward specs no longer accept a `/proto` suffix.** The `/tcp` and
@@ -15,6 +17,13 @@ All notable changes to `agv` will be documented here. This project follows
   files from older agv versions still load (the now-unknown `proto` field
   is silently ignored by serde). A legacy `53/udp` in a config file now
   fails at parse time with a message explaining to drop the suffix.
+- **Colored output** in `agv doctor` and `install.sh`: pass/fail marks and
+  status lines are tagged green/yellow/red when stdout is a TTY. Respects
+  the `NO_COLOR` standard and strips codes automatically when piped, so
+  CI logs and files stay clean.
+- **`agv ls` now surfaces why** an instance shows `?` in the image column:
+  `agv -v ls` logs the underlying `config::load_resolved` error via
+  `tracing::debug!` instead of silently swallowing it.
 
 ### Added
 
@@ -69,6 +78,21 @@ All notable changes to `agv` will be documented here. This project follows
 - `oh-my-zsh` now depends on the `zsh` mixin via `[base] include = ["zsh"]`
   instead of duplicating zsh's install + `chsh` steps. Family support
   is inherited from zsh automatically.
+
+### Fixed
+
+- **UTF-8 panic in provision step labels.** `step_label` sliced by byte
+  count when truncating long `run` strings, which panicked when byte 40
+  fell inside a multi-byte char (emoji, accented latin, CJK, …). Truncates
+  by character now.
+
+### Documentation
+
+- README gained a *Desktop / GUI access* section, `examples/gui/` ships a
+  ready-to-use XFCE desktop config, and `docs/config.md` ↔
+  `docs/remote-ide.md` now cross-link.
+- New `CONTRIBUTING.md` covering the build/lint/test expectations and the
+  slow-test policy.
 
 ### Known limitations
 
@@ -131,5 +155,6 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/einarfd/agentverk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/einarfd/agentverk/releases/tag/v0.1.0
