@@ -6,6 +6,15 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docker` mixin did not start the Docker service on Fedora.** The
+  install step ran `get.docker.com` and added the user to the `docker`
+  group but relied on post-install auto-start, which is a
+  Debian/Ubuntu-specific convention. Fedora's `dnf install` leaves
+  services disabled. The setup step now also runs
+  `systemctl enable --now docker`, which is a no-op on Debian.
+
 ## [0.2.0] - 2026-04-22
 
 ### Changed

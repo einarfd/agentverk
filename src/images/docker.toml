@@ -1,6 +1,10 @@
 # Docker Engine mixin.
 # Installs Docker and adds the default user to the docker group.
 # Use via: include = ["docker"]
+#
+# `systemctl enable --now docker` is required for Fedora — `dnf install`
+# does not auto-start newly-installed services. On Debian/Ubuntu the deb
+# post-install already starts the service, so the command is a no-op there.
 
 [[setup]]
-run = "curl -fsSL https://get.docker.com | sh && usermod -aG docker {{AGV_USER}}"
+run = "curl -fsSL https://get.docker.com | sh && usermod -aG docker {{AGV_USER}} && systemctl enable --now docker"
