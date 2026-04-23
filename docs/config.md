@@ -277,6 +277,34 @@ mixin 'devtools' does not support os_family 'alpine'
   mixin supports: debian, fedora
 ```
 
+## `notes` (mixin authors)
+
+Short lines a mixin can ship describing what it provides or any
+non-obvious state it establishes. They end up in `~/.agv/system.md`
+(written inside each VM at first boot) so agents running in the VM
+can see the lay of the land in a single read.
+
+```toml
+# Distro-agnostic note:
+notes = [
+  "Installs `uv`.",
+]
+
+# Family-specific note:
+[os_families.debian]
+notes = [
+  "Uses the Debian repo's version of `uv` rather than the install script.",
+]
+```
+
+Keep notes terse — one short line per entry. Lead with what the mixin
+installs; add state-changes (service enabled, default-shell swap,
+group membership) only when they're not obvious from the mixin name.
+A mixin with no notes still appears in the file by name.
+
+The field is optional everywhere; omit it when there's nothing
+useful to say.
+
 ## `forwards`
 
 Port forwards from the host into the VM, applied automatically on every `agv start`

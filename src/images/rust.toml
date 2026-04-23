@@ -3,6 +3,10 @@
 # rustup (distro-agnostic) as the default user.
 # Use via: include = ["rust"]
 
+notes = [
+  "Installs the Rust toolchain via rustup (`rustc`, `cargo`, `rustup`) for the VM user.",
+]
+
 # rustup handles every glibc Linux the same way, so the install itself
 # is a top-level (family-agnostic) provision step.
 [[provision]]

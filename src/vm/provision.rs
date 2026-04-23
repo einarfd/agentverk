@@ -461,7 +461,33 @@ pub(super) async fn run_first_boot(
         .await?;
     }
 
+    // Write ~/.agv/system.md so agents running inside the VM can discover
+    // which mixins are applied and any non-obvious wiring they declared.
+    // Soft-fail: a write error here does not invalidate a successful boot.
+    if let Err(err) = write_system_info(inst, config).await {
+        tracing::warn!(vm = %inst.name, error = %format!("{err:#}"), "failed to write ~/.agv/system.md");
+    }
+
     inst.mark_provisioned().await?;
+    Ok(())
+}
+
+/// SSH into the VM and write `~/.agv/system.md` as the default user.
+///
+/// Uses base64 to embed the markdown body so newlines, quotes, and shell
+/// metacharacters inside mixin-authored notes never reach a shell parser.
+async fn write_system_info(inst: &Instance, config: &ResolvedConfig) -> anyhow::Result<()> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let body = super::system_info::render(config, std::env::consts::ARCH);
+    let encoded = STANDARD.encode(body.as_bytes());
+    let cmd = format!(
+        "mkdir -p ~/.agv && printf '%s' {} | base64 -d > ~/.agv/system.md",
+        shell_escape(&encoded)
+    );
+    ssh::run_cmd(inst, &config.user, &[cmd])
+        .await
+        .context("failed to write ~/.agv/system.md via ssh")?;
     Ok(())
 }
 

@@ -15,6 +15,26 @@ All notable changes to `agv` will be documented here. This project follows
   with an old init replacement) — the mixin symlinks
   `/usr/local/bin/fd` so the canonical name works. On Fedora the
   binary is already `fd`.
+- **`~/.agv/system.md` — a short, token-cheap summary of the VM for
+  agents inside it.** Written at the end of first-boot provisioning
+  with the base OS family, the user and its passwordless-sudo
+  capability, and every mixin that was applied. Each mixin describes
+  itself in one short line via a new optional `notes = [...]` field;
+  mixins without notes still show up by name. Each of the four
+  bundled agent-CLI mixins also wires its tool to pick the file up
+  automatically: `claude` and `gemini` append a one-line
+  `@~/.agv/system.md` pointer to `~/.claude/CLAUDE.md` and
+  `~/.gemini/GEMINI.md` (both tools resolve `@<path>` as a file
+  include); `codex` and `openclaw` have no file-include syntax, so
+  they symlink `~/.codex/AGENTS.md` and
+  `~/.openclaw/workspace/AGENTS.md` to `~/.agv/system.md`. All four
+  are idempotent on retry and skip silently when a user-authored
+  file is already there. All bundled mixins ship `notes`: install
+  contents for the toolchain mixins (`devtools`, `gh`, `nodejs`,
+  `rust`, `uv`, `zsh`, `oh-my-zsh`, `claude`, `codex`, `gemini`,
+  `openclaw`) and state-level details for the ones where it matters
+  (`docker` service/group, `gui-xfce` host-side `agv gui` command,
+  `zsh` default-shell change).
 
 ### Fixed
 

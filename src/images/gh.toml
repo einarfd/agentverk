@@ -2,6 +2,10 @@
 # Installs the gh CLI from GitHub's official package repositories.
 # Use via: include = ["gh"]
 
+notes = [
+  "Installs `gh` (GitHub CLI). Not authenticated by default — run `gh auth login`.",
+]
+
 [os_families.debian]
 [[os_families.debian.setup]]
 run = """curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

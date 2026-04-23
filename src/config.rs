@@ -100,6 +100,15 @@ pub struct Config {
     /// appear in user-facing output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_forwards: Option<BTreeMap<String, AutoForward>>,
+
+    /// Short, mixin-author-written notes describing non-obvious state this
+    /// mixin establishes in the VM (e.g. "`docker` service enabled at boot;
+    /// user is in the docker group"). Rendered into `~/.agv/system.md` so
+    /// agents running inside the VM can discover wiring they can't see from
+    /// `which X` / `dnf list installed`. Omit when there's nothing
+    /// non-obvious to say — the mixin name itself is already surfaced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Declaration of a named auto-allocated forward.
@@ -134,6 +143,11 @@ pub struct FamilySteps {
 
     #[serde(default, deserialize_with = "deserialize_provision_steps")]
     pub provision: Vec<ProvisionStep>,
+
+    /// Family-specific mixin notes (same shape as [`Config::notes`]).
+    /// Merged after the top-level notes when this family matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Image source — either a parent image name or arch-specific cloud image URLs.
@@ -369,6 +383,30 @@ pub struct ResolvedConfig {
     /// Used by `inspect` to show template origin instead of a base image URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_name: Option<String>,
+
+    /// Mixin names applied to this VM, in the order they were merged.
+    /// Populated by [`apply_includes`] and rendered into `~/.agv/system.md`
+    /// so agents inside the VM can see which mixins are active. Empty for
+    /// instance configs saved before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mixins_applied: Vec<String>,
+
+    /// Per-mixin notes collected from `notes = [...]` in mixin TOMLs.
+    /// Tagged with the mixin name so rendering can attribute each line.
+    /// Empty for instance configs saved before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mixin_notes: Vec<MixinNotes>,
+}
+
+/// Notes contributed by a single mixin, tagged with the mixin's name.
+/// Serialized as an entry in [`ResolvedConfig::mixin_notes`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MixinNotes {
+    /// Mixin name (the include key, e.g. `"docker"`).
+    pub name: String,
+    /// Free-form short markdown lines written by the mixin author.
+    pub notes: Vec<String>,
 }
 
 /// Backwards-compat default for [`ResolvedConfig::os_family`]: instance
@@ -460,6 +498,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         os_families: _,
         supports: _,
         auto_forwards: child_auto_forwards,
+        notes: _,
     } = config;
 
     if let Some(parent_name) = from {
@@ -498,6 +537,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             os_families: None,
             supports: None,
             auto_forwards: None,
+            notes: vec![],
         };
 
         // Merge child scalars on top of resolved parent.
@@ -562,6 +602,8 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             forwards: vec![],
             auto_forwards: BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
 
         // Apply includes before the config's own steps.
@@ -755,6 +797,9 @@ fn apply_includes(
         resolved.provision.extend(include_config.provision);
         resolved.forwards.extend(include_config.forwards);
 
+        // Collect mixin-level notes, including any family-specific ones below.
+        let mut collected_notes = include_config.notes;
+
         // Append the matching per-family steps, if any.
         if let Some(mut os_families) = include_config.os_families {
             if let Some(mut family_steps) = os_families.remove(&resolved.os_family) {
@@ -771,6 +816,7 @@ fn apply_includes(
                 resolved.files.extend(family_steps.files);
                 resolved.setup.extend(family_steps.setup);
                 resolved.provision.extend(family_steps.provision);
+                collected_notes.extend(family_steps.notes);
             }
         }
 
@@ -782,6 +828,17 @@ fn apply_includes(
                 map,
                 &format!("mixin '{name}'"),
             )?;
+        }
+
+        // Record the mixin in the applied list, and stash any notes it
+        // contributed. Record the name even if notes are empty — the render
+        // step lists applied mixins regardless.
+        resolved.mixins_applied.push(name.clone());
+        if !collected_notes.is_empty() {
+            resolved.mixin_notes.push(MixinNotes {
+                name: name.clone(),
+                notes: collected_notes,
+            });
         }
     }
 
@@ -841,6 +898,8 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         forwards,
         auto_forwards,
         template_name: None,
+        mixins_applied: parent.mixins_applied,
+        mixin_notes: parent.mixin_notes,
     }
 }
 
@@ -1062,6 +1121,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -1109,6 +1169,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -1145,6 +1206,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let resolved = resolve(child).unwrap();
@@ -1181,6 +1243,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let resolved = resolve(project).unwrap();
@@ -1191,15 +1254,16 @@ mod tests {
 
         // devtools mixin has 1 setup step.
         assert_eq!(resolved.setup.len(), 1);
-        // claude mixin has 1 provision step, project adds 1 more.
-        assert_eq!(resolved.provision.len(), 2);
+        // claude mixin has 2 provision steps (install + CLAUDE.md pointer),
+        // project adds 1 more.
+        assert_eq!(resolved.provision.len(), 3);
         // Include steps come before project steps.
         assert!(resolved.provision[0]
             .run
             .as_deref()
             .unwrap()
             .contains("claude.ai"));
-        assert_eq!(resolved.provision[1].run.as_deref(), Some("echo project"));
+        assert_eq!(resolved.provision[2].run.as_deref(), Some("echo project"));
     }
 
     #[test]
@@ -1232,6 +1296,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
         let resolved = resolve(config).unwrap();
         assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "9000:3000"]);
@@ -1263,6 +1328,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1295,6 +1361,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1316,6 +1383,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
         let resolved = resolve(child).unwrap();
         assert_eq!(resolved.forwards, vec!["9000"]);
@@ -1338,6 +1406,8 @@ mod tests {
             forwards: vec!["8080".to_string()],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
         let child = Config {
             base: None,
@@ -1349,6 +1419,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
         let result = merge(parent, child);
         assert_eq!(result.forwards, vec!["8080", "9090"]);
@@ -1390,6 +1461,8 @@ mod tests {
             forwards: vec![],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
 
         let child = Config {
@@ -1406,6 +1479,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let result = merge(parent, child);
@@ -1444,6 +1518,8 @@ mod tests {
             forwards: vec![],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
 
         let child = Config {
@@ -1467,6 +1543,7 @@ mod tests {
             os_families: None,
         supports: None,
         auto_forwards: None,
+            notes: vec![],
         };
 
         let result = merge(parent, child);
@@ -1645,6 +1722,8 @@ cpus = 4
             forwards: vec![],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
 
         save(&config, &path).await.unwrap();
@@ -1803,6 +1882,7 @@ run = ["echo one", "echo two"]
             os_families: None,
             supports: None,
             auto_forwards: None,
+            notes: vec![],
         }
     }
 

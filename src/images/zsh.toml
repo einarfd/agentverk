@@ -2,6 +2,10 @@
 # Installs zsh and sets it as the default shell for the VM user.
 # Use via: include = ["zsh"]
 
+notes = [
+  "Installs `zsh` and sets it as the default shell for the VM user (replaces bash).",
+]
+
 [os_families.debian]
 [[os_families.debian.setup]]
 run = "apt-get update && apt-get install -y zsh && chsh -s $(command -v zsh) {{AGV_USER}}"

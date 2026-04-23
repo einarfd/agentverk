@@ -442,6 +442,8 @@ async fn create_from_template_inner(
         forwards: vec![],
         auto_forwards: std::collections::BTreeMap::new(),
         template_name: Some(template_name.to_string()),
+        mixins_applied: vec![],
+        mixin_notes: vec![],
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
 

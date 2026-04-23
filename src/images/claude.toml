@@ -5,5 +5,15 @@
 # Minimum 4 GB RAM required (Anthropic system requirement).
 # Recommended: spec = "large" (8 GB) for comfortable use with larger codebases.
 
+notes = [
+  "Installs Claude Code CLI (`claude`).",
+]
+
 [[provision]]
 run = "curl -fsSL https://claude.ai/install.sh | bash"
+
+# Point Claude Code's user-level CLAUDE.md at the agv-generated system info
+# so each new session starts with the VM's mixin list and non-obvious wiring
+# in context. Idempotent — retrying only adds the line if it's not there.
+[[provision]]
+run = "mkdir -p ~/.claude && touch ~/.claude/CLAUDE.md && grep -qF '@~/.agv/system.md' ~/.claude/CLAUDE.md || echo 'See @~/.agv/system.md for VM system info written by agv.' >> ~/.claude/CLAUDE.md"

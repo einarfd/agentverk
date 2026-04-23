@@ -16,6 +16,10 @@
 #
 # Use via: include = ["gui-xfce"]
 
+notes = [
+  "XFCE desktop runs on an SSH-tunneled VNC server inside this VM. Open it from the host with `agv gui <vm>` — no native VNC/RDP client needed.",
+]
+
 [auto_forwards.gui]
 guest_port = 6080
 

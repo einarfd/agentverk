@@ -103,6 +103,8 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         forwards: vec![],
         auto_forwards: std::collections::BTreeMap::new(),
         template_name: None,
+        mixins_applied: vec![],
+        mixin_notes: vec![],
     }
 }
 
@@ -224,6 +226,8 @@ async fn create_marks_broken_on_failure() {
         forwards: vec![],
         auto_forwards: std::collections::BTreeMap::new(),
         template_name: None,
+        mixins_applied: vec![],
+        mixin_notes: vec![],
     };
 
     // Create should fail (unreachable image URL).
@@ -309,6 +313,7 @@ async fn create_with_start_and_provision() {
     os_families: None,
     supports: None,
     auto_forwards: None,
+    notes: vec![],
     })
     .unwrap();
 
@@ -403,6 +408,7 @@ async fn fedora_base_boots_and_provisions() {
         os_families: None,
         supports: None,
     auto_forwards: None,
+    notes: vec![],
     })
     .unwrap();
 
@@ -669,6 +675,7 @@ async fn suspend_and_resume_preserves_state() {
     os_families: None,
     supports: None,
     auto_forwards: None,
+    notes: vec![],
     })
     .unwrap();
 
@@ -826,6 +833,7 @@ async fn provision_failure_then_retry_resumes() {
     os_families: None,
     supports: None,
     auto_forwards: None,
+    notes: vec![],
     })
     .unwrap();
 

@@ -8,6 +8,7 @@ pub mod forwarding;
 pub mod instance;
 pub mod provision;
 pub mod qemu;
+pub mod system_info;
 pub mod template;
 
 // Re-export template CRUD at `vm::*` so call sites in `lib.rs` keep using

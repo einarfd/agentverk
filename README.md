@@ -105,6 +105,15 @@ agv gui myvm
 See [`examples/gui/agv.toml`](examples/gui/agv.toml) for a ready-to-use
 config and [`docs/config.md`](docs/config.md) for the auth model.
 
+**What the agent sees** — at first boot, agv writes `~/.agv/system.md`
+inside the VM: a short summary of the base OS, user + sudo
+capability, and every mixin that was applied (one line each). The
+bundled `claude`, `gemini`, `codex`, and `openclaw` mixins each wire
+their respective CLI to load it automatically (via `@`-include for
+Claude / Gemini, via symlink for Codex / OpenClaw). Custom mixins can
+contribute their own line by declaring `notes = [...]` in their TOML
+— see [`docs/config.md`](docs/config.md#notes-mixin-authors).
+
 ## Usage
 
 ```

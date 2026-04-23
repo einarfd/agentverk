@@ -2,5 +2,16 @@
 # Installs the Google Gemini CLI coding agent.
 # Requires Node.js: include = ["nodejs", "gemini"]
 
+notes = [
+  "Installs Google Gemini CLI (`gemini`) via `npm install -g @google/gemini-cli`.",
+]
+
 [[provision]]
 run = "npm install -g @google/gemini-cli"
+
+# Point Gemini's user-level GEMINI.md at the agv-generated system info so
+# each new session starts with the VM's mixin list in context. Gemini
+# supports the same `@<path>` file-include syntax as Claude Code.
+# Idempotent — only appends the line if it's not already there.
+[[provision]]
+run = "mkdir -p ~/.gemini && touch ~/.gemini/GEMINI.md && grep -qF '@~/.agv/system.md' ~/.gemini/GEMINI.md || echo 'See @~/.agv/system.md for VM system info written by agv.' >> ~/.gemini/GEMINI.md"

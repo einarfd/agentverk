@@ -8,5 +8,9 @@
 
 supports = ["debian", "fedora"]
 
+notes = [
+  "Installs `uv`.",
+]
+
 [[provision]]
 run = "curl -LsSf https://astral.sh/uv/install.sh | sh"

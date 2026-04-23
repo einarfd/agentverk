@@ -310,6 +310,8 @@ EMPTY=
             forwards: vec![],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
         };
 
         expand_config(&mut config, &vars).unwrap();

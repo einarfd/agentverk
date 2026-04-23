@@ -67,6 +67,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **VM lifecycle**: `src/vm/mod.rs` — orchestrates create/start/stop/destroy, file copy, provisioning
 - **Instance state**: `src/vm/instance.rs` — on-disk state, status reconciliation
 - **QEMU**: `src/vm/qemu.rs` — process spawning and QMP protocol
+- **System info (`~/.agv/system.md`)**: `src/vm/system_info.rs` — renders a short markdown file written into the VM after provisioning so agents inside can discover applied mixins and non-obvious wiring. Notes come from each mixin's optional `notes = [...]` field.
 - **Port forwarding runtime**: `src/vm/forwarding.rs` — add/list/stop on a running VM, spawns supervisors, persists to `<instance>/forwards.toml`
 - **Forward supervisor**: `src/forward_daemon.rs` — long-running loop around `ssh -N -L`, respawns on exit. Invoked as the hidden CLI subcommand `__forward-daemon`.
 - **Port forwarding types**: `src/forward.rs` — `ForwardSpec` parser (`HOST[:GUEST]`), active-forwards state file I/O, supervisor `kill_supervisor`/`kill_all_and_clear` helpers
@@ -94,6 +95,7 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **`agv suspend` / `agv resume` use QEMU savevm/loadvm.** State is stored as a snapshot inside the qcow2 disk (no extra files). Suspend uses HMP `savevm` via QMP `human-monitor-command`, then exits QEMU; resume passes `-loadvm agv-suspend` to QEMU on start.
 - **Provision state is tracked per phase + step index.** `<instance>/provision_state` (TOML) records phase (`ssh_wait`/`files`/`setup`/`provision`/`complete`) and the next step index. On first-boot failure, the VM is marked `broken` but QEMU is left running so the user can SSH in to debug. `agv start --retry` resumes from the saved phase/index, skipping completed steps. Legacy VMs with the old `provisioned` touch file are auto-detected as `Complete`.
 - **Interactive provisioning (`-i/--interactive` on `create` and `start`).** Prompts before each file copy, setup step, and provision step with `y/n/e/a/q`. Edit (`e`) is runtime-only — does not modify the saved config. Implemented in `src/interactive.rs` with `prompt_step_io` for testability.
+- **`~/.agv/system.md` for in-VM agent discoverability.** Written once at the end of first-boot provisioning via SSH (base64-encoded payload to sidestep shell quoting). Contains OS family, user + sudo capability, and one bullet per applied mixin (with its `notes = [...]` line if declared, else just the name). Each agent-CLI mixin wires its tool to pick the file up automatically: `claude` and `gemini` append a one-line `@~/.agv/system.md` pointer to `~/.claude/CLAUDE.md` / `~/.gemini/GEMINI.md` (both tools resolve `@<path>` as a file include); `codex` and `openclaw` have no include syntax, so they symlink `~/.codex/AGENTS.md` / `~/.openclaw/workspace/AGENTS.md` to `~/.agv/system.md`. All four are idempotent on retry and skip silently if a user-authored file is already there.
 
 ## Conventions
 

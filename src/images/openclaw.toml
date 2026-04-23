@@ -5,5 +5,16 @@
 # background service inside a dedicated VM.
 # Requires Node.js: include = ["nodejs", "openclaw"]
 
+notes = [
+  "Installs the OpenClaw daemon (AI assistant + coding agent, intended as a long-running background service).",
+]
+
 [[provision]]
 run = "curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"
+
+# OpenClaw reads `~/.openclaw/workspace/AGENTS.md` on every session but
+# concatenates it verbatim — no file-include syntax. Symlink AGENTS.md
+# to the agv-generated system info. Skips when anything is already
+# there so a user-authored workspace file is never clobbered.
+[[provision]]
+run = "mkdir -p ~/.openclaw/workspace && [ -e ~/.openclaw/workspace/AGENTS.md ] || ln -s ~/.agv/system.md ~/.openclaw/workspace/AGENTS.md"

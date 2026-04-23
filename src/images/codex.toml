@@ -4,6 +4,10 @@
 # Supports x86_64 and aarch64.
 # Use via: include = ["codex"]
 
+notes = [
+  "Installs OpenAI Codex CLI (`codex`) to `/usr/local/bin`.",
+]
+
 [[provision]]
 run = """
 ARCH=$(uname -m)
@@ -12,3 +16,11 @@ curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-${ARC
 sudo install -m 755 "$TMP/codex-${ARCH}-unknown-linux-musl" /usr/local/bin/codex
 rm -rf "$TMP"
 """
+
+# Codex reads `~/.codex/AGENTS.md` at every session start but has no
+# file-include syntax, so instead of a pointer line we symlink AGENTS.md
+# to the agv-generated system info. Only creates the link when nothing
+# is there, so a user-authored AGENTS.md is never clobbered. On retry,
+# the symlink is already present and -e short-circuits.
+[[provision]]
+run = "mkdir -p ~/.codex && [ -e ~/.codex/AGENTS.md ] || ln -s ~/.agv/system.md ~/.codex/AGENTS.md"

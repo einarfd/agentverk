@@ -4,6 +4,10 @@
 # that needs a modern Node.js runtime.
 # Use via: include = ["nodejs"]
 
+notes = [
+  "Installs Node.js 22 LTS (`node`, `npm`) from NodeSource.",
+]
+
 [os_families.debian]
 [[os_families.debian.setup]]
 run = "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
