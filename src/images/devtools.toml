@@ -1,10 +1,10 @@
 # Development tools mixin.
-# Installs git, git-delta, curl, build tools, fzf, direnv, plus
+# Installs git, git-delta, curl, build tools, fzf, direnv, tmux, plus
 # commandline utilities: ripgrep, jq, fd, tree, shellcheck, sqlite3.
 # Use via: include = ["devtools"]
 
 notes = [
-  "Installs: git, git-delta, curl, build tools (gcc/make), fzf, direnv, ripgrep, jq, fd, tree, shellcheck, sqlite3.",
+  "Installs: git, git-delta, curl, build tools (gcc/make), fzf, direnv, tmux, ripgrep, jq, fd, tree, shellcheck, sqlite3.",
 ]
 
 [os_families.debian]
@@ -14,7 +14,7 @@ notes = [
 run = """
 apt-get update
 apt-get install -y \
-  git git-delta curl build-essential fzf direnv \
+  git git-delta curl build-essential fzf direnv tmux \
   ripgrep jq fd-find tree shellcheck sqlite3
 ln -sf /usr/bin/fdfind /usr/local/bin/fd
 """
@@ -23,6 +23,6 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd
 [[os_families.fedora.setup]]
 run = """
 dnf install -y \
-  git git-delta curl gcc gcc-c++ make fzf direnv \
+  git git-delta curl gcc gcc-c++ make fzf direnv tmux \
   ripgrep jq fd-find tree ShellCheck sqlite
 """

@@ -9,12 +9,13 @@ All notable changes to `agv` will be documented here. This project follows
 ### Added
 
 - **`devtools` mixin now includes `ripgrep`, `jq`, `fd`, `tree`,
-  `shellcheck`, and `sqlite3`.** All six are small, distro-packaged,
-  and carry their weight for both humans and agents poking around a
-  repo. On Debian, `fd-find` installs as `fdfind` (namespace conflict
-  with an old init replacement) — the mixin symlinks
-  `/usr/local/bin/fd` so the canonical name works. On Fedora the
-  binary is already `fd`.
+  `shellcheck`, `sqlite3`, and `tmux`.** All seven are small,
+  distro-packaged, and carry their weight for both humans (shell
+  sessions, terminal multiplexing) and agents (searching code,
+  parsing JSON, poking SQLite). On Debian, `fd-find` installs as
+  `fdfind` (namespace conflict with an old init replacement) — the
+  mixin symlinks `/usr/local/bin/fd` so the canonical name works.
+  On Fedora the binary is already `fd`.
 - **`~/.agv/system.md` — a short, token-cheap summary of the VM for
   agents inside it.** Written at the end of first-boot provisioning
   with the base OS family, the user and its passwordless-sudo
