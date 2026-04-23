@@ -6,6 +6,16 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`devtools` mixin now includes `ripgrep`, `jq`, `fd`, `tree`,
+  `shellcheck`, and `sqlite3`.** All six are small, distro-packaged,
+  and carry their weight for both humans and agents poking around a
+  repo. On Debian, `fd-find` installs as `fdfind` (namespace conflict
+  with an old init replacement) — the mixin symlinks
+  `/usr/local/bin/fd` so the canonical name works. On Fedora the
+  binary is already `fd`.
+
 ### Fixed
 
 - **`docker` mixin did not start the Docker service on Fedora.** The

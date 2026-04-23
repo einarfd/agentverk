@@ -1,11 +1,24 @@
 # Development tools mixin.
-# Installs git, curl, git-delta, build tools, fzf, direnv.
+# Installs git, git-delta, curl, build tools, fzf, direnv, plus
+# commandline utilities: ripgrep, jq, fd, tree, shellcheck, sqlite3.
 # Use via: include = ["devtools"]
 
 [os_families.debian]
+# Debian ships fd as `fdfind` (namespace conflict with an old init
+# replacement); symlink to /usr/local/bin/fd so the canonical name works.
 [[os_families.debian.setup]]
-run = "apt-get update && apt-get install -y git git-delta curl build-essential fzf direnv"
+run = """
+apt-get update
+apt-get install -y \
+  git git-delta curl build-essential fzf direnv \
+  ripgrep jq fd-find tree shellcheck sqlite3
+ln -sf /usr/bin/fdfind /usr/local/bin/fd
+"""
 
 [os_families.fedora]
 [[os_families.fedora.setup]]
-run = "dnf install -y git git-delta curl gcc gcc-c++ make fzf direnv"
+run = """
+dnf install -y \
+  git git-delta curl gcc gcc-c++ make fzf direnv \
+  ripgrep jq fd-find tree ShellCheck sqlite
+"""
