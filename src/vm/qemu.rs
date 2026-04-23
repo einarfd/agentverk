@@ -82,11 +82,18 @@ pub async fn stop(instance: &Instance) -> anyhow::Result<()> {
     let socket_path = instance.qmp_socket_path();
     info!(vm = %instance.name, "sending graceful shutdown via QMP");
 
+    // Read the pid before asking QEMU to exit. QEMU removes its own
+    // pidfile when it exits (via `-pidfile`), so reading after
+    // `system_powerdown` / `quit` races with the exit path on fast VMs
+    // and produces a confusing ENOENT. `system_powerdown` is ACPI so
+    // the race is rare here, but `suspend` hits it routinely — keep
+    // the two paths consistent.
+    let pid = read_pid(instance).await?;
+
     let mut client = QmpClient::connect(&socket_path).await?;
     client.execute("system_powerdown").await?;
 
     // Poll for process exit, up to 30 seconds.
-    let pid = read_pid(instance).await?;
     for i in 0..60 {
         if !is_process_alive(pid) {
             debug!(vm = %instance.name, elapsed_secs = i / 2, "QEMU exited gracefully");
@@ -110,6 +117,12 @@ pub async fn suspend(instance: &Instance) -> anyhow::Result<()> {
     let socket_path = instance.qmp_socket_path();
     info!(vm = %instance.name, "saving VM state via QMP savevm");
 
+    // Read the pid before telling QEMU to quit. QEMU removes its
+    // pidfile on exit and `quit` is immediate (no ACPI), so reading
+    // afterwards races with the exit path — we routinely see ENOENT
+    // on fast systems.
+    let pid = read_pid(instance).await?;
+
     let mut client = QmpClient::connect(&socket_path).await?;
     // Run `savevm agv-suspend` via the human monitor.
     client
@@ -124,7 +137,6 @@ pub async fn suspend(instance: &Instance) -> anyhow::Result<()> {
     drop(client);
 
     // Wait for the process to exit.
-    let pid = read_pid(instance).await?;
     for _ in 0..60 {
         if !is_process_alive(pid) {
             cleanup_runtime_files(instance).await;

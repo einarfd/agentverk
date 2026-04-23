@@ -44,6 +44,15 @@ All notable changes to `agv` will be documented here. This project follows
   Debian/Ubuntu-specific convention. Fedora's `dnf install` leaves
   services disabled. The setup step now also runs
   `systemctl enable --now docker`, which is a no-op on Debian.
+- **`agv suspend` raced with QEMU's pidfile cleanup on fast systems.**
+  QEMU removes its own pidfile on exit, and the QMP `quit` command is
+  immediate — so reading the pidfile after `quit` sometimes returned
+  ENOENT, surfacing as "failed to read PID file ..." from
+  `agv suspend`. The pid is now captured before `quit` is sent, so
+  the exit-poll has a valid pid in hand either way. `agv stop` got
+  the same reordering for consistency, though its ACPI-based
+  `system_powerdown` is slow enough that the race was essentially
+  unreachable there.
 
 ## [0.2.0] - 2026-04-22
 
