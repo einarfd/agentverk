@@ -561,6 +561,14 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     println!("  {:<w$}  {provisioned}", "Provisioned");
     println!("  {:<w$}  {}", "Data dir", inst.dir.display());
 
+    // Surface manual setup steps the mixins / top-level config flagged.
+    // These are imperative instructions for the human invoker (auth flows,
+    // etc) — agv prints them on the first successful provision, but
+    // re-surfaces them here so a user who closed that terminal can read
+    // them again later. No tracking of "done"; the user re-reads as
+    // needed.
+    crate::manual_steps::print_to_host(&config);
+
     // Show error log for broken VMs.
     if status == Status::Broken {
         let error_log = inst.error_log_path();

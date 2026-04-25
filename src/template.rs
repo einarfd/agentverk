@@ -289,6 +289,7 @@ EMPTY=
             files: vec![FileEntry {
                 source: "{{HOME}}/.ssh/id_ed25519".to_string(),
                 dest: "/home/agent/.ssh/id_ed25519".to_string(),
+                optional: false,
             }],
             setup: vec![ProvisionStep {
                 source: None,
@@ -312,6 +313,9 @@ EMPTY=
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
 
         expand_config(&mut config, &vars).unwrap();

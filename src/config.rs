@@ -109,6 +109,17 @@ pub struct Config {
     /// non-obvious to say — the mixin name itself is already surfaced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+
+    /// Imperative instructions for the *human* invoker that agv can't
+    /// automate (e.g. "Run `claude login` inside the VM to authenticate").
+    /// Printed to the host terminal at the end of the first successful
+    /// provision and surfaced by `agv inspect`. Never reaches the VM —
+    /// these are not for the agent inside.
+    ///
+    /// Use sparingly: anything that *can* be automated should be a
+    /// provision step, not a manual step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_steps: Vec<String>,
 }
 
 /// Declaration of a named auto-allocated forward.
@@ -148,6 +159,10 @@ pub struct FamilySteps {
     /// Merged after the top-level notes when this family matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+
+    /// Family-specific manual steps (same shape as [`Config::manual_steps`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_steps: Vec<String>,
 }
 
 /// Image source — either a parent image name or arch-specific cloud image URLs.
@@ -217,6 +232,26 @@ pub struct FileEntry {
 
     /// Destination path inside the VM.
     pub dest: String,
+
+    /// If true, silently skip the copy when the source path doesn't exist
+    /// on the host. Lets users opportunistically inject files only if the
+    /// host actually has them — e.g. an SSH key or `gh` config that may or
+    /// may not be present in the user's home directory. Pairs naturally
+    /// with `{{VAR:-}}` template defaults: an unset env var resolves to an
+    /// empty path which then doesn't exist, and the optional flag turns
+    /// the resulting "no such file" into a no-op instead of an error.
+    /// Defaults to false (missing source is a hard error, the original
+    /// behaviour).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if requires &T even for Copy types"
+)]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A single provisioning step: either an inline script or a script file.
@@ -396,6 +431,28 @@ pub struct ResolvedConfig {
     /// Empty for instance configs saved before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mixin_notes: Vec<MixinNotes>,
+
+    /// Top-level `notes = [...]` from the user's own config (and any
+    /// non-built-in derived images in the inheritance chain). Distinct
+    /// from `mixin_notes` because these are VM-specific rather than
+    /// mixin-contributed, and the renderer surfaces them in their own
+    /// `## This VM` section above the mixin list. Empty for instance
+    /// configs saved before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_notes: Vec<String>,
+
+    /// Per-mixin manual steps collected from `manual_steps = [...]` in
+    /// mixin TOMLs. Tagged with mixin name so the host echo / `agv inspect`
+    /// output can attribute each line. Empty for instance configs saved
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mixin_manual_steps: Vec<MixinManualSteps>,
+
+    /// Top-level `manual_steps = [...]` from the user's own config.
+    /// Distinct from `mixin_manual_steps` because these are VM-specific.
+    /// Empty for instance configs saved before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_manual_steps: Vec<String>,
 }
 
 /// Notes contributed by a single mixin, tagged with the mixin's name.
@@ -407,6 +464,19 @@ pub struct MixinNotes {
     pub name: String,
     /// Free-form short markdown lines written by the mixin author.
     pub notes: Vec<String>,
+}
+
+/// Manual steps contributed by a single mixin, tagged with the mixin's
+/// name. Serialized as an entry in [`ResolvedConfig::mixin_manual_steps`].
+/// Identical shape to [`MixinNotes`] but kept distinct so the audience and
+/// formatting at usage sites stay clear.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MixinManualSteps {
+    /// Mixin name (the include key, e.g. `"gh"`).
+    pub name: String,
+    /// Imperative instructions written by the mixin author.
+    pub steps: Vec<String>,
 }
 
 /// Backwards-compat default for [`ResolvedConfig::os_family`]: instance
@@ -498,7 +568,8 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         os_families: _,
         supports: _,
         auto_forwards: child_auto_forwards,
-        notes: _,
+        notes: child_notes,
+        manual_steps: child_manual_steps,
     } = config;
 
     if let Some(parent_name) = from {
@@ -527,6 +598,9 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
 
         // Build a child config with only scalars (no lists) for merging.
         // include was already extracted into child_includes above.
+        // child_notes are not merged here — they're appended after the
+        // includes apply (so the order is parent-config-notes, then mixin
+        // notes, then this layer's own notes).
         let scalars_only = Config {
             base,
             vm,
@@ -538,6 +612,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             supports: None,
             auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         // Merge child scalars on top of resolved parent.
@@ -554,6 +629,8 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         if let Some(map) = child_auto_forwards {
             merge_auto_forwards(&mut resolved.auto_forwards, map, "child config")?;
         }
+        resolved.config_notes.extend(child_notes);
+        resolved.config_manual_steps.extend(child_manual_steps);
 
         Ok(resolved)
     } else {
@@ -604,6 +681,9 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
 
         // Apply includes before the config's own steps.
@@ -617,6 +697,8 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         if let Some(map) = child_auto_forwards {
             merge_auto_forwards(&mut resolved.auto_forwards, map, "root config")?;
         }
+        resolved.config_notes.extend(child_notes);
+        resolved.config_manual_steps.extend(child_manual_steps);
 
         Ok(resolved)
     }
@@ -797,8 +879,10 @@ fn apply_includes(
         resolved.provision.extend(include_config.provision);
         resolved.forwards.extend(include_config.forwards);
 
-        // Collect mixin-level notes, including any family-specific ones below.
+        // Collect mixin-level notes and manual steps, including any
+        // family-specific ones below.
         let mut collected_notes = include_config.notes;
+        let mut collected_manual_steps = include_config.manual_steps;
 
         // Append the matching per-family steps, if any.
         if let Some(mut os_families) = include_config.os_families {
@@ -817,6 +901,7 @@ fn apply_includes(
                 resolved.setup.extend(family_steps.setup);
                 resolved.provision.extend(family_steps.provision);
                 collected_notes.extend(family_steps.notes);
+                collected_manual_steps.extend(family_steps.manual_steps);
             }
         }
 
@@ -838,6 +923,12 @@ fn apply_includes(
             resolved.mixin_notes.push(MixinNotes {
                 name: name.clone(),
                 notes: collected_notes,
+            });
+        }
+        if !collected_manual_steps.is_empty() {
+            resolved.mixin_manual_steps.push(MixinManualSteps {
+                name: name.clone(),
+                steps: collected_manual_steps,
             });
         }
     }
@@ -900,6 +991,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         template_name: None,
         mixins_applied: parent.mixins_applied,
         mixin_notes: parent.mixin_notes,
+        config_notes: parent.config_notes,
+        mixin_manual_steps: parent.mixin_manual_steps,
+        config_manual_steps: parent.config_manual_steps,
     }
 }
 
@@ -995,6 +1089,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         config.files.push(FileEntry {
             source: source.to_string(),
             dest: dest.to_string(),
+            optional: false,
         });
     }
 
@@ -1122,6 +1217,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -1170,6 +1266,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let resolved = resolve(config).unwrap();
@@ -1195,6 +1292,7 @@ mod tests {
             files: vec![FileEntry {
                 source: "./child-file".to_string(),
                 dest: "/home/agent/child".to_string(),
+                optional: false,
             }],
             setup: vec![],
             provision: vec![ProvisionStep {
@@ -1207,6 +1305,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let resolved = resolve(child).unwrap();
@@ -1244,6 +1343,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let resolved = resolve(project).unwrap();
@@ -1264,6 +1364,43 @@ mod tests {
             .unwrap()
             .contains("claude.ai"));
         assert_eq!(resolved.provision[2].run.as_deref(), Some("echo project"));
+    }
+
+    #[test]
+    fn resolve_carries_top_level_notes_into_config_notes() {
+        let project = Config {
+            base: Some(BaseConfig {
+                from: Some("ubuntu-24.04".to_string()),
+                include: vec![],
+                ..Default::default()
+            }),
+            vm: None,
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec![],
+            os_families: None,
+            supports: None,
+            auto_forwards: None,
+            notes: vec![
+                "this VM is for the foo project".to_string(),
+                "API key lives at {{HOME}}/.foo".to_string(),
+            ],
+            manual_steps: vec![],
+        };
+
+        let resolved = resolve(project).unwrap();
+        // The top-level notes appear in config_notes (not mixin_notes) so
+        // the renderer can surface them in their own VM-specific section.
+        assert_eq!(
+            resolved.config_notes,
+            vec![
+                "this VM is for the foo project".to_string(),
+                "API key lives at {{HOME}}/.foo".to_string(),
+            ],
+        );
+        // Mixin notes are unaffected.
+        assert!(resolved.mixin_notes.is_empty());
     }
 
     #[test]
@@ -1297,6 +1434,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
         let resolved = resolve(config).unwrap();
         assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "9000:3000"]);
@@ -1329,6 +1467,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1362,6 +1501,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1384,6 +1524,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
         let resolved = resolve(child).unwrap();
         assert_eq!(resolved.forwards, vec!["9000"]);
@@ -1408,6 +1549,9 @@ mod tests {
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
         let child = Config {
             base: None,
@@ -1420,6 +1564,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
         let result = merge(parent, child);
         assert_eq!(result.forwards, vec!["8080", "9090"]);
@@ -1463,6 +1608,9 @@ mod tests {
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
 
         let child = Config {
@@ -1480,6 +1628,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let result = merge(parent, child);
@@ -1504,6 +1653,7 @@ mod tests {
             files: vec![FileEntry {
                 source: "parent-src".to_string(),
                 dest: "parent-dst".to_string(),
+                optional: false,
             }],
             setup: vec![ProvisionStep {
                 source: None,
@@ -1520,6 +1670,9 @@ mod tests {
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
 
         let child = Config {
@@ -1528,6 +1681,7 @@ mod tests {
             files: vec![FileEntry {
                 source: "child-src".to_string(),
                 dest: "child-dst".to_string(),
+                optional: false,
             }],
             setup: vec![ProvisionStep {
                 source: None,
@@ -1544,6 +1698,7 @@ mod tests {
         supports: None,
         auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         };
 
         let result = merge(parent, child);
@@ -1712,6 +1867,7 @@ cpus = 4
             files: vec![FileEntry {
                 source: "/tmp/src".to_string(),
                 dest: "/home/agent/dst".to_string(),
+                optional: false,
             }],
             setup: vec![],
             provision: vec![ProvisionStep {
@@ -1724,6 +1880,9 @@ cpus = 4
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         };
 
         save(&config, &path).await.unwrap();
@@ -1883,6 +2042,7 @@ run = ["echo one", "echo two"]
             supports: None,
             auto_forwards: None,
             notes: vec![],
+            manual_steps: vec![],
         }
     }
 
@@ -2203,5 +2363,29 @@ user = "agent"
 "#;
         let resolved: ResolvedConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(resolved.os_family, "debian");
+    }
+
+    #[test]
+    fn file_entry_optional_field_parses_and_defaults_to_false() {
+        let with_optional: FileEntry = toml::from_str(
+            r#"
+source = "/host/key"
+dest = "/vm/key"
+optional = true
+"#,
+        )
+        .unwrap();
+        assert!(with_optional.optional);
+
+        // Backwards-compat: configs from before the field existed should
+        // load fine and default the flag to false.
+        let without_optional: FileEntry = toml::from_str(
+            r#"
+source = "/host/key"
+dest = "/vm/key"
+"#,
+        )
+        .unwrap();
+        assert!(!without_optional.optional);
     }
 }

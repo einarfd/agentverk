@@ -105,6 +105,9 @@ fn test_config(image_url: &str) -> config::ResolvedConfig {
         template_name: None,
         mixins_applied: vec![],
         mixin_notes: vec![],
+        config_notes: vec![],
+        mixin_manual_steps: vec![],
+        config_manual_steps: vec![],
     }
 }
 
@@ -228,6 +231,9 @@ async fn create_marks_broken_on_failure() {
         template_name: None,
         mixins_applied: vec![],
         mixin_notes: vec![],
+        config_notes: vec![],
+        mixin_manual_steps: vec![],
+        config_manual_steps: vec![],
     };
 
     // Create should fail (unreachable image URL).
@@ -300,6 +306,7 @@ async fn create_with_start_and_provision() {
         files: vec![config::FileEntry {
             source: test_file.to_str().unwrap().to_string(),
             dest: "/home/agent/.config/agv-test/agv-test-inject.txt".to_string(),
+            optional: false,
         }],
         setup: vec![],
         provision: vec![config::ProvisionStep {
@@ -314,6 +321,7 @@ async fn create_with_start_and_provision() {
     supports: None,
     auto_forwards: None,
     notes: vec![],
+    manual_steps: vec![],
     })
     .unwrap();
 
@@ -395,6 +403,7 @@ async fn fedora_base_boots_and_provisions() {
         files: vec![config::FileEntry {
             source: test_file.to_str().unwrap().to_string(),
             dest: "/home/agent/.config/agv-test/agv-test-inject.txt".to_string(),
+            optional: false,
         }],
         setup: vec![],
         provision: vec![config::ProvisionStep {
@@ -409,6 +418,7 @@ async fn fedora_base_boots_and_provisions() {
         supports: None,
     auto_forwards: None,
     notes: vec![],
+    manual_steps: vec![],
     })
     .unwrap();
 
@@ -676,6 +686,7 @@ async fn suspend_and_resume_preserves_state() {
     supports: None,
     auto_forwards: None,
     notes: vec![],
+    manual_steps: vec![],
     })
     .unwrap();
 
@@ -834,6 +845,7 @@ async fn provision_failure_then_retry_resumes() {
     supports: None,
     auto_forwards: None,
     notes: vec![],
+    manual_steps: vec![],
     })
     .unwrap();
 

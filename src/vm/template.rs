@@ -444,6 +444,9 @@ async fn create_from_template_inner(
         template_name: Some(template_name.to_string()),
         mixins_applied: vec![],
         mixin_notes: vec![],
+        config_notes: vec![],
+        mixin_manual_steps: vec![],
+        config_manual_steps: vec![],
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
 

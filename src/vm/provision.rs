@@ -326,6 +326,22 @@ async fn copy_files(
             .unwrap_or(&file.source);
         spinner.set_message(format!("Copying file ({num}/{total}): {label}..."));
 
+        // Optional file: skip silently when the source isn't on the host.
+        // Lets configs declare opportunistic copies (an SSH key the user
+        // may or may not have, a gh config they may or may not have set up)
+        // without each missing source aborting the create flow.
+        if file.optional && !Path::new(&file.source).exists() {
+            tracing::info!(
+                source = %file.source,
+                "file marked optional, source missing — skipping"
+            );
+            step_done(
+                spinner,
+                &format!("Copy ({num}/{total}): {label} (skipped — optional, source not on host)"),
+            );
+            continue;
+        }
+
         // Interactive prompt: let the user skip a file or quit.
         // Edits don't make sense for file copies.
         if interactive_mode && !int_state.all {
@@ -469,6 +485,14 @@ pub(super) async fn run_first_boot(
     }
 
     inst.mark_provisioned().await?;
+
+    // Print any human-only manual setup steps (auth flows, etc) the
+    // mixins or top-level config flagged. Runs after mark_provisioned so
+    // the VM is fully provisioned before the user is told what to do
+    // next; printed only on this first successful run, never on later
+    // `agv start`s where run_first_boot is skipped.
+    crate::manual_steps::print_to_host(config);
+
     Ok(())
 }
 

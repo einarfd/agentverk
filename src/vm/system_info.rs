@@ -28,6 +28,16 @@ pub fn render(config: &ResolvedConfig, arch: &str) -> String {
     writeln!(out, "- OS family: {} ({arch})", config.os_family).unwrap();
     writeln!(out, "- User: `{}` (passwordless sudo)", config.user).unwrap();
 
+    // VM-specific notes from the user's own config (top-level `notes = [...]`).
+    // Surfaced above the mixin list because they describe *this VM's* purpose,
+    // not what individual mixins contribute.
+    if !config.config_notes.is_empty() {
+        out.push_str("\n## This VM\n\n");
+        for note in &config.config_notes {
+            writeln!(out, "- {note}").unwrap();
+        }
+    }
+
     if !config.mixins_applied.is_empty() {
         out.push_str("\n## Mixins\n\n");
         // Index mixin_notes by name so we can show every applied mixin in a
@@ -87,6 +97,9 @@ mod tests {
             template_name: None,
             mixins_applied: vec![],
             mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
         }
     }
 
@@ -130,6 +143,30 @@ mod tests {
         // Mixins without a declared note still appear — just the bare name.
         assert!(md.contains("- **devtools**\n"));
         assert!(md.contains("- **plain-mixin**\n"));
+    }
+
+    #[test]
+    fn config_notes_render_in_their_own_section_above_mixins() {
+        let mut cfg = empty();
+        cfg.config_notes = vec![
+            "This VM is for the foo project.".into(),
+            "API key lives at {{HOME}}/.foo-secrets.".into(),
+        ];
+        cfg.mixins_applied = vec!["devtools".into()];
+        let md = render(&cfg, "aarch64");
+        assert!(md.contains("## This VM"));
+        assert!(md.contains("- This VM is for the foo project."));
+        assert!(md.contains("- API key lives at"));
+        // Order: config notes section appears before the mixins section.
+        let this_vm = md.find("## This VM").unwrap();
+        let mixins = md.find("## Mixins").unwrap();
+        assert!(this_vm < mixins, "## This VM must appear above ## Mixins");
+    }
+
+    #[test]
+    fn no_config_notes_section_when_empty() {
+        let md = render(&empty(), "aarch64");
+        assert!(!md.contains("## This VM"));
     }
 
     #[test]
