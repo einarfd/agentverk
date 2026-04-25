@@ -38,6 +38,15 @@ All notable changes to `agv` will be documented here. This project follows
   - `gemini`: `GEMINI_API_KEY` → same shape as claude.
   All four are idempotent on retry; none clobber an existing user
   configuration.
+- **`ssh-key` mixin** — opt-in SSH key injection. Set
+  `SSH_KEY=/path/to/private/key` in `.env` (or in the host environment)
+  and `include = ["ssh-key"]` in your `agv.toml`. The mixin copies the
+  key in as `~/.ssh/id_ed25519` with the right permissions and derives
+  the matching `.pub` via `ssh-keygen -y`, so callers only have to
+  point at one file. If `SSH_KEY` is unset the mixin is a no-op.
+  General-purpose — works for any git host or non-GitHub SSH target.
+  Replaces the previous "copy the SSH key inline" recipe in
+  `docs/repo-access.md`.
 
 ## [0.2.1] - 2026-04-23
 

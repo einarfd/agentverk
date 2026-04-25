@@ -56,34 +56,35 @@ code autonomously.
 
 ## 2. Copy an SSH key into the VM
 
-Copy an existing key from the host via `[[files]]`. The simplest option if you already
-use SSH keys for GitHub. SSH keys are general-purpose — the same recipe works for
-GitLab, Bitbucket, internal git servers, and ssh-into-other-hosts.
+The simplest option if you already use SSH keys for GitHub. The same key
+also works for GitLab, Bitbucket, internal git servers, and
+ssh-into-other-hosts.
+
+Use the bundled `ssh-key` mixin: opt-in via `include`, and point
+`SSH_KEY` at your private key path on the host.
 
 ```toml
-[[files]]
-source   = "{{HOME}}/.ssh/id_ed25519"
-dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519"
-optional = true
-
-[[files]]
-source   = "{{HOME}}/.ssh/id_ed25519.pub"
-dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519.pub"
-optional = true
-
-[[setup]]
-run = """
-[ -f /home/{{AGV_USER}}/.ssh/id_ed25519 ] || exit 0
-chown {{AGV_USER}}:{{AGV_USER}} /home/{{AGV_USER}}/.ssh/id_ed25519*
-chmod 600 /home/{{AGV_USER}}/.ssh/id_ed25519
-chmod 644 /home/{{AGV_USER}}/.ssh/id_ed25519.pub
-sudo -u {{AGV_USER}} ssh-keyscan github.com >> /home/{{AGV_USER}}/.ssh/known_hosts
-"""
+# agv.toml
+[base]
+from    = "ubuntu-24.04"
+include = ["devtools", "ssh-key"]
 ```
 
-`optional = true` makes the copy skip silently when the source isn't on the
-host — useful if some VMs in this codebase need the key and others don't,
-or if different developers have keys at different paths.
+```sh
+# .env  — add to .gitignore, never commit
+SSH_KEY=/Users/you/.ssh/id_ed25519
+```
+
+The mixin copies the file in as `~/.ssh/id_ed25519`, fixes ownership and
+permissions (700 on `~/.ssh`, 600 on the key), and derives the matching
+`.pub` via `ssh-keygen -y` so you only have to provide one path. If
+`SSH_KEY` isn't set the mixin becomes a no-op — useful when several VMs
+share the same `agv.toml` but only some need a key.
+
+If you want the same shape inline (without `include = ["ssh-key"]`), the
+underlying recipe is just `[[files]]` with `optional = true` plus a
+permissions-fixup `[[setup]]` step — see the mixin's own TOML for
+the full pattern.
 
 **Security:** The key lives on the VM's disk. If the agent runs malicious code or the
 VM is compromised, the attacker has your full SSH key and access to everything it unlocks.

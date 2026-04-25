@@ -27,6 +27,7 @@ const RUST_TOML: &str = include_str!("rust.toml");
 const UV_TOML: &str = include_str!("uv.toml");
 const ZSH_TOML: &str = include_str!("zsh.toml");
 const OH_MY_ZSH_TOML: &str = include_str!("oh-my-zsh.toml");
+const SSH_KEY_TOML: &str = include_str!("ssh-key.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("ubuntu-24.04", UBUNTU_TOML),
@@ -43,6 +44,7 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
     ("oh-my-zsh", OH_MY_ZSH_TOML),
     ("openclaw", OPENCLAW_TOML),
     ("rust", RUST_TOML),
+    ("ssh-key", SSH_KEY_TOML),
     ("uv", UV_TOML),
     ("zsh", ZSH_TOML),
 ];
@@ -497,6 +499,7 @@ mod tests {
         assert!(names.contains(&"oh-my-zsh"));
         assert!(names.contains(&"openclaw"));
         assert!(names.contains(&"rust"));
+        assert!(names.contains(&"ssh-key"));
         assert!(names.contains(&"uv"));
         assert!(names.contains(&"zsh"));
     }

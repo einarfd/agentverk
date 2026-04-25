@@ -1,0 +1,40 @@
+# SSH key injection mixin.
+# Opt-in: set `SSH_KEY=/path/to/private/key` in your host environment
+# (or in a `.env` next to the agv.toml) before `agv create`. agv reads
+# the path via template expansion, copies the file in as
+# ~/.ssh/id_ed25519, fixes permissions, and derives the matching .pub
+# via `ssh-keygen -y` so callers only need to provide one path.
+#
+# When SSH_KEY is unset, the [[files]] step short-circuits via
+# `optional = true` and the [[setup]] step exits early — the mixin
+# becomes a no-op rather than failing the create flow.
+#
+# Use via: include = ["ssh-key"]
+
+notes = [
+  "If `SSH_KEY` was set on the host, copies that key to `~/.ssh/id_ed25519` (mode 0600) and derives `~/.ssh/id_ed25519.pub` via `ssh-keygen -y`.",
+]
+
+manual_steps = [
+  "If you didn't set `SSH_KEY` on the host before creating this VM and you want SSH-based git access, set it and recreate (or copy a key in afterwards with `agv cp`).",
+]
+
+[[files]]
+source   = "{{SSH_KEY:-}}"
+dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519"
+optional = true
+
+# Fix ownership + permissions and derive the public key from the
+# private one. Bails out cleanly when no key was injected (SSH_KEY
+# unset → previous [[files]] skipped → no key on disk → exit 0).
+[[setup]]
+run = """
+set -eu
+KEY=/home/{{AGV_USER}}/.ssh/id_ed25519
+[ -f "$KEY" ] || exit 0
+chown -R {{AGV_USER}}:{{AGV_USER}} /home/{{AGV_USER}}/.ssh
+chmod 700 /home/{{AGV_USER}}/.ssh
+chmod 600 "$KEY"
+sudo -u {{AGV_USER}} ssh-keygen -y -f "$KEY" > "$KEY.pub"
+chmod 644 "$KEY.pub"
+"""
