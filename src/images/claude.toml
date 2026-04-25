@@ -6,7 +6,11 @@
 # Recommended: spec = "large" (8 GB) for comfortable use with larger codebases.
 
 notes = [
-  "Installs Claude Code CLI (`claude`).",
+  "Installs Claude Code CLI (`claude`). If `ANTHROPIC_API_KEY` was set in the host environment, agv exported it into the VM user's shell rc files; otherwise Claude Code starts unauthenticated.",
+]
+
+manual_steps = [
+  "If you didn't set `ANTHROPIC_API_KEY` in the host environment before creating this VM, run Claude Code's `/login` command inside the VM (or destroy + recreate with the env var set).",
 ]
 
 [[provision]]
@@ -17,3 +21,20 @@ run = "curl -fsSL https://claude.ai/install.sh | bash"
 # in context. Idempotent — retrying only adds the line if it's not there.
 [[provision]]
 run = "mkdir -p ~/.claude && touch ~/.claude/CLAUDE.md && grep -qF '@~/.agv/system.md' ~/.claude/CLAUDE.md || echo 'See @~/.agv/system.md for VM system info written by agv.' >> ~/.claude/CLAUDE.md"
+
+# Pick up ANTHROPIC_API_KEY from the host env (via template expansion) and
+# export it from the user's shell rc files. Idempotent: skips if the rc
+# already declares an ANTHROPIC_API_KEY export. ~/.zshrc is touched only
+# if it already exists, so users without the zsh mixin don't end up with
+# an unexpected file.
+[[provision]]
+run = """
+KEY='{{ANTHROPIC_API_KEY:-}}'
+if [ -n "$KEY" ]; then
+  touch ~/.bashrc
+  grep -q '^export ANTHROPIC_API_KEY=' ~/.bashrc || printf 'export ANTHROPIC_API_KEY=%q\\n' "$KEY" >> ~/.bashrc
+  if [ -f ~/.zshrc ]; then
+    grep -q '^export ANTHROPIC_API_KEY=' ~/.zshrc || printf 'export ANTHROPIC_API_KEY=%q\\n' "$KEY" >> ~/.zshrc
+  fi
+fi
+"""

@@ -5,7 +5,11 @@
 # Use via: include = ["codex"]
 
 notes = [
-  "Installs OpenAI Codex CLI (`codex`) to `/usr/local/bin`.",
+  "Installs OpenAI Codex CLI (`codex`) to `/usr/local/bin`. If `OPENAI_API_KEY` was set in the host environment, agv exported it into the VM user's shell rc files; otherwise Codex starts unauthenticated.",
+]
+
+manual_steps = [
+  "If you didn't set `OPENAI_API_KEY` in the host environment before creating this VM, run Codex's auth command inside the VM (or destroy + recreate with the env var set).",
 ]
 
 [[provision]]
@@ -15,6 +19,19 @@ TMP=$(mktemp -d)
 curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-${ARCH}-unknown-linux-musl.tar.gz" | tar -xz -C "$TMP"
 sudo install -m 755 "$TMP/codex-${ARCH}-unknown-linux-musl" /usr/local/bin/codex
 rm -rf "$TMP"
+"""
+
+# Pick up OPENAI_API_KEY from the host env if set; idempotent on retry.
+[[provision]]
+run = """
+KEY='{{OPENAI_API_KEY:-}}'
+if [ -n "$KEY" ]; then
+  touch ~/.bashrc
+  grep -q '^export OPENAI_API_KEY=' ~/.bashrc || printf 'export OPENAI_API_KEY=%q\\n' "$KEY" >> ~/.bashrc
+  if [ -f ~/.zshrc ]; then
+    grep -q '^export OPENAI_API_KEY=' ~/.zshrc || printf 'export OPENAI_API_KEY=%q\\n' "$KEY" >> ~/.zshrc
+  fi
+fi
 """
 
 # Codex reads `~/.codex/AGENTS.md` at every session start but has no

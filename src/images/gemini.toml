@@ -3,7 +3,11 @@
 # Requires Node.js: include = ["nodejs", "gemini"]
 
 notes = [
-  "Installs Google Gemini CLI (`gemini`) via `npm install -g @google/gemini-cli`.",
+  "Installs Google Gemini CLI (`gemini`) via `npm install -g @google/gemini-cli`. If `GEMINI_API_KEY` was set in the host environment, agv exported it into the VM user's shell rc files; otherwise Gemini starts unauthenticated.",
+]
+
+manual_steps = [
+  "If you didn't set `GEMINI_API_KEY` in the host environment before creating this VM, run Gemini CLI's auth flow inside the VM (or destroy + recreate with the env var set).",
 ]
 
 [[provision]]
@@ -15,3 +19,16 @@ run = "npm install -g @google/gemini-cli"
 # Idempotent — only appends the line if it's not already there.
 [[provision]]
 run = "mkdir -p ~/.gemini && touch ~/.gemini/GEMINI.md && grep -qF '@~/.agv/system.md' ~/.gemini/GEMINI.md || echo 'See @~/.agv/system.md for VM system info written by agv.' >> ~/.gemini/GEMINI.md"
+
+# Pick up GEMINI_API_KEY from the host env if set; idempotent on retry.
+[[provision]]
+run = """
+KEY='{{GEMINI_API_KEY:-}}'
+if [ -n "$KEY" ]; then
+  touch ~/.bashrc
+  grep -q '^export GEMINI_API_KEY=' ~/.bashrc || printf 'export GEMINI_API_KEY=%q\\n' "$KEY" >> ~/.bashrc
+  if [ -f ~/.zshrc ]; then
+    grep -q '^export GEMINI_API_KEY=' ~/.zshrc || printf 'export GEMINI_API_KEY=%q\\n' "$KEY" >> ~/.zshrc
+  fi
+fi
+"""

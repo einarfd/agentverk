@@ -1354,16 +1354,16 @@ mod tests {
 
         // devtools mixin has 1 setup step.
         assert_eq!(resolved.setup.len(), 1);
-        // claude mixin has 2 provision steps (install + CLAUDE.md pointer),
-        // project adds 1 more.
-        assert_eq!(resolved.provision.len(), 3);
+        // claude mixin has 3 provision steps (install + CLAUDE.md pointer +
+        // ANTHROPIC_API_KEY shell export), project adds 1 more.
+        assert_eq!(resolved.provision.len(), 4);
         // Include steps come before project steps.
         assert!(resolved.provision[0]
             .run
             .as_deref()
             .unwrap()
             .contains("claude.ai"));
-        assert_eq!(resolved.provision[2].run.as_deref(), Some("echo project"));
+        assert_eq!(resolved.provision[3].run.as_deref(), Some("echo project"));
     }
 
     #[test]

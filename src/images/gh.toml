@@ -1,9 +1,19 @@
 # GitHub CLI mixin.
 # Installs the gh CLI from GitHub's official package repositories.
 # Use via: include = ["gh"]
+#
+# If GH_TOKEN or GITHUB_TOKEN is set in the host environment when `agv
+# create`/`agv start` runs, agv pipes the token into `gh auth login
+# --with-token` so the VM starts authenticated. Without either, gh is
+# left unauthenticated and the user runs `gh auth login` themselves
+# (surfaced via `manual_steps`).
 
 notes = [
-  "Installs `gh` (GitHub CLI). Not authenticated by default — run `gh auth login`.",
+  "Installs `gh` (GitHub CLI). If `GH_TOKEN` or `GITHUB_TOKEN` was set in the host environment, agv ran `gh auth login --with-token` automatically; otherwise gh starts unauthenticated.",
+]
+
+manual_steps = [
+  "If `gh auth status` reports gh as unauthenticated, run `gh auth login` inside the VM.",
 ]
 
 [os_families.debian]
@@ -20,3 +30,17 @@ run = """curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gp
 [[os_families.fedora.setup]]
 run = """curl -fsSL -o /etc/yum.repos.d/gh-cli.repo https://cli.github.com/packages/rpm/gh-cli.repo \
   && dnf install -y gh"""
+
+# Auth via host env vars. Runs as the VM user (provision phase, not setup),
+# so the resulting ~/.config/gh/hosts.yml lands in the right place.
+# GH_TOKEN takes precedence over GITHUB_TOKEN — same precedence the gh CLI
+# uses internally, and matches the convention in CI environments where
+# both may be set.
+[[provision]]
+run = """
+TOKEN='{{GH_TOKEN:-}}'
+[ -z "$TOKEN" ] && TOKEN='{{GITHUB_TOKEN:-}}'
+if [ -n "$TOKEN" ]; then
+  printf '%s\\n' "$TOKEN" | gh auth login --with-token
+fi
+"""
