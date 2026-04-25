@@ -5,7 +5,7 @@
 #   agv create --include devtools --include codex <name>
 
 [base]
-from = "ubuntu-24.04"
+from = "ubuntu-24.04"  # also works: "debian-12", "fedora-43"
 include = ["devtools", "codex"]
 spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 
@@ -15,14 +15,21 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # cpus = 8
 # disk = "80G"
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+# Skip the manual auth step by setting OPENAI_API_KEY in your shell or in a
+# .env file next to this one before running `agv create`. The codex mixin
+# exports it into the VM user's shell rc files automatically. If you don't,
+# agv prints a manual_steps line telling you to authenticate inside the VM.
+
 # ── Repo access ──────────────────────────────────────────────────────────────
-# To give the agent access to your repositories, see docs/repo-access.md.
-# Quick start: add "gh" to the include list above, put GITHUB_TOKEN=ghp_...
-# in a .env file next to this one, then uncomment:
+# See docs/repo-access.md for the full picture (PAT via gh, SSH key, deploy
+# key, agent forwarding). Two quick options:
 #
-# [[provision]]
-# run = [
-#   "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
-#   "gh auth setup-git",                    # configure git credential helper
-#   "gh repo clone org/myrepo ~/myrepo",
-# ]
+# Option A — gh CLI with a personal access token:
+#   Add "gh" to the include list above and put GH_TOKEN=ghp_... in a .env
+#   file next to this one. agv runs `gh auth login --with-token` for you.
+#
+# Option B — SSH key:
+#   Add "ssh-key" to the include list above and set
+#   SSH_KEY=/path/to/private/key in your .env. agv copies the key in,
+#   chmods it, and derives the matching .pub.

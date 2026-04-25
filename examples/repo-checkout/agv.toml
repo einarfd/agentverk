@@ -8,22 +8,25 @@
 #               --spec large --start <name>
 
 [base]
-from    = "ubuntu-24.04"
+from    = "ubuntu-24.04"  # also works: "debian-12", "fedora-43"
 include = ["devtools", "gh", "claude"]
 spec    = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
+
+# Set ANTHROPIC_API_KEY in your shell or .env before `agv create` to skip
+# Claude Code's manual `/login` step too — the claude mixin picks it up.
 
 # Copy dotfiles from the host (optional — remove if not needed).
 [[files]]
 source = "{{HOME}}/.gitconfig"
 dest   = "/home/{{AGV_USER}}/.gitconfig"
 
-# Provisioning steps, run in order as your user after setup.
-# The token is passed via stdin so it does not appear in the process list.
-# `run = [...]` lets you list several commands in one block — each entry
-# becomes its own step (same semantics as writing separate blocks).
+# The gh mixin authenticates automatically when GH_TOKEN or GITHUB_TOKEN is
+# set in your host env (or in the .env next to this file). After that,
+# `gh auth setup-git` wires git's credential helper, and `gh repo clone`
+# pulls your repo down. `run = [...]` lists several commands in one block —
+# each entry becomes its own step.
 [[provision]]
 run = [
-  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
   "gh auth setup-git",                    # configure git credential helper
   "gh repo clone org/myrepo ~/myrepo",
   "cd ~/myrepo && ./bootstrap.sh",        # project-specific setup

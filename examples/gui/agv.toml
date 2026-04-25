@@ -12,7 +12,7 @@
 # Ubuntu-snap browser caveat.
 
 [base]
-from    = "debian-12"
+from    = "debian-12"  # also works: "ubuntu-24.04", "fedora-43"
 include = ["devtools", "gui-xfce"]
 spec    = "large"  # XFCE + a browser benefits from the bigger preset
 
