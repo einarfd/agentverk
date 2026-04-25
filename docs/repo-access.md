@@ -18,8 +18,10 @@ when the agent is executing code it may have written itself.
 ## 1. PAT token with GitHub CLI (recommended)
 
 Use a GitHub [fine-grained personal access token](https://github.com/settings/personal-access-tokens)
-with the `gh` CLI. The token is passed via a template variable so it never appears in
-the config file.
+with the `gh` CLI. The `gh` mixin authenticates automatically: if `GH_TOKEN` or
+`GITHUB_TOKEN` is set in your host environment when you run `agv create`, agv pipes
+the value into `gh auth login --with-token` for you. No explicit auth command in
+the config.
 
 ```toml
 # agv.toml
@@ -30,7 +32,6 @@ spec    = "large"
 
 [[provision]]
 run = [
-  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
   "gh auth setup-git",                    # configure git credential helper
   "gh repo clone org/myrepo ~/myrepo",
 ]
@@ -38,8 +39,12 @@ run = [
 
 ```sh
 # .env  — add to .gitignore, never commit
-GITHUB_TOKEN=ghp_...
+GH_TOKEN=ghp_...
 ```
+
+`GH_TOKEN` takes precedence over `GITHUB_TOKEN` (matches the `gh` CLI's own
+ordering). If neither is set, agv leaves `gh` unauthenticated and prints a
+manual-setup line telling you to run `gh auth login` inside the VM.
 
 **Token permissions:** Fine-grained tokens let you select exactly which repositories the
 token can access and what it can do. For read-only cloning, grant `Contents: Read` on
@@ -52,26 +57,33 @@ code autonomously.
 ## 2. Copy an SSH key into the VM
 
 Copy an existing key from the host via `[[files]]`. The simplest option if you already
-use SSH keys for GitHub.
+use SSH keys for GitHub. SSH keys are general-purpose — the same recipe works for
+GitLab, Bitbucket, internal git servers, and ssh-into-other-hosts.
 
 ```toml
 [[files]]
-source = "{{HOME}}/.ssh/id_ed25519"
-dest   = "/home/{{AGV_USER}}/.ssh/id_ed25519"
+source   = "{{HOME}}/.ssh/id_ed25519"
+dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519"
+optional = true
 
 [[files]]
-source = "{{HOME}}/.ssh/id_ed25519.pub"
-dest   = "/home/{{AGV_USER}}/.ssh/id_ed25519.pub"
+source   = "{{HOME}}/.ssh/id_ed25519.pub"
+dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519.pub"
+optional = true
 
-[[provision]]
+[[setup]]
 run = """
-chmod 600 ~/.ssh/id_ed25519
-ssh-keyscan github.com >> ~/.ssh/known_hosts
+[ -f /home/{{AGV_USER}}/.ssh/id_ed25519 ] || exit 0
+chown {{AGV_USER}}:{{AGV_USER}} /home/{{AGV_USER}}/.ssh/id_ed25519*
+chmod 600 /home/{{AGV_USER}}/.ssh/id_ed25519
+chmod 644 /home/{{AGV_USER}}/.ssh/id_ed25519.pub
+sudo -u {{AGV_USER}} ssh-keyscan github.com >> /home/{{AGV_USER}}/.ssh/known_hosts
 """
-
-[[provision]]
-run = "git clone git@github.com:org/myrepo.git ~/myrepo"
 ```
+
+`optional = true` makes the copy skip silently when the source isn't on the
+host — useful if some VMs in this codebase need the key and others don't,
+or if different developers have keys at different paths.
 
 **Security:** The key lives on the VM's disk. If the agent runs malicious code or the
 VM is compromised, the attacker has your full SSH key and access to everything it unlocks.
@@ -142,9 +154,10 @@ own machines works equally well inside an agent VM.
 **Option A — clone a dotfiles repo:**
 
 ```toml
+# Assumes the gh mixin is included and GH_TOKEN/GITHUB_TOKEN was set on
+# the host so agv could auto-authenticate.
 [[provision]]
 run = [
-  "gh auth login --with-token <<< '{{GITHUB_TOKEN}}'",
   "gh repo clone org/dotfiles ~/dotfiles && ~/dotfiles/install.sh",
 ]
 ```

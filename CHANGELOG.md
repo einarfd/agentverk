@@ -6,6 +6,39 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Top-level `notes = [...]` in `agv.toml`** now flow into the
+  rendered `~/.agv/system.md`, in their own `## This VM` section
+  above the mixin list. Lets a per-repo config say "this VM is for
+  the foo project" without having to invent a fake mixin. Previously
+  the field was parsed but discarded.
+- **`optional = true` on `[[files]]`** silently skips the copy when
+  the source path doesn't exist on the host, instead of erroring out
+  the whole create flow. Pairs with the existing `{{VAR:-}}` template
+  default for opportunistic file injection (an SSH key, a `gh` config,
+  whatever the user has). Default is false so existing configs are
+  unchanged.
+- **`manual_steps = [...]`** — imperative instructions for the human
+  invoker that agv can't automate (browser-based auth flows,
+  interactive token entry). Available on mixins (top-level + per-family)
+  and on the user's own `agv.toml`. Printed to the host terminal at
+  the end of the first successful provision and re-printable via
+  `agv inspect <vm>`. Never written into the VM — agents inside
+  don't see them.
+- **Host env-var-driven auth across the bundled CLI mixins.** When the
+  relevant variable is set on the host at `agv create` time, agv
+  configures the mixin's CLI to use it; otherwise the mixin lists the
+  manual login command via `manual_steps`.
+  - `gh`: `GH_TOKEN` (preferred) or `GITHUB_TOKEN` →
+    `gh auth login --with-token`.
+  - `claude`: `ANTHROPIC_API_KEY` → exported in `~/.bashrc` and
+    `~/.zshrc`.
+  - `codex`: `OPENAI_API_KEY` → same shape as claude.
+  - `gemini`: `GEMINI_API_KEY` → same shape as claude.
+  All four are idempotent on retry; none clobber an existing user
+  configuration.
+
 ## [0.2.1] - 2026-04-23
 
 ### Added

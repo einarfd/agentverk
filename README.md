@@ -114,6 +114,17 @@ Claude / Gemini, via symlink for Codex / OpenClaw). Custom mixins can
 contribute their own line by declaring `notes = [...]` in their TOML
 — see [`docs/config.md`](docs/config.md#notes-mixin-authors).
 
+**Authentication** — host environment variables drive auth where
+possible. If `GH_TOKEN` / `GITHUB_TOKEN` is set when you create a VM,
+the `gh` mixin runs `gh auth login --with-token` automatically. The
+`claude`, `codex`, and `gemini` mixins do the same for
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GEMINI_API_KEY`
+respectively, exporting each into the VM user's shell rc files. If a
+key isn't set, the relevant mixin lists the manual auth step (e.g.
+"run `claude /login` inside the VM") and agv prints those steps to
+your terminal once provisioning succeeds. See
+[`docs/repo-access.md`](docs/repo-access.md) for the full picture.
+
 ## Usage
 
 ```

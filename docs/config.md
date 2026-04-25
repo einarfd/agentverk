@@ -116,6 +116,24 @@ Both `source` and `dest` support template variable expansion (see below). Note t
 `~/` is **not** expanded — use `{{HOME}}` for host paths and `/home/{{AGV_USER}}`
 for paths inside the VM. `{{AGV_USER}}` is set to the VM's username (default: `agent`).
 
+### `optional = true`
+
+By default, a missing source path on the host is a hard error. Set
+`optional = true` to silently skip the copy when the source isn't there.
+Useful for opportunistically pulling in files that may or may not exist
+in the user's home directory:
+
+```toml
+[[files]]
+source   = "{{HOME}}/.ssh/id_ed25519"
+dest     = "/home/{{AGV_USER}}/.ssh/id_ed25519"
+optional = true
+```
+
+Pairs naturally with `{{VAR:-}}` template defaults (see below): an unset
+env var resolves to an empty path which then doesn't exist, and the
+optional flag turns the resulting "no such file" into a no-op.
+
 > **Security:** Avoid copying your primary SSH key here. If the agent runs malicious
 > code or the VM is compromised, the key is exposed. See [`docs/repo-access.md`](repo-access.md)
 > for safer alternatives.
@@ -304,6 +322,43 @@ A mixin with no notes still appears in the file by name.
 
 The field is optional everywhere; omit it when there's nothing
 useful to say.
+
+`notes = [...]` also works at the **top level of your own `agv.toml`**.
+Top-level notes describe *this VM* (e.g. "this VM is for the foo
+project") rather than what a mixin contributed, and the renderer
+surfaces them in their own `## This VM` section above the mixin list.
+
+## `manual_steps` (mixin authors)
+
+Imperative instructions that the **human invoker** needs to follow
+after agv finishes — things agv can't automate (browser-based auth
+flows, interactive token entry, anything requiring a person at the
+keyboard). Printed to the host terminal at the end of the first
+successful provision and surfaced again by `agv inspect <vm>` for
+later re-reading.
+
+```toml
+manual_steps = [
+  "Run `claude /login` inside the VM to authenticate Claude Code.",
+]
+
+# Family-specific manual steps work the same way as family-specific notes.
+[os_families.debian]
+manual_steps = [
+  "Run `sudo dpkg-reconfigure tzdata` if the timezone matters.",
+]
+```
+
+Manual steps are **never written to the VM** — agents inside don't see
+them, and shouldn't (they describe tasks only a human can complete).
+
+Use sparingly. Anything agv can do in a `[[setup]]` or `[[provision]]`
+step belongs there, not in `manual_steps`. Reach for this field only
+when there's a real human-in-the-loop requirement.
+
+`manual_steps = [...]` also works at the top level of your own
+`agv.toml`, for VM-specific instructions that aren't tied to a mixin
+(e.g. "Configure VPN before starting work.").
 
 ## `forwards`
 
