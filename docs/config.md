@@ -498,7 +498,8 @@ User-defined variables are resolved in this order (last wins):
 
 1. `.env` file next to `agv.toml`
 2. `.env` in the current working directory
-3. Host environment variables
+3. The file passed via `agv create --env-file <path>`, if any
+4. Host environment variables
 
 ## The `.env` file
 
@@ -512,6 +513,23 @@ GITHUB_TOKEN=ghp_...
 
 Supported formats: `KEY=value`, `KEY="quoted value"`, `KEY='single quoted'`.
 Lines starting with `#` are ignored.
+
+### `--env-file`
+
+Pass `agv create --env-file /path/to/file.env <name>` to point at a `.env`
+outside the implicit lookup paths — e.g. when secrets live in a shared
+team location, or when you want to run with different env files per VM
+without changing the working directory. Layered on top of the implicit
+`.env` lookups; host environment variables still win over all of them.
+
+Unlike the implicit `.env` lookups (which are silently skipped when the
+file isn't there), `--env-file` errors out if the path doesn't exist —
+you asked for it specifically.
+
+> Anything that gets template-expanded at create time is baked into the
+> saved instance config (`<data_dir>/instances/<name>/config.toml`), so
+> a secret in `--env-file` lands on disk inside that file. `agv destroy`
+> removes the instance dir.
 
 ## Precedence
 

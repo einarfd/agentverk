@@ -1148,7 +1148,9 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     let mut resolved = resolve(config)?;
 
     // 10. Expand template variables ({{VAR}} and {{VAR:-default}}).
-    let mut vars = crate::template::load_variables(config_dir.as_deref());
+    let env_file_path = args.env_file.as_ref().map(Path::new);
+    let mut vars =
+        crate::template::load_variables(config_dir.as_deref(), env_file_path)?;
     vars.insert("AGV_USER".to_string(), resolved.user.clone());
     crate::template::expand_config(&mut resolved, &vars)?;
 
@@ -1167,6 +1169,7 @@ mod tests {
     fn minimal_args() -> CreateArgs {
         CreateArgs {
             config: None,
+            env_file: None,
             name: "test-vm".to_string(),
             memory: None,
             cpus: None,

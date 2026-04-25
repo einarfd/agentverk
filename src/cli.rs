@@ -143,6 +143,18 @@ pub struct CreateArgs {
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<String>,
 
+    /// Path to a .env file. Layered on top of `.env` next to the agv.toml
+    /// and `.env` in the current directory; host environment variables
+    /// still win over all three.
+    ///
+    /// Note: any `{{VAR}}` values that get template-expanded into the
+    /// VM's resolved config are baked into the saved instance config
+    /// (`<data_dir>/instances/<name>/config.toml`) and, depending on
+    /// where they're referenced, may also land in shell rc files inside
+    /// the VM. `agv destroy` removes both.
+    #[arg(long = "env-file", value_name = "PATH")]
+    pub env_file: Option<String>,
+
     /// Image to base the VM on [default: ubuntu-24.04].
     #[arg(long)]
     pub image: Option<String>,

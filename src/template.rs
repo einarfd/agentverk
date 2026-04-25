@@ -46,16 +46,24 @@ pub fn load_dotenv(path: &Path) -> anyhow::Result<HashMap<String, String>> {
     Ok(vars)
 }
 
-/// Load template variables from `.env` (if present) and host environment.
+/// Load template variables from `.env` files (if present) and the host
+/// environment.
 ///
 /// Search order (highest priority last, so later values win):
 /// 1. `.env` in `config_dir` (the directory containing the `agv.toml`)
 /// 2. `.env` in the current working directory
-/// 3. Host environment variables
+/// 3. The explicit file at `env_file`, if provided
+/// 4. Host environment variables
 ///
 /// Passing `config_dir = None` skips step 1.
-#[must_use]
-pub fn load_variables(config_dir: Option<&Path>) -> HashMap<String, String> {
+///
+/// `env_file` is the only step that errors when the path doesn't exist —
+/// the implicit `.env` lookups stay best-effort, but a user who passed
+/// `--env-file <path>` should expect that path to be honoured.
+pub fn load_variables(
+    config_dir: Option<&Path>,
+    env_file: Option<&Path>,
+) -> anyhow::Result<HashMap<String, String>> {
     let mut vars = HashMap::new();
 
     // Load .env from the config file's directory first (lowest priority).
@@ -76,12 +84,24 @@ pub fn load_variables(config_dir: Option<&Path>) -> HashMap<String, String> {
         }
     }
 
+    // Explicit --env-file overrides both implicit .envs. Errors if the
+    // user passed a path that doesn't exist — they asked for it
+    // specifically, so silently skipping would surprise them.
+    if let Some(path) = env_file {
+        if !path.exists() {
+            anyhow::bail!("--env-file path does not exist: {}", path.display());
+        }
+        let extra = load_dotenv(path)
+            .with_context(|| format!("failed to read --env-file {}", path.display()))?;
+        vars.extend(extra);
+    }
+
     // Host env vars override everything.
     for (key, value) in std::env::vars() {
         vars.insert(key, value);
     }
 
-    vars
+    Ok(vars)
 }
 
 /// Expand `{{VAR}}` and `{{VAR:-default}}` placeholders in a string.
@@ -243,6 +263,25 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("VAR".to_string(), "val".to_string());
         assert_eq!(expand("{{ VAR }}", &vars).unwrap(), "val");
+    }
+
+    #[test]
+    fn load_variables_picks_up_explicit_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("explicit.env");
+        std::fs::write(&env_path, "EXPLICIT_KEY=from_file\n").unwrap();
+
+        let vars = load_variables(None, Some(&env_path)).unwrap();
+        assert_eq!(vars.get("EXPLICIT_KEY").map(String::as_str), Some("from_file"));
+    }
+
+    #[test]
+    fn load_variables_errors_when_explicit_env_file_missing() {
+        let result = load_variables(None, Some(Path::new("/no/such/file.env")));
+        assert!(result.is_err());
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("--env-file"), "error should name the flag: {err}");
+        assert!(err.contains("does not exist"), "error: {err}");
     }
 
     #[test]

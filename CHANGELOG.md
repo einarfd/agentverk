@@ -41,12 +41,18 @@ All notable changes to `agv` will be documented here. This project follows
 - **`ssh-key` mixin** — opt-in SSH key injection. Set
   `SSH_KEY=/path/to/private/key` in `.env` (or in the host environment)
   and `include = ["ssh-key"]` in your `agv.toml`. The mixin copies the
-  key in as `~/.ssh/id_ed25519` with the right permissions and derives
-  the matching `.pub` via `ssh-keygen -y`, so callers only have to
-  point at one file. If `SSH_KEY` is unset the mixin is a no-op.
-  General-purpose — works for any git host or non-GitHub SSH target.
-  Replaces the previous "copy the SSH key inline" recipe in
-  `docs/repo-access.md`.
+  key in with the right permissions and derives the matching `.pub`
+  via `ssh-keygen -y`, so callers only have to point at one file. If
+  `SSH_KEY` is unset the mixin is a no-op. General-purpose — works for
+  any git host or non-GitHub SSH target. Replaces the previous "copy
+  the SSH key inline" recipe in `docs/repo-access.md`.
+- **`agv create --env-file <path>`** — explicit `.env` location that
+  layers on top of the implicit `.env`-next-to-agv.toml /
+  `.env`-in-cwd lookups. Useful when secrets live outside the project
+  tree, or when one VM wants a different env file from another in the
+  same directory. Errors out if the path doesn't exist (the implicit
+  lookups stay best-effort). Host environment variables still override
+  all three sources.
 
 ## [0.2.1] - 2026-04-23
 
