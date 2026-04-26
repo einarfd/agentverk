@@ -72,3 +72,31 @@ Before marking a PR ready:
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for user-visible
       changes (new commands, new config fields, behavior changes, bug fixes).
 - [ ] CI is green.
+
+## Cutting a release
+
+Release flow (one-person project; `cargo publish` runs from a trusted
+local machine, not CI, on purpose):
+
+1. Bump `version` in `Cargo.toml` to the new value.
+2. Close out the `## [Unreleased]` section in `CHANGELOG.md`: add a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading just below it, leaving `[Unreleased]`
+   as an empty placeholder for the next cycle. Update the compare links
+   at the bottom of the file.
+3. `cargo build` to refresh `Cargo.lock` to the new version.
+4. Commit as `Release X.Y.Z`.
+5. Run the release sanity check:
+
+   ```sh
+   ./scripts/release-check.sh
+   ```
+
+   It verifies the working tree is clean, you're on `main`, all version
+   metadata agrees, the tag isn't already present, lint/tests/dry-run
+   pass — exactly the class of mistake (tag pushed before bump) that
+   `release-check.sh` exists to catch.
+
+6. If the script's green, follow the suggested next steps it prints —
+   `git tag -a vX.Y.Z`, `git push origin main`, `git push origin vX.Y.Z`,
+   `cargo publish`. The tag push triggers the GitHub Release workflow
+   (cross-platform binaries + `install.sh` redirect target).
