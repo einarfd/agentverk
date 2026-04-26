@@ -1183,6 +1183,7 @@ mod tests {
             provisions: vec![],
             provision_scripts: vec![],
             no_checksum: false,
+            force: false,
             start: false,
             interactive: false,
             from: None,

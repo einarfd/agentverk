@@ -40,32 +40,28 @@ Before creating any VM:
    agv ls
    ```
 
-2. **Check that the host has capacity.** A `medium` spec uses 2G RAM
-   and 2 vCPUs; `large` is 8G/4; `xlarge` is 16G/8. agv won't refuse a
-   create that overcommits the host today — you have to budget yourself.
+2. **Check that the host has capacity.** Use `agv resources` (or
+   `agv resources --json` if you want to parse it):
 
    ```bash
-   # macOS
-   sysctl hw.memsize
-   vm_stat | head -5
-
-   # Linux
-   free -h
+   agv resources
+   # Host:
+   #   RAM         12.4G used of 48.0G total
+   #   CPUs        14
+   #   Data dir    538.3G free
+   #
+   # Allocated to agv VMs:
+   #   Running     8.0G RAM · 4 vCPUs · 1 VM(s)
+   #   Total       8.0G RAM · 4 vCPUs · 40.0G disk · 1 VM(s)
    ```
 
-   If the user's host has 16G total RAM and they already have two
-   `large` VMs running, a third will push the host into swap. When in
-   doubt, destroy stopped VMs you no longer need before creating new
-   ones, or ask the user.
-
-3. **Check the data dir has free disk.** Each VM's qcow2 overlay can
-   grow to its `disk` size limit (default 20G).
-
-   ```bash
-   df -h "$(agv specs >/dev/null 2>&1 && dirname "$HOME/.local/share/agv/instances")"
-   # or simply
-   df -h ~/.local/share/agv 2>/dev/null || df -h ~
-   ```
+   `agv create --start` also runs a built-in capacity check: it refuses
+   to boot if the new VM's memory plus already-running VM memory would
+   exceed 90% of host total RAM. The error message tells you exactly
+   what's happening; `--force` overrides it. Don't reach for `--force`
+   reflexively — usually the right move is to stop or destroy a VM
+   first. A `medium` spec is 2G/2 vCPUs, `large` is 8G/4, `xlarge` is
+   16G/8.
 
 ## The 5 commands you'll use 95% of the time
 
@@ -83,6 +79,8 @@ State discovery:
 agv ls                            # list all VMs and their status
 agv ls --json                     # machine-readable; prefer this for parsing
 agv inspect <name>                # detailed status, mixins, manual setup steps
+agv resources                     # host capacity vs. agv allocation
+agv resources --json              # same, machine-readable
 ```
 
 `agv inspect <name>` is also where the user's *manual setup steps* show up

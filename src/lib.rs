@@ -37,6 +37,8 @@ pub mod interactive;
 #[doc(hidden)]
 pub mod manual_steps;
 #[doc(hidden)]
+pub mod resources;
+#[doc(hidden)]
 pub mod specs;
 #[doc(hidden)]
 pub mod ssh;
@@ -97,6 +99,50 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes}B")
     }
+}
+
+/// Implementation for `agv resources`.
+///
+/// Two short blocks: host capacity, and what agv has currently allocated
+/// (sum across running VMs, sum across every known VM). `--json` emits a
+/// `ResourceReport` directly so agents can parse it without scraping.
+async fn print_resources(json: bool) -> anyhow::Result<()> {
+    let report = resources::report().await?;
+    if json {
+        let out = serde_json::to_string_pretty(&report)?;
+        println!("{out}");
+        return Ok(());
+    }
+
+    let host = &report.host;
+    let alloc = &report.allocated;
+    println!("Host:");
+    println!(
+        "  RAM         {} used of {} total",
+        format_size(host.used_memory_bytes),
+        format_size(host.total_memory_bytes),
+    );
+    println!("  CPUs        {}", host.cpus);
+    println!(
+        "  Data dir    {} free",
+        format_size(host.data_dir_free_bytes)
+    );
+    println!();
+    println!("Allocated to agv VMs:");
+    println!(
+        "  Running     {} RAM · {} vCPUs · {} VM(s)",
+        format_size(alloc.running_memory_bytes),
+        alloc.running_cpus,
+        alloc.running_count,
+    );
+    println!(
+        "  Total       {} RAM · {} vCPUs · {} disk · {} VM(s)",
+        format_size(alloc.total_memory_bytes),
+        alloc.total_cpus,
+        format_size(alloc.total_disk_bytes),
+        alloc.total_count,
+    );
+    Ok(())
 }
 
 async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
@@ -213,6 +259,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Create(args) => {
             let start = args.start;
             let interactive = args.interactive;
+            let force = args.force;
             let name = args.name.clone();
             if interactive && args.from.is_some() {
                 anyhow::bail!("--interactive cannot be combined with --from (template clones do not run provisioning)");
@@ -233,7 +280,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 let config = config::build_from_cli(&args)?;
                 tracing::info!(name = %name, "creating VM");
-                vm::create(&name, &config, start, interactive, verbose, quiet).await
+                vm::create(&name, &config, start, interactive, verbose, quiet, force).await
             }
         }
         Command::Start(args) => {
@@ -560,6 +607,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Resources(args) => print_resources(args.json).await,
         Command::Template(args) => match args.command {
             TemplateCommand::Create(targs) => {
                 tracing::info!(

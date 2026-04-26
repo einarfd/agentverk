@@ -148,6 +148,7 @@ Commands:
   config    View or change VM configuration
   template  Create and manage VM templates
   specs     List available hardware size presets
+  resources Show host capacity and what agv has allocated
   cache     Manage the image download cache
   init      Write a starter agv.toml to the current directory
   doctor    Check dependencies and set up SSH config integration

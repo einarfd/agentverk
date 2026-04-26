@@ -7,34 +7,33 @@ release-blocking; the skill itself works against agv as it stands today.
 Treat this as a backlog rather than a roadmap — pick what's worth doing
 based on what feedback the skill surfaces in practice.
 
-## Resource awareness (`agv resources`)
+## Resource awareness (`agv resources`) ✓ shipped
 
 > An AI agent calling `agv create --memory 16G` against a host with 8G
 > free will fail at QEMU spawn time with an opaque kernel-level error.
 > A human picks size by feel because they know the machine; an agent
 > doesn't.
 
-What's missing today:
+**Shipped (post-0.2.2):**
 
-- No way to query host capacity (RAM, CPU count, free disk in the
-  agv data dir partition) from the agv CLI.
-- `agv create` doesn't reject or warn on overcommit.
-- `agv ls` / `agv inspect` don't show currently-allocated totals.
+- **`agv resources`** — prints host RAM (used / total), CPU count,
+  free disk in the data dir partition, plus agv's allocation (running
+  + total VMs, with RAM / vCPUs / declared disk). `--json` for
+  machine-readable output. Implemented via the `sysinfo` crate for
+  cross-platform memory probing.
+- **`agv create --start` capacity check** — refuses to boot when
+  memory of new VM + already-running VMs would exceed 90% of host
+  total RAM. Error message names the numbers and the recovery options
+  (`agv ls` / `agv stop`, or `--force`). Doesn't fire on plain
+  `agv create` (no boot, no host RAM allocated).
 
-Proposed additions:
+**Still pending:**
 
-- **`agv resources`** (or `agv host`) — prints host total RAM, currently
-  allocated by running VMs, free disk in the data dir partition, vCPU
-  count. JSON form via `--json`.
-- **`agv create` capacity check** — by default, refuse the create when
-  it would push allocated RAM beyond a configurable threshold (say,
-  90% of physical RAM); add `--force` to override. Warn on disk too.
-- **Allocated resources in `agv ls --json`** — current schema only
-  shows status; including memory/cpus/disk per VM lets an agent compute
-  totals without parsing each `inspect` separately.
+- Adding allocated resource fields to `agv ls --json` per-VM output
+  is still on the list; lumping it into the broader "stable JSON
+  schema contract" work below rather than doing it piecemeal.
 
-Effort: M. Reading host capacity is platform-specific (sysctl on macOS,
-/proc on Linux) but small. The check logic on create is trivial.
+Effort actual: ~250 LOC + tests. Took a single session.
 
 ## Stable, documented `--json` contract
 

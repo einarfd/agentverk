@@ -6,6 +6,22 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`agv resources`** — new command showing host capacity (total/used
+  RAM, CPU count, free disk in the data dir partition) plus what agv
+  has currently allocated (RAM/vCPUs across running VMs and across
+  every known VM, total declared disk size). Honors `--json` for
+  machine-readable output. Pulls `sysinfo` for cross-platform memory
+  probing — small dep, safe (no `unsafe`), works on macOS and Linux.
+- **Pre-flight capacity check on `agv create --start`** — refuses to
+  boot a VM when its memory plus the memory committed to already-
+  running VMs would exceed 90% of host RAM. Error message names the
+  numbers and points at `agv ls` / `agv stop` for cleanup, or
+  `--force` to override. Doesn't fire on `agv create` without
+  `--start` (no host RAM is allocated until boot). Closes the
+  resource-awareness item from `docs/agent-ergonomics.md`.
+
 ## [0.2.2] - 2026-04-26
 
 ### Added

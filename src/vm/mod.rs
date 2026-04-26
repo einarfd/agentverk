@@ -184,6 +184,7 @@ pub async fn create(
     interactive_mode: bool,
     verbose: bool,
     quiet: bool,
+    force: bool,
 ) -> anyhow::Result<()> {
     // Guard: instance must not already exist.
     let inst_dir = dirs::instance_dir(name)?;
@@ -192,6 +193,15 @@ pub async fn create(
             name: name.to_string(),
         }
         .into());
+    }
+
+    // Pre-flight capacity check — only matters when we're about to boot.
+    // `agv create` without `--start` doesn't allocate host RAM at all.
+    if start_after {
+        let new_memory = crate::image::parse_disk_size(&config.memory).unwrap_or(0);
+        let host = crate::resources::probe_host(&dirs::data_dir()?)?;
+        let allocated = crate::resources::probe_allocated(&list().await?).await?;
+        crate::resources::check_capacity(new_memory, &host, &allocated, force)?;
     }
 
     // Create the instance directory.

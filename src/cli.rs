@@ -87,6 +87,13 @@ pub enum Command {
     /// List available VM hardware specs.
     Specs,
 
+    /// Show host capacity (RAM, CPUs, disk) and what agv has allocated.
+    ///
+    /// Useful before creating a VM to confirm the host has the headroom
+    /// for the requested spec, especially when running multiple VMs.
+    /// Pass `--json` for machine-readable output.
+    Resources(ResourcesArgs),
+
     /// View or change VM configuration.
     Config(Box<ConfigArgs>),
 
@@ -135,6 +142,10 @@ pub enum Command {
 }
 
 #[derive(Debug, clap::Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool maps to a distinct CLI flag (--no-checksum, --force, --start, --interactive); refactoring would only obscure the clap-derive mapping"
+)]
 pub struct CreateArgs {
     /// Name for the new VM instance.
     pub name: String,
@@ -207,6 +218,16 @@ pub struct CreateArgs {
     /// Skip image checksum verification.
     #[arg(long)]
     pub no_checksum: bool,
+
+    /// Skip the host-capacity preflight check.
+    ///
+    /// By default `agv create --start` refuses to boot a VM when its
+    /// memory plus the memory committed to already-running VMs would
+    /// exceed 90% of host RAM. `--force` bypasses that check; useful
+    /// when you know you're about to suspend or stop something else,
+    /// or when sysinfo's reading is wrong on your host.
+    #[arg(long)]
+    pub force: bool,
 
     /// Start the VM after creation.
     #[arg(short, long)]
@@ -306,6 +327,13 @@ pub struct GuiArgs {
 pub struct InspectArgs {
     /// Name of the VM to inspect.
     pub name: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ResourcesArgs {
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
