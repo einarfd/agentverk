@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-26
+
 ### Added
 
 - **Top-level `notes = [...]` in `agv.toml`** now flow into the
@@ -261,7 +263,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/einarfd/agentverk/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/einarfd/agentverk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/einarfd/agentverk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/einarfd/agentverk/releases/tag/v0.1.0
