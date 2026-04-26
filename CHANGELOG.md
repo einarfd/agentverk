@@ -53,6 +53,13 @@ All notable changes to `agv` will be documented here. This project follows
   same directory. Errors out if the path doesn't exist (the implicit
   lookups stay best-effort). Host environment variables still override
   all three sources.
+- **Claude Code Skill at `skills/agv/SKILL.md`** — documents how an AI
+  agent should drive agv (when to use it, the five core commands,
+  recipes for sandbox/auth/GUI, naming conventions, common pitfalls).
+  Manual install for now: copy or symlink to `~/.claude/skills/agv/`.
+  Companion `docs/agent-ergonomics.md` lists improvements that came
+  out of the audit (resource awareness, idempotent create, JSON
+  schema docs, distinct exit codes, labels) — likely 0.3.0 material.
 
 ## [0.2.1] - 2026-04-23
 
