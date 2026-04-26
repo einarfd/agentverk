@@ -28,10 +28,88 @@ use anyhow::Context as _;
 use indicatif::ProgressBar;
 use tracing::{debug, info, warn};
 
-use crate::config::ResolvedConfig;
+use serde::Serialize;
+
+use crate::config::{MixinManualSteps, ResolvedConfig};
 use crate::error::Error;
 use crate::{dirs, image, ssh, ssh_config};
 use instance::{Instance, Phase, ProvisionState, Status};
+
+/// Machine-readable snapshot of a VM's current state.
+///
+/// Returned by `agv create --json` (and, in the future, by `agv inspect
+/// --json`). Stable over the 0.x minor series — additions are
+/// backwards-compatible, removals/renames need a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct VmStateReport {
+    /// VM name (matches the instance directory).
+    pub name: String,
+    /// Status string: `creating` / `configuring` / `running` / `stopped` /
+    /// `suspended` / `broken`.
+    pub status: String,
+    /// `true` when this report was produced by an `agv create` that
+    /// actually created the VM; `false` when `--if-not-exists`
+    /// short-circuited because the VM was already there.
+    pub created: bool,
+    /// SSH port on `127.0.0.1` (only present when status is `running`).
+    pub ssh_port: Option<u16>,
+    /// VM's default user (e.g. `agent`).
+    pub user: String,
+    /// Configured memory (e.g. `"8G"`).
+    pub memory: String,
+    /// Configured vCPU count.
+    pub cpus: u32,
+    /// Configured disk size (e.g. `"40G"`).
+    pub disk: String,
+    /// Mixins applied at create time, in the order they were merged.
+    pub mixins_applied: Vec<String>,
+    /// Per-mixin manual setup steps the human invoker still needs to do.
+    /// Empty for VMs whose mixins all auto-configured.
+    pub manual_steps: Vec<MixinManualSteps>,
+    /// Top-level manual steps from the user's own config (VM-specific,
+    /// not mixin-tagged).
+    pub config_manual_steps: Vec<String>,
+    /// Absolute path to the instance directory under
+    /// `~/.local/share/agv/instances/`. Useful for agents that want to
+    /// tail `provision.log` / `serial.log` for debugging.
+    pub data_dir: String,
+}
+
+/// Build a `VmStateReport` for an existing instance.
+///
+/// `created` distinguishes "I just created this VM" (true) from
+/// "this VM was already there and I'm reporting its current state"
+/// (false). Both cases produce the same shape; agents discriminate via
+/// the `created` field.
+pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmStateReport> {
+    let status = inst
+        .reconcile_status()
+        .await
+        .map_or_else(|_| "unknown".to_string(), |s| s.to_string());
+
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+
+    // SSH port file is only present when QEMU is running.
+    let ssh_port = match tokio::fs::read_to_string(inst.ssh_port_path()).await {
+        Ok(raw) => raw.trim().parse::<u16>().ok(),
+        Err(_) => None,
+    };
+
+    Ok(VmStateReport {
+        name: inst.name.clone(),
+        status,
+        created,
+        ssh_port,
+        user: cfg.user,
+        memory: cfg.memory,
+        cpus: cfg.cpus,
+        disk: cfg.disk,
+        mixins_applied: cfg.mixins_applied,
+        manual_steps: cfg.mixin_manual_steps,
+        config_manual_steps: cfg.config_manual_steps,
+        data_dir: inst.dir.display().to_string(),
+    })
+}
 
 /// Create an indicatif spinner for status messages.
 ///
@@ -807,5 +885,106 @@ pub async fn list() -> anyhow::Result<Vec<Instance>> {
     }
     instances.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(instances)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> VmStateReport {
+        VmStateReport {
+            name: "myvm".to_string(),
+            status: "running".to_string(),
+            created: true,
+            ssh_port: Some(50001),
+            user: "agent".to_string(),
+            memory: "8G".to_string(),
+            cpus: 4,
+            disk: "40G".to_string(),
+            mixins_applied: vec!["devtools".to_string(), "claude".to_string()],
+            manual_steps: vec![MixinManualSteps {
+                name: "claude".to_string(),
+                steps: vec!["Run `claude /login`...".to_string()],
+            }],
+            config_manual_steps: vec!["Configure VPN before starting work.".to_string()],
+            data_dir: "/Users/u/.local/share/agv/instances/myvm".to_string(),
+        }
+    }
+
+    /// Pin the top-level JSON keys of `agv create --json` and
+    /// `agv inspect --json` (when it lands). The CHANGELOG and audit
+    /// promise this schema is stable across the 0.x series — additions
+    /// OK, removals/renames are a major-version bump. This test exists
+    /// to make a rename or removal fail loudly in CI.
+    #[test]
+    fn vm_state_report_json_schema_pin() {
+        let report = fixture();
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().expect("VmStateReport must serialize as a JSON object");
+
+        // Sorted alphabetically so a removal lands on the same line as the
+        // assertion that fails — easier to spot in a diff.
+        let expected: &[&str] = &[
+            "config_manual_steps",
+            "cpus",
+            "created",
+            "data_dir",
+            "disk",
+            "manual_steps",
+            "memory",
+            "mixins_applied",
+            "name",
+            "ssh_port",
+            "status",
+            "user",
+        ];
+        let actual: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
+        let expected_set: std::collections::BTreeSet<&str> = expected.iter().copied().collect();
+
+        let missing: Vec<&str> = expected_set.difference(&actual).copied().collect();
+        assert!(
+            missing.is_empty(),
+            "VmStateReport JSON is missing expected keys (rename or removal? bump major): {missing:?}"
+        );
+        let unexpected: Vec<&str> = actual.difference(&expected_set).copied().collect();
+        assert!(
+            unexpected.is_empty(),
+            "VmStateReport JSON has new keys not yet in the schema pin (add to the test): {unexpected:?}",
+        );
+    }
+
+    /// Optional fields (currently just `ssh_port`) must round-trip as
+    /// `null` when not set, not be omitted entirely. Agents parsing the
+    /// JSON should be able to rely on every documented key being present.
+    #[test]
+    fn vm_state_report_omits_no_keys_for_stopped_vm() {
+        let mut report = fixture();
+        report.ssh_port = None;
+        report.created = false;
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("ssh_port"), "ssh_port must be in the object even when None");
+        assert_eq!(obj.get("ssh_port"), Some(&serde_json::Value::Null));
+        assert_eq!(obj.get("created"), Some(&serde_json::Value::Bool(false)));
+    }
+
+    /// `manual_steps` and `mixins_applied` must serialize as arrays
+    /// (possibly empty), not be omitted. Agents iterate over them
+    /// without first checking for presence.
+    #[test]
+    fn vm_state_report_collections_serialize_as_arrays() {
+        let mut report = fixture();
+        report.manual_steps = vec![];
+        report.mixins_applied = vec![];
+        report.config_manual_steps = vec![];
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().unwrap();
+        for key in ["manual_steps", "mixins_applied", "config_manual_steps"] {
+            assert!(
+                obj.get(key).is_some_and(serde_json::Value::is_array),
+                "{key} should serialize as an array"
+            );
+        }
+    }
 }
 

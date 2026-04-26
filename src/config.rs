@@ -1184,6 +1184,8 @@ mod tests {
             provision_scripts: vec![],
             no_checksum: false,
             force: false,
+            if_not_exists: false,
+            json: false,
             start: false,
             interactive: false,
             from: None,

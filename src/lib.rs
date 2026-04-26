@@ -260,10 +260,26 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let start = args.start;
             let interactive = args.interactive;
             let force = args.force;
+            let if_not_exists = args.if_not_exists;
+            let json = args.json;
             let name = args.name.clone();
             if interactive && args.from.is_some() {
                 anyhow::bail!("--interactive cannot be combined with --from (template clones do not run provisioning)");
             }
+
+            // --if-not-exists: short-circuit when the VM is already there.
+            // Both create-from-template and create-from-config paths honor it.
+            if if_not_exists && dirs::instance_dir(&name)?.exists() {
+                let inst = vm::instance::Instance::open(&name)?;
+                let report = vm::state_report(&inst, false).await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("VM '{name}' already exists (status: {}). No changes.", report.status);
+                }
+                return Ok(());
+            }
+
             if let Some(ref template_name) = args.from.clone() {
                 tracing::info!(name = %name, template = %template_name, "creating VM from template");
                 vm::create_from_template(
@@ -276,12 +292,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     verbose,
                     quiet,
                 )
-                .await
+                .await?;
             } else {
                 let config = config::build_from_cli(&args)?;
                 tracing::info!(name = %name, "creating VM");
-                vm::create(&name, &config, start, interactive, verbose, quiet, force).await
+                vm::create(&name, &config, start, interactive, verbose, quiet, force).await?;
             }
+
+            // Post-create handoff: when --json was passed, emit a parseable
+            // state object so an agent can act without a follow-up `inspect`.
+            if json {
+                let inst = vm::instance::Instance::open(&name)?;
+                let report = vm::state_report(&inst, true).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            Ok(())
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, retry = args.retry, "starting VM");

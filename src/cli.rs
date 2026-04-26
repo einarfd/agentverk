@@ -229,6 +229,23 @@ pub struct CreateArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Succeed silently when a VM with this name already exists.
+    ///
+    /// Useful for AI agents that can't reliably track session state — they
+    /// can `agv create --if-not-exists agv-session-X` without first
+    /// running `agv ls`. With `--json`, the existing VM's current state is
+    /// printed; the `created` field is `false` to signal "already there".
+    /// This flag does not change `--start`'s behavior on an existing VM
+    /// (use `agv start` separately if you also need it running).
+    #[arg(long = "if-not-exists")]
+    pub if_not_exists: bool,
+
+    /// Output the new (or existing, with `--if-not-exists`) VM's state as
+    /// JSON on success. Saves a follow-up `agv inspect` round trip when
+    /// scripting against `agv create`.
+    #[arg(long)]
+    pub json: bool,
+
     /// Start the VM after creation.
     #[arg(short, long)]
     pub start: bool,

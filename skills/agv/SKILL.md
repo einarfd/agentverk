@@ -116,6 +116,35 @@ agv ssh "$NAME" -- 'set -eux; /tmp/risky-script.sh'
 agv destroy --force "$NAME"
 ```
 
+### Resume across crashes / retries
+
+If your session might be interrupted and re-run, use `--if-not-exists`
+so the second invocation doesn't error on the existing VM. With
+`--json`, you also get the state object back, so you can branch on
+whether the VM was newly created or already there:
+
+```bash
+STATE=$(agv create --if-not-exists --start --json --include devtools agv-session-x)
+echo "$STATE" | jq -r '"Created fresh? \(.created)  status: \(.status)  ssh: 127.0.0.1:\(.ssh_port)"'
+# Created fresh? true   status: running   ssh: 127.0.0.1:50121
+```
+
+`--if-not-exists` only affects the `create` decision — it does not
+auto-start an existing stopped VM. If you want both "ensure it
+exists" and "ensure it's running", chain with `agv start`:
+
+```bash
+agv create --if-not-exists --include devtools agv-session-x
+agv start agv-session-x   # no-op if already running
+```
+
+**Caveat — agv does not compare configs.** `--if-not-exists` doesn't
+verify that the existing VM was created with the same `--include`,
+`--memory`, etc. you're passing now. If you need to be sure the VM
+is shaped right, parse the JSON output and check
+`mixins_applied` / `memory` / `cpus` / `disk` against what you asked
+for. If they don't match, `agv destroy` and recreate.
+
 Notes:
 - `--image debian` is shorthand for the current canonical Debian
   (`debian-12`); same shorthand works for `ubuntu`, `fedora`.
@@ -310,6 +339,9 @@ agv create --spec <small|medium|large|xlarge>
 agv create --memory 4G --cpus 2 --disk 20G
 agv create --env-file <path>          # explicit .env location
 agv create --interactive              # step through provisioning (debugging)
+agv create --if-not-exists            # succeed if the VM is already there
+agv create --json                     # parseable post-create state (use with --if-not-exists for retries)
+agv create --force                    # bypass the host-RAM capacity check
 
 agv start --retry <name>              # resume after a broken provision
 agv start --interactive <name>

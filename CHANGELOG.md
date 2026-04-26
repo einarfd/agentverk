@@ -21,6 +21,20 @@ All notable changes to `agv` will be documented here. This project follows
   `--force` to override. Doesn't fire on `agv create` without
   `--start` (no host RAM is allocated until boot). Closes the
   resource-awareness item from `docs/agent-ergonomics.md`.
+- **`agv create --if-not-exists`** — succeed silently when a VM with
+  this name already exists, instead of erroring. Useful for AI agents
+  that can't reliably track session state — they can run
+  `agv create --if-not-exists agv-session-x --start` without first
+  checking `agv ls`. Doesn't change `--start`'s behavior on an
+  existing VM (use `agv start` separately if you also need it
+  running).
+- **`agv create --json`** — emit the new (or pre-existing, with
+  `--if-not-exists`) VM's state as JSON on success: name, status,
+  ssh port, memory/cpus/disk, mixins applied, any manual setup
+  steps, and the instance data dir. Saves a follow-up `agv inspect`
+  round trip when scripting against `agv create`. The `created`
+  field distinguishes "I just created this" from "it was already
+  there".
 
 ## [0.2.2] - 2026-04-26
 

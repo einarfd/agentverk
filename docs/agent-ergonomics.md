@@ -60,28 +60,19 @@ Proposed:
 Effort: M. Mostly auditing + documentation; small code changes for
 commands that don't currently emit anything in `--json` mode.
 
-## Idempotent `agv create`
+## Idempotent `agv create` ✓ shipped
 
-> An agent that lost track of session state (crash, interrupted run)
-> wants "create-or-resume" semantics, not "fail because it exists".
+**Shipped:** `--if-not-exists` flag on `agv create`. When the VM is
+already present the command exits 0 with no changes; with `--json`,
+it prints the existing VM's state (with `created: false`) so the agent
+can still act on the reply. Doesn't auto-start an existing stopped VM
+— that stays an explicit `agv start` to keep the semantics narrow.
 
-Today: `agv create <name>` errors with `VmAlreadyExists` if the
-instance dir is present.
+Note: chose this over the alternative `agv ensure <name>` verb. The
+flag composes naturally with every other create flag and was a
+single-flag change rather than a new sibling verb.
 
-Proposed:
-
-- **`--if-not-exists`** flag on `create`. With it, an existing VM is
-  a successful no-op (exit 0), output is the VM's current state in
-  `--json`. Lets an agent always run `agv create --if-not-exists
-  agv-session-x --start` without first checking `ls`.
-- Alternative spelling: `agv ensure <name> ...` as a sibling verb
-  that reads "make sure this VM exists with this config". Cleaner
-  but a bigger surface bump.
-
-I lean on `--if-not-exists` — it's smaller and composes with all the
-other create flags.
-
-Effort: S. The check already exists; the flag flips the behavior.
+Effort actual: ~50 LOC.
 
 ## Distinct, documented exit codes
 
@@ -133,21 +124,21 @@ Effort: M. New schema field on ResolvedConfig; small CLI plumbing.
 Worth pairing with the resource-awareness work since both touch
 `agv ls --json`'s schema.
 
-## `agv create --json` output on success
+## `agv create --json` output on success ✓ shipped
 
-> When `agv create --start` finishes, the agent has no machine-readable
-> handoff — it has to `agv inspect` afterwards to learn the SSH port.
+**Shipped:** `--json` on `agv create` emits a `VmStateReport` object
+on success. Fields: `name`, `status`, `created`, `ssh_port`, `user`,
+`memory`, `cpus`, `disk`, `mixins_applied`, `manual_steps`,
+`config_manual_steps`, `data_dir`. Same shape will be reused by
+`agv inspect --json` when that lands (audit item: stable JSON
+contract, below). Stable over the 0.x minor series — additions are
+backwards-compatible, removals/renames need a major bump.
 
-Today: success output is human-friendly text via the spinner.
+The `created` field distinguishes "agv create just created this" from
+"`--if-not-exists` short-circuited because the VM was already there",
+so an agent can branch on whether their session's VM is fresh.
 
-Proposed:
-
-- With `--json`, emit a single JSON object on success with at minimum:
-  `{ "name": "...", "status": "running", "ssh_port": 12345,
-    "manual_steps": [...] }`.
-- The agent can then act immediately without an extra `inspect` round-trip.
-
-Effort: S. Just structured printing.
+Effort actual: ~80 LOC including the shared report struct.
 
 ## Decoupled "wait for ready"
 
