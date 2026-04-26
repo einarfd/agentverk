@@ -41,36 +41,46 @@ Effort actual: ~250 LOC + tests. Took a single session.
 
 State of play (as of post-0.2.2):
 
-- ✓ **`agv create --json`**: emits `VmStateReport` (the shared shape).
+- ✓ **`agv create --json`**: emits `VmStateReport`.
 - ✓ **`agv ls --json`**: emits `[VmStateReport, ...]`.
 - ✓ **`agv inspect --json`**: emits `VmStateReport`.
 - ✓ **`agv resources --json`**: emits `ResourceReport`.
-- ✓ Schema-pin tests in place for `VmStateReport`. Adding a key
-  silently is caught at test time; renaming or removing a key
-  fails loudly.
-- ✓ Removed the unused global `Cli.json` flag — per-command `--json`
-  is the working pattern.
+- ✓ **`agv start / stop / suspend / resume / rename --json`**: each
+  emits the post-action `VmStateReport`.
+- ✓ **`agv destroy --json`**: emits a distinct `DestroyReport`
+  (`{name, destroyed}`) since the VM no longer exists.
+- ✓ Schema-pin tests for both `VmStateReport` and `DestroyReport`.
+  Renaming or removing a key fails loudly; silent additions are
+  caught.
+- ✓ Removed the unused global `Cli.json` flag.
+- ✓ Integration test sweeps every lifecycle verb to make sure
+  `--json` is registered (catches "I forgot the flag on a new
+  command" regressions).
 
-Still pending (3b):
+Still pending (3c, lower priority):
 
-- **VM-touching verbs need `--json`**: `start`, `stop`, `suspend`,
-  `resume`, `destroy`, `rename`. Each should emit a `VmStateReport`
-  on success so an agent can confirm post-action state without an
-  extra `inspect` round-trip. ~30 LOC; rides along with the exit-code
-  work below since the same dispatch sites get touched.
-- **List-like informational commands** (3c, lower priority):
-  `forward --list`, `images`, `specs`, `template ls`, `cache ls`,
-  `config view`, `doctor`. Called rarely; agents can usually work
-  without these. Defer until concrete demand shows up.
+- **List-like informational commands**: `forward --list`, `images`,
+  `specs`, `template ls`, `cache ls`, `config view`, `doctor`.
+  Called rarely; agents can usually work without these. Defer until
+  concrete demand shows up.
 - **`docs/json-schema.md`** — a single page documenting every
   `--json` output's shape and the stability contract (additions OK
   on minor; renames/removals on major). Pairs naturally with the
   exit-code documentation since both are the "agent-readable
   interface" surface.
 
-Effort remaining: M. The hard part (defining `VmStateReport` and
-proving it's stable) is done; what's left is wiring it through the
-remaining dispatch sites and writing the schema doc.
+Effort remaining: S–M. The shape work is essentially done — every
+VM-touching command emits JSON. What's left is the schema doc page
+(easy but careful) and (separately) the exit-code work below.
+
+### Side note — slow boot tests should validate JSON, not text
+
+Today `tests/create_test.rs` validates outcomes by parsing
+human-readable output (status strings, log file presence, etc.).
+Once the lifecycle verbs all emit `--json`, those slow boot tests
+should switch to asserting on the JSON `VmStateReport` instead — it's
+a more stable contract, easier to query, and dogfoods the agent path
+the skill recommends. Separate work item; ship after 3b lands.
 
 ## Idempotent `agv create` ✓ shipped
 

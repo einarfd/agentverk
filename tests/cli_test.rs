@@ -123,6 +123,52 @@ fn ls_json_emits_an_array_and_no_human_chrome() {
     assert_eq!(parsed.as_array().unwrap().len(), 0, "isolated data dir should be empty");
 }
 
+/// Catches the "I forgot to register `--json` on this verb" regression.
+/// All lifecycle verbs against a VM that doesn't exist will exit non-zero,
+/// but they should at least *parse* the flag — clap rejects unknown flags
+/// with exit 2 (different from a runtime VM-not-found error). This test
+/// just asserts clap is happy.
+#[test]
+fn json_flag_is_registered_on_every_lifecycle_verb() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Verbs that take a name + --json. Each errors at runtime because the
+    // VM doesn't exist, but the error must come from agv's runtime path,
+    // not clap's flag parsing.
+    let cases: &[&[&str]] = &[
+        &["start", "--json", "agv-no-such-vm-12345"],
+        &["stop", "--json", "--force", "agv-no-such-vm-12345"],
+        &["suspend", "--json", "agv-no-such-vm-12345"],
+        &["resume", "--json", "agv-no-such-vm-12345"],
+        &["destroy", "--json", "--force", "agv-no-such-vm-12345"],
+        &[
+            "rename",
+            "--json",
+            "agv-no-such-vm-12345",
+            "agv-no-such-vm-67890",
+        ],
+    ];
+
+    for args in cases {
+        let output = agv()
+            .env("AGV_DATA_DIR", tmp.path())
+            .args(*args)
+            .output()
+            .unwrap();
+        // clap returns exit 2 for usage errors (unknown flag / bad args).
+        // Anything else means clap accepted the flag and the command ran
+        // (then errored at runtime, which is fine — we're not testing
+        // success here, just flag registration).
+        let code = output.status.code().unwrap_or(-1);
+        assert!(
+            code != 2,
+            "{args:?} exited with code 2 (usage error from clap) — \
+             is --json registered on this verb?\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn resources_json_has_expected_top_level_keys() {
     let output = agv()

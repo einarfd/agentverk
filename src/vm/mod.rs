@@ -75,6 +75,18 @@ pub struct VmStateReport {
     pub data_dir: String,
 }
 
+/// JSON shape returned by `agv destroy --json`.
+///
+/// Intentionally distinct from `VmStateReport` because the VM no longer
+/// exists — there's no instance dir to read state from. Consumers can
+/// branch on the `destroyed` field, which is always `true` (any failure
+/// surfaces as a non-zero exit before this is emitted).
+#[derive(Debug, Clone, Serialize)]
+pub struct DestroyReport {
+    pub name: String,
+    pub destroyed: bool,
+}
+
 /// Build a `VmStateReport` for an existing instance.
 ///
 /// `created` distinguishes "I just created this VM" (true) from
@@ -985,6 +997,25 @@ mod tests {
                 "{key} should serialize as an array"
             );
         }
+    }
+
+    /// Schema pin for `agv destroy --json`. Same idea as the
+    /// `VmStateReport` pin: a rename or removal of either field should
+    /// fail loudly. Distinct shape from `VmStateReport` — destroy
+    /// represents a VM that no longer exists.
+    #[test]
+    fn destroy_report_json_schema_pin() {
+        let report = DestroyReport {
+            name: "myvm".to_string(),
+            destroyed: true,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().expect("DestroyReport must serialize as an object");
+
+        let actual: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> = ["destroyed", "name"].into_iter().collect();
+        assert_eq!(actual, expected, "DestroyReport JSON keys drifted");
+        assert_eq!(obj.get("destroyed"), Some(&serde_json::Value::Bool(true)));
     }
 }
 

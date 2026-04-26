@@ -101,6 +101,18 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Open the named instance, build a `VmStateReport` (with `created: false`
+/// since by definition we're past the create boundary), and print it as
+/// pretty-formatted JSON. Used by every lifecycle verb that has a `--json`
+/// flag (start, stop, suspend, resume, rename) — destroy doesn't go
+/// through here because the VM no longer exists.
+async fn emit_state_report(name: &str) -> anyhow::Result<()> {
+    let inst = vm::instance::Instance::open(name)?;
+    let report = vm::state_report(&inst, false).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 /// Implementation for `agv resources`.
 ///
 /// Two short blocks: host capacity, and what agv has currently allocated
@@ -310,36 +322,68 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Start(args) => {
             tracing::info!(name = %args.name, retry = args.retry, "starting VM");
-            vm::start(&args.name, args.retry, args.interactive, verbose, quiet).await
+            // --json implies suppressing progress chrome so JSON parsing
+            // isn't broken by spinner residue or "step done" lines.
+            let effective_quiet = quiet || args.json;
+            vm::start(&args.name, args.retry, args.interactive, verbose, effective_quiet).await?;
+            if args.json {
+                emit_state_report(&args.name).await?;
+            }
+            Ok(())
         }
         Command::Stop(args) => {
             tracing::info!(name = %args.name, force = args.force, "stopping VM");
-            vm::stop(&args.name, args.force).await
+            vm::stop(&args.name, args.force).await?;
+            if args.json {
+                emit_state_report(&args.name).await?;
+            }
+            Ok(())
         }
         Command::Suspend(args) => {
             tracing::info!(name = %args.name, "suspending VM");
             vm::suspend(&args.name).await?;
-            println!("  ✓ VM '{}' suspended", args.name);
+            if args.json {
+                emit_state_report(&args.name).await?;
+            } else {
+                println!("  ✓ VM '{}' suspended", args.name);
+            }
             Ok(())
         }
         Command::Resume(args) => {
             tracing::info!(name = %args.name, "resuming VM");
-            vm::resume(&args.name, verbose, quiet).await
+            let effective_quiet = quiet || args.json;
+            vm::resume(&args.name, verbose, effective_quiet).await?;
+            if args.json {
+                emit_state_report(&args.name).await?;
+            }
+            Ok(())
         }
         Command::Destroy(args) => {
             tracing::info!(name = %args.name, force = args.force, "destroying VM");
             vm::destroy(&args.name, args.force).await?;
-            println!("  ✓ VM '{}' destroyed", args.name);
+            if args.json {
+                let report = vm::DestroyReport {
+                    name: args.name.clone(),
+                    destroyed: true,
+                };
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("  ✓ VM '{}' destroyed", args.name);
+            }
             Ok(())
         }
         Command::Rename(args) => {
             tracing::info!(old = %args.old, new = %args.new, "renaming VM");
             vm::rename(&args.old, &args.new).await?;
-            println!("  ✓ VM '{}' renamed to '{}'", args.old, args.new);
-            println!();
-            println!("  Note: the hostname inside the guest is unchanged.");
-            println!("  To update it, SSH in after starting the VM and run:");
-            println!("    sudo hostnamectl set-hostname {}", args.new);
+            if args.json {
+                emit_state_report(&args.new).await?;
+            } else {
+                println!("  ✓ VM '{}' renamed to '{}'", args.old, args.new);
+                println!();
+                println!("  Note: the hostname inside the guest is unchanged.");
+                println!("  To update it, SSH in after starting the VM and run:");
+                println!("    sudo hostnamectl set-hostname {}", args.new);
+            }
             Ok(())
         }
         Command::Ssh(args) => {

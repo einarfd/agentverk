@@ -266,6 +266,12 @@ pub struct StartArgs {
     /// Useful for debugging or stepping through a script.
     #[arg(long)]
     pub interactive: bool,
+
+    /// Output the VM's post-start state as a JSON `VmStateReport`.
+    /// Implies `--quiet` for progress chrome so JSON parsing isn't
+    /// broken by spinner residue.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -276,18 +282,30 @@ pub struct StopArgs {
     /// Force stop (equivalent to pulling the power).
     #[arg(short, long)]
     pub force: bool,
+
+    /// Output the VM's post-stop state as a JSON `VmStateReport`.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct SuspendArgs {
     /// Name of the VM to suspend.
     pub name: String,
+
+    /// Output the VM's post-suspend state as a JSON `VmStateReport`.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct ResumeArgs {
     /// Name of the VM to resume.
     pub name: String,
+
+    /// Output the VM's post-resume state as a JSON `VmStateReport`.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -298,6 +316,12 @@ pub struct DestroyArgs {
     /// Destroy even if the VM is currently running (force-stops it first).
     #[arg(short, long)]
     pub force: bool,
+
+    /// Output a small JSON object on success: `{ "name": "...",
+    /// "destroyed": true }`. Intentionally a different shape from
+    /// `VmStateReport` since the VM no longer exists.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -307,6 +331,10 @@ pub struct RenameArgs {
 
     /// New name for the VM.
     pub new: String,
+
+    /// Output the renamed VM's state as a JSON `VmStateReport`.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

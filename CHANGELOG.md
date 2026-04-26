@@ -42,6 +42,15 @@ All notable changes to `agv` will be documented here. This project follows
   resource fields (memory / cpus / disk per VM) are part of the
   shape, closing the still-pending sub-item from the resource-
   awareness work.
+- **`--json` on every VM-lifecycle verb**: `agv start`, `stop`,
+  `suspend`, `resume`, and `rename` each emit a `VmStateReport` on
+  success (same shape as `agv create --json` / `agv inspect --json`).
+  `agv destroy --json` emits a small distinct `DestroyReport`
+  (`{"name": "...", "destroyed": true}`) since the VM no longer
+  exists. With `--json`, the verb suppresses progress chrome (treats
+  itself as `--quiet`) so JSON parsing isn't broken by spinner
+  residue. Saves the post-action `agv inspect` round trip an agent
+  would otherwise need.
 
 ### Changed
 

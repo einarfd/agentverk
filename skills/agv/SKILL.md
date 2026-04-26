@@ -366,6 +366,14 @@ agv resume <name>
 
 agv destroy <name>                    # confirmation prompt
 agv destroy --force <name>            # no prompt; for cleanup scripts
+
+# All lifecycle verbs accept --json:
+agv start --json <name>               # → VmStateReport
+agv stop --json <name>                # → VmStateReport
+agv suspend --json <name>             # → VmStateReport
+agv resume --json <name>              # → VmStateReport
+agv rename --json <old> <new>         # → VmStateReport (with the new name)
+agv destroy --json --force <name>     # → {"name": "...", "destroyed": true}
 ```
 
 `agv --help` and `agv <command> --help` are the authoritative reference.
