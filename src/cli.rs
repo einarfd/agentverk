@@ -8,10 +8,6 @@ use clap::{Parser, Subcommand};
 /// Create and manage QEMU VMs for AI agents.
 #[derive(Debug, Parser)]
 #[command(name = "agv", version, about, long_about = None)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "four global flags (verbose/quiet/json/yes) is idiomatic for CLIs and hard to refactor with clap derive"
-)]
 pub struct Cli {
     /// Enable verbose output.
     #[arg(short, long, global = true)]
@@ -20,10 +16,6 @@ pub struct Cli {
     /// Minimal output.
     #[arg(short, long, global = true)]
     pub quiet: bool,
-
-    /// Output in JSON format.
-    #[arg(long, global = true)]
-    pub json: bool,
 
     /// Assume yes for all confirmations.
     #[arg(short, long, global = true)]
@@ -70,7 +62,7 @@ pub enum Command {
     Gui(GuiArgs),
 
     /// List all VMs.
-    Ls,
+    Ls(LsArgs),
 
     /// List available images.
     Images,
@@ -344,6 +336,19 @@ pub struct GuiArgs {
 pub struct InspectArgs {
     /// Name of the VM to inspect.
     pub name: String,
+
+    /// Output the VM's state as JSON instead of a human-readable summary.
+    /// Same shape as `agv create --json` (a `VmStateReport`).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct LsArgs {
+    /// Output as a JSON array of `VmStateReport` objects (same shape as
+    /// `agv inspect --json` and `agv create --json`).
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

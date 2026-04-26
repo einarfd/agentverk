@@ -79,6 +79,7 @@ State discovery:
 agv ls                            # list all VMs and their status
 agv ls --json                     # machine-readable; prefer this for parsing
 agv inspect <name>                # detailed status, mixins, manual setup steps
+agv inspect <name> --json         # same shape as `agv create --json`
 agv resources                     # host capacity vs. agv allocation
 agv resources --json              # same, machine-readable
 ```

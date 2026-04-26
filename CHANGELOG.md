@@ -35,6 +35,23 @@ All notable changes to `agv` will be documented here. This project follows
   round trip when scripting against `agv create`. The `created`
   field distinguishes "I just created this" from "it was already
   there".
+- **`agv ls --json` and `agv inspect --json`** — both emit the same
+  `VmStateReport` shape as `agv create --json`. `ls --json` is a
+  JSON array (one entry per VM, in the same order as the human-
+  readable output); `inspect --json` is a single object. Allocated
+  resource fields (memory / cpus / disk per VM) are part of the
+  shape, closing the still-pending sub-item from the resource-
+  awareness work.
+
+### Changed
+
+- **Removed the unused global `--json` flag.** It was declared on
+  the top-level `Cli` as `global = true` but never read by any
+  command — passing `agv --json ls` accepted the flag silently
+  without doing anything different. Per-command `--json` is the
+  working pattern (`agv ls --json`, `agv inspect --json`,
+  `agv create --json`, `agv resources --json`). Scripts that relied
+  on the global form should switch to the per-command form.
 
 ## [0.2.2] - 2026-04-26
 

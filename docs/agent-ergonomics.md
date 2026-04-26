@@ -39,26 +39,38 @@ Effort actual: ~250 LOC + tests. Took a single session.
 
 > Agents will parse `--json` output. Any churn there breaks scripts.
 
-Today: `agv ls --json` and `agv inspect --json` exist; the schema is
-not formally documented. Other commands may or may not have `--json`.
+State of play (as of post-0.2.2):
 
-Proposed:
+- ✓ **`agv create --json`**: emits `VmStateReport` (the shared shape).
+- ✓ **`agv ls --json`**: emits `[VmStateReport, ...]`.
+- ✓ **`agv inspect --json`**: emits `VmStateReport`.
+- ✓ **`agv resources --json`**: emits `ResourceReport`.
+- ✓ Schema-pin tests in place for `VmStateReport`. Adding a key
+  silently is caught at test time; renaming or removing a key
+  fails loudly.
+- ✓ Removed the unused global `Cli.json` flag — per-command `--json`
+  is the working pattern.
 
-- Audit every command an agent might call from a script. At minimum:
-  `ls`, `inspect`, `create`, `start`, `stop`, `suspend`, `resume`,
-  `destroy`, `forward --list`, `images`, `specs`. Confirm each has
-  `--json` or document why not.
-- Add a section to `docs/config.md` (or a new `docs/json-schema.md`)
-  documenting each command's output schema. Treat the schema as a
-  semver-ish contract: additions OK, removals/renames need a major
-  version bump.
-- For commands that don't naturally produce data (`create`, `start`,
-  `destroy`), `--json` should still emit a useful object — name,
-  status, any host-side details an agent needs to act on the result
-  (e.g. `ssh_port` after `create --start`).
+Still pending (3b):
 
-Effort: M. Mostly auditing + documentation; small code changes for
-commands that don't currently emit anything in `--json` mode.
+- **VM-touching verbs need `--json`**: `start`, `stop`, `suspend`,
+  `resume`, `destroy`, `rename`. Each should emit a `VmStateReport`
+  on success so an agent can confirm post-action state without an
+  extra `inspect` round-trip. ~30 LOC; rides along with the exit-code
+  work below since the same dispatch sites get touched.
+- **List-like informational commands** (3c, lower priority):
+  `forward --list`, `images`, `specs`, `template ls`, `cache ls`,
+  `config view`, `doctor`. Called rarely; agents can usually work
+  without these. Defer until concrete demand shows up.
+- **`docs/json-schema.md`** — a single page documenting every
+  `--json` output's shape and the stability contract (additions OK
+  on minor; renames/removals on major). Pairs naturally with the
+  exit-code documentation since both are the "agent-readable
+  interface" surface.
+
+Effort remaining: M. The hard part (defining `VmStateReport` and
+proving it's stable) is done; what's left is wiring it through the
+remaining dispatch sites and writing the schema doc.
 
 ## Idempotent `agv create` ✓ shipped
 

@@ -95,8 +95,78 @@ fn quiet_flag_is_accepted() {
 }
 
 #[test]
-fn json_flag_is_accepted() {
-    agv().args(["--json", "ls"]).assert().success();
+fn json_flag_is_accepted_on_ls() {
+    // Per-command --json (the global form was removed in 0.3 prep —
+    // it was defined but never consumed).
+    agv().args(["ls", "--json"]).assert().success();
+}
+
+#[test]
+fn ls_json_emits_an_array_and_no_human_chrome() {
+    // Run against an isolated empty data dir so the result is
+    // deterministic regardless of what VMs are on the host.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "ls --json should succeed");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Pure JSON — no "No VMs found" banner, no spinner residue.
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("ls --json output didn't parse as JSON: {e}\nstdout was:\n{stdout}")
+        });
+    assert!(parsed.is_array(), "ls --json must emit a JSON array");
+    assert_eq!(parsed.as_array().unwrap().len(), 0, "isolated data dir should be empty");
+}
+
+#[test]
+fn resources_json_has_expected_top_level_keys() {
+    let output = agv()
+        .args(["resources", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "resources --json should succeed");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("resources --json output didn't parse as JSON: {e}\nstdout was:\n{stdout}")
+        });
+    let obj = parsed.as_object().expect("resources --json must emit an object");
+
+    // Top-level shape: { "host": {...}, "allocated": {...} }
+    for key in ["host", "allocated"] {
+        assert!(obj.contains_key(key), "missing top-level key: {key}");
+    }
+
+    // host subkeys (the public agent-readable contract).
+    let host = obj["host"].as_object().expect("host must be an object");
+    for key in [
+        "total_memory_bytes",
+        "used_memory_bytes",
+        "cpus",
+        "data_dir_free_bytes",
+    ] {
+        assert!(host.contains_key(key), "host missing key: {key}");
+    }
+
+    // allocated subkeys.
+    let allocated = obj["allocated"].as_object().expect("allocated must be an object");
+    for key in [
+        "running_memory_bytes",
+        "running_cpus",
+        "running_count",
+        "total_memory_bytes",
+        "total_cpus",
+        "total_disk_bytes",
+        "total_count",
+    ] {
+        assert!(allocated.contains_key(key), "allocated missing key: {key}");
+    }
 }
 
 // ── Commands that need no VMs or external tools ───────────────────────────────

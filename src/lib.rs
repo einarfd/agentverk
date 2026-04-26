@@ -358,7 +358,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
         Command::Gui(args) => gui::run(&args.name, args.no_launch).await,
-        Command::Ls => {
+        Command::Ls(args) => {
             // Gathered into rows so we can compute column widths after.
             struct Row {
                 name: String,
@@ -369,6 +369,28 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
 
             let instances = vm::list().await?;
+
+            if args.json {
+                // VmStateReport for every instance — best-effort: VMs whose
+                // saved config can't load (e.g. mid-create crash) are
+                // skipped, with a debug trace that surfaces under -v.
+                let mut reports = Vec::with_capacity(instances.len());
+                for inst in &instances {
+                    match vm::state_report(inst, false).await {
+                        Ok(r) => reports.push(r),
+                        Err(e) => {
+                            tracing::debug!(
+                                vm = %inst.name,
+                                error = %format!("{e:#}"),
+                                "failed to build state_report for ls --json; skipping"
+                            );
+                        }
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&reports)?);
+                return Ok(());
+            }
+
             if instances.is_empty() {
                 eprintln!("No VMs found. Create one with: agv create <name>");
                 return Ok(());
@@ -465,7 +487,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Inspect(args) => {
-            vm::inspect(&args.name).await
+            if args.json {
+                let inst = vm::instance::Instance::open(&args.name)?;
+                let report = vm::state_report(&inst, false).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            } else {
+                vm::inspect(&args.name).await
+            }
         }
         Command::Cache(args) => match args.command {
             CacheCommand::Ls => {
