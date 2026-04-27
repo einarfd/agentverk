@@ -139,7 +139,10 @@ pub enum Command {
     reason = "each bool maps to a distinct CLI flag (--no-checksum, --force, --start, --interactive); refactoring would only obscure the clap-derive mapping"
 )]
 pub struct CreateArgs {
-    /// Name for the new VM instance.
+    /// Name for the new VM instance. Agents driving agv programmatically
+    /// should pick a clearly-owned pattern (e.g. `agv-<task>-<short-id>`)
+    /// so multiple agents coexist without collisions; pair with
+    /// `--label session=<id>` for cleanup via `agv destroy --label`.
     pub name: String,
 
     /// Path to .toml config file.

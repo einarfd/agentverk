@@ -225,13 +225,16 @@ Proposed:
 Effort: M. flock or fs2 crate for the locking; a category-2 integration
 test is enough to prove it.
 
-## Better naming hint in `agv create --help`
+## Better naming hint in `agv create --help` ✓ shipped
 
-Small one. Today the `--name` help is just "VM name". A line suggesting
-"agents: use `agv-<task>-<short-id>` so multiple agents can coexist"
-would propagate the convention.
+**Shipped:** the `<NAME>` doc on `CreateArgs` now suggests
+`agv-<task>-<short-id>` and points at `--label session=<id>` for the
+cleanup pattern. Single-paragraph form because clap derive only
+renders the first paragraph of the doc-comment for positional args
+(flags get the multi-paragraph long-help treatment, positionals
+don't).
 
-Effort: trivial. Drop in when next touching `cli.rs`.
+Effort actual: 4 lines.
 
 ## Auth env-var timing — runtime warning?
 
