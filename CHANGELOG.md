@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-27
+
 ### Added
 
 - **`agv resources`** — new command showing host capacity (total/used
@@ -345,7 +347,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/einarfd/agentverk/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/einarfd/agentverk/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/einarfd/agentverk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/einarfd/agentverk/compare/v0.1.0...v0.2.0
