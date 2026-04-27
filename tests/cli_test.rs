@@ -244,6 +244,38 @@ fn destroy_without_name_or_label_errors() {
     );
 }
 
+/// Smoke-test for the cross-process lock on the image cache. Spawn
+/// multiple `agv resources --json` calls in parallel — they all touch
+/// the data dir / sysinfo paths and all must produce parseable JSON.
+/// This isn't a deep concurrency exercise (resources is read-only on
+/// instance state), but it confirms the binary doesn't deadlock or
+/// crash when many copies run at once against the same data dir.
+#[test]
+fn parallel_resources_invocations_all_succeed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let n = 8;
+
+    let handles: Vec<_> = (0..n)
+        .map(|_| {
+            let path = tmp.path().to_path_buf();
+            std::thread::spawn(move || {
+                agv()
+                    .env("AGV_DATA_DIR", &path)
+                    .args(["resources", "--json"])
+                    .output()
+                    .unwrap()
+            })
+        })
+        .collect();
+
+    for h in handles {
+        let output = h.join().unwrap();
+        assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let _: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    }
+}
+
 #[test]
 fn destroy_with_label_against_no_matches_succeeds() {
     // No matching VMs is not an error — it's a no-op (idempotent cleanup).

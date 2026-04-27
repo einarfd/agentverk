@@ -342,10 +342,10 @@ Full table with examples in [`docs/json-schema.md`](../../docs/json-schema.md#ex
   clear message; don't paper over it, fix the include list or the image.
 - **Suspending a VM with active SSH sessions** — agv handles it cleanly,
   but any in-flight commands die. Finish work before suspending.
-- **Concurrent `agv create` calls** — should be safe across VMs (each
-  VM has its own instance dir), but the image cache is shared. Don't
-  spawn five creates simultaneously if any need to download a fresh
-  base image; let the first finish, then fan out.
+- **Concurrent `agv` calls against different VMs are safe** — shared
+  state (managed `ssh_config`, image cache) is protected by file locks.
+  Concurrent calls **against the same VM** are not safe; serialise
+  per-VM operations yourself.
 
 ## Communicating with the user
 

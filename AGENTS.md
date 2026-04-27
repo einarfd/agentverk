@@ -128,3 +128,10 @@ VM templates live in `templates/` as paired `<name>.qcow2` + `<name>.toml` files
 `creating` | `configuring` | `running` | `stopped` | `suspended` | `broken`
 
 A `broken` VM can only be destroyed. If a `running` VM's PID is stale, it auto-transitions to `stopped`. A `suspended` VM has its full state (RAM + devices) saved to a snapshot inside `disk.qcow2` (named `agv-suspend`); resume restarts QEMU with `-loadvm`.
+
+## Concurrency contract
+
+- **Two `agv` commands against different VMs are safe to run in parallel.** Shared state (the managed `<data_dir>/ssh_config`, the image cache) is protected by `flock(2)` advisory locks via `src/locks.rs`, applied around the read-modify-write critical sections in `ssh_config::add_entry` / `remove_entry` and around `image::ensure_cached`'s download path.
+- **Two `agv` commands against the same VM are not safe.** agv doesn't lock individual instance directories — running, e.g., `agv start myvm` and `agv stop myvm` simultaneously is undefined. Single-VM ops are expected to be one-at-a-time.
+- **Lockfiles** are siblings of the protected file: `<data_dir>/ssh_config.lock`, `<data_dir>/cache/images/<file>.lock`. Zero bytes; not garbage-collected (cost is negligible).
+- The lock acquire is delegated to `tokio::task::spawn_blocking` so a contended lock doesn't park the async runtime's worker thread. The OS releases the lock when the holding fd closes (so panic-safe via `Drop`).

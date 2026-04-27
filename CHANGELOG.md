@@ -6,6 +6,32 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Race condition in the managed `ssh_config` file when two
+  `agv` invocations updated it concurrently.** Two parallel
+  `agv start` calls against different VMs would each
+  read-modify-write `<data_dir>/ssh_config`; whichever wrote
+  second would clobber the first writer's Host entry, breaking
+  IDE access (`ssh <name>`) for the missing VM. `add_entry` and
+  `remove_entry` in `ssh_config.rs` now hold an exclusive
+  `flock(2)` advisory lock on a sibling `ssh_config.lock` file
+  for the duration of the read-modify-write, serialising
+  cross-process concurrent updates.
+
+### Changed
+
+- **Image cache downloads serialise per-image.** Two `agv create`
+  calls needing the same uncached base image used to both
+  download it independently (the existing PID+nanos partial-file
+  scheme made this safe but wasteful). They now share an
+  advisory `flock(2)` per image; the second waits, sees the file
+  cached, and returns without redownloading.
+- **Concurrency contract documented** in `AGENTS.md`: two `agv`
+  commands against different VMs are safe to run in parallel
+  (shared state is locked); two against the same VM are not (no
+  per-instance locking).
+
 ## [0.2.3] - 2026-04-27
 
 ### Added

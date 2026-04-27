@@ -53,8 +53,19 @@ fn format_include_block(managed_path: &Path) -> String {
     )
 }
 
+/// Path to the cross-process advisory lock guarding `ssh_config` writes.
+/// Sibling to the managed file itself.
+fn lock_path() -> anyhow::Result<PathBuf> {
+    Ok(managed_config_path()?.with_extension("lock"))
+}
+
 /// Add or update a Host entry for a VM in the managed SSH config.
+///
+/// Holds an exclusive cross-process file lock for the read-modify-write
+/// so two concurrent `agv start` calls (different VMs) can't clobber
+/// each other's Host entries.
 pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> anyhow::Result<()> {
+    let _guard = crate::locks::acquire_exclusive(lock_path()?).await?;
     let config_path = managed_config_path()?;
     let mut content = read_or_empty(&config_path).await;
 
@@ -71,7 +82,10 @@ pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> an
 }
 
 /// Remove a VM's Host entry from the managed SSH config.
+///
+/// Holds the same cross-process lock as [`add_entry`].
 pub async fn remove_entry(name: &str) -> anyhow::Result<()> {
+    let _guard = crate::locks::acquire_exclusive(lock_path()?).await?;
     let config_path = managed_config_path()?;
     let content = read_or_empty(&config_path).await;
     let updated = remove_host_block(&content, name);

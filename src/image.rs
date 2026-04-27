@@ -33,14 +33,28 @@ pub async fn ensure_cached(url: &str, checksum: Option<&str>) -> anyhow::Result<
 
     let cached_path = cache_dir.join(&filename);
 
-    // Already cached — trust it. Checksum was verified on download.
+    // Fast path: cached file exists, no lock needed.
     if cached_path.exists() {
         info!(path = %cached_path.display(), "image already cached");
         return Ok((cached_path, false));
     }
 
+    // Slow path: take a per-image lock so two parallel `agv create` calls
+    // needing the same uncached image serialise on the download instead
+    // of both fetching it independently. Doubled-checked: re-test cache
+    // existence after acquiring the lock — the other process may have
+    // finished the download while we were waiting.
+    let lock_path = cache_dir.join(format!("{filename}.lock"));
+    let _guard = crate::locks::acquire_exclusive(lock_path).await?;
+
+    if cached_path.exists() {
+        info!(path = %cached_path.display(), "image cached by concurrent download");
+        return Ok((cached_path, false));
+    }
+
     // Download to a unique temp file, then atomically rename.
-    // Using PID + timestamp avoids collisions when multiple processes download concurrently.
+    // Even with the lock, the PID+timestamp suffix is cheap insurance
+    // against orphaned partial files from a previous crashed agv.
     let part_name = format!(
         "{filename}.part.{}.{}",
         std::process::id(),

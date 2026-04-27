@@ -35,6 +35,8 @@ pub mod init;
 #[doc(hidden)]
 pub mod interactive;
 #[doc(hidden)]
+pub mod locks;
+#[doc(hidden)]
 pub mod manual_steps;
 #[doc(hidden)]
 pub mod resources;

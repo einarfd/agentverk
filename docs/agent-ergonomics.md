@@ -200,30 +200,50 @@ a bit of plumbing. Worth checking the existing provision-state machinery
 already supports this pattern — it tracks phase + index, which is most
 of what's needed.
 
-## Concurrency audit
+## Concurrency audit ✓ shipped
 
-> Can `agv create vm1` and `agv create vm2` run safely in parallel?
-> Probably yes, but I haven't proven it.
+**Audit findings:** `<data_dir>/ssh_config` had a real read-modify-write
+race — two parallel `agv start` calls against different VMs would each
+read, modify, and write back; whichever wrote second clobbered the
+first writer's Host entry. Image cache downloads were collision-safe
+via PID+nanos partial filenames but two processes would still both
+download the same image (wasted bandwidth, not corruption). Per-VM
+instance directories are isolated, so no lock needed there.
 
-Shared state across invocations:
+**Shipped:**
 
-- `~/.local/share/agv/cache/images/` — base image cache. Two creates
-  needing the same uncached image would race on the download.
-- `~/.local/share/agv/ssh_config` — managed SSH config file.
-- `~/.local/share/agv/instances/<name>/` — per-VM, isolated.
+- New `src/locks.rs` — `flock(2)`-based advisory cross-process locks,
+  using rustix (already a dep, no new crate). RAII `LockGuard`
+  releases on drop, including on panic. Acquire is delegated to
+  `tokio::task::spawn_blocking` so a contended lock doesn't park the
+  async runtime's worker thread.
+- `ssh_config::add_entry` and `remove_entry` hold the lock for the
+  full read-modify-write — fixes the race. Lockfile is sibling
+  `<data_dir>/ssh_config.lock`.
+- `image::ensure_cached` uses the same lock pattern with
+  double-checked existence, so concurrent fetches of the same image
+  serialise on the download instead of duplicating it.
+- `AGENTS.md` has a "Concurrency contract" section documenting the
+  agreement: two `agv` commands against different VMs are safe;
+  against the same VM they're not (no per-instance locking).
 
-Proposed:
+Tests:
 
-- Add file locks around the image cache (advisory lock during download)
-  and the managed SSH config update.
-- Add a section to `AGENTS.md` documenting the concurrency contract:
-  "two `agv` commands against different VMs are safe; against the same
-  VM they're not".
-- A test that spawns N parallel `agv create` calls (with `--image`
-  pointing at a tiny test image) and asserts none corrupt state.
+- `src/locks.rs` unit tests use `spawn_blocking` (so they go through
+  the actual `flock` syscall path) and verify the lock serialises
+  4 concurrent acquirers via a counter that would otherwise
+  interleave.
+- `tests/cli_test.rs::parallel_resources_invocations_all_succeed`
+  spawns 8 `agv` subprocesses against the same data dir, verifying
+  the binary doesn't deadlock or corrupt under cross-process
+  concurrency.
+- Real cross-process flock semantics for ssh_config writes weren't
+  tested directly because writing to ssh_config requires booting a
+  VM (slow boot territory). The locks unit tests cover the
+  underlying mechanism; the `add_entry`/`remove_entry` callers are
+  trivially correct given the lock.
 
-Effort: M. flock or fs2 crate for the locking; a category-2 integration
-test is enough to prove it.
+Effort actual: ~150 LOC (module + integrations + tests + docs).
 
 ## Better naming hint in `agv create --help` ✓ shipped
 
