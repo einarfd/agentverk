@@ -203,7 +203,7 @@ pub fn check_capacity(
             let v = b as f64 / (1024.0 * 1024.0 * 1024.0);
             v
         };
-        anyhow::bail!(
+        let message = format!(
             "starting this VM would push committed host RAM to {projected:.1} GiB \
              (host has {total:.1} GiB total). Running VMs already use {running:.1} GiB; \
              this VM wants {new:.1} GiB. Stop or destroy a running VM first \
@@ -213,6 +213,7 @@ pub fn check_capacity(
             running = g(allocated.running_memory_bytes),
             new = g(new_memory_bytes),
         );
+        return Err(crate::error::Error::HostCapacity { message }.into());
     }
 
     Ok(())

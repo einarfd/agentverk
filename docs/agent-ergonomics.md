@@ -96,33 +96,41 @@ single-flag change rather than a new sibling verb.
 
 Effort actual: ~50 LOC.
 
-## Distinct, documented exit codes
+## Distinct, documented exit codes ✓ shipped
 
-> An agent that gets exit 1 on a `create` doesn't know whether to
-> retry, surface to the user, or give up.
+**Shipped:** the agent-relevant codes are in place and documented in
+`docs/json-schema.md`. The shape:
 
-Today: most failures are exit 1. Some specific errors might use other
-codes; not audited and not documented.
+- **0** success
+- **1** generic / unexpected error (catch-all)
+- **2** clap usage error (unknown subcommand, missing arg, bad flag)
+- **10** VM or template already exists
+- **11** VM, template, image, or include not found
+- **12** VM in wrong state, or template has dependents
+- **20** host capacity refused (`agv create --start` over the 90% RAM
+  threshold without `--force`)
 
-Proposed (rough):
+The mapping lives in `src/error.rs::exit_code_for`, walks the anyhow
+chain, and falls through to `1` for unstructured failures. The
+resource-capacity refusal now returns a structured
+`Error::HostCapacity` variant instead of `anyhow::bail!()` — needed so
+the chain-walker can see it.
 
-- **0** — success.
-- **1** — generic / unexpected error.
-- **2** — usage error (bad flags, conflicting options).
-- **10** — VM already exists (when not using `--if-not-exists`).
-- **11** — VM not found.
-- **12** — VM is in the wrong state for the operation (e.g. trying to
-  `agv start` a `broken` VM, or `agv suspend` a stopped one).
-- **20** — host capacity (when the resource check refuses a create).
-- **30** — image download / checksum failure.
-- **40** — provisioning failure (the VM is `broken` after this).
+**Not shipped (deliberately, for now):**
 
-Document in `docs/json-schema.md` (or wherever the `--json` contract
-lives). Treat as semver-stable.
+- Codes `30` (image download/checksum) and `40` (provisioning) from the
+  original proposal weren't added. They'd touch a lot of error sites
+  for marginal agent value — a generic `1` with an explanatory error
+  message is fine for now. Adding them later is backwards-compatible.
 
-Effort: M. The error variants exist in `src/error.rs`; mapping them
-to distinct exit codes is mechanical. The audit + documentation is
-the real work.
+Tests:
+
+- Unit tests in `src/error.rs` cover the mapping for every variant
+  and the chain-walking behaviour.
+- Integration tests in `tests/cli_test.rs` verify exit code 11 on
+  not-found commands and exit code 2 from clap.
+
+Effort actual: ~150 LOC + tests + the schema doc.
 
 ## Labels for session tracking
 

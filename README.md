@@ -231,6 +231,7 @@ cargo test            # unit and integration tests (fast, no QEMU required)
 - [`docs/config.md`](docs/config.md) — full config file reference with CLI equivalents
 - [`docs/repo-access.md`](docs/repo-access.md) — accessing private repositories (PAT, SSH keys, deploy keys)
 - [`docs/remote-ide.md`](docs/remote-ide.md) — connecting VS Code, JetBrains, and other IDEs to VMs
+- [`docs/json-schema.md`](docs/json-schema.md) — `--json` output shapes and exit codes. The agent-facing stability contract
 - [`skills/agv/SKILL.md`](skills/agv/SKILL.md) — Claude Code Skill describing how to drive `agv` from an AI agent. Copy or symlink to `~/.claude/skills/agv/` to install.
 
 ## License

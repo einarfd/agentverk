@@ -279,7 +279,25 @@ agv inspect <name> --json
 ```
 
 **Don't parse the human-readable table output.** It's not stable across
-versions; `--json` is the contract.
+versions; `--json` is the contract. Full schemas for every `--json`
+output are in [`docs/json-schema.md`](../../docs/json-schema.md).
+
+## Exit codes
+
+agv distinguishes specific failure modes via exit code. Branch on these
+to react sensibly:
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `0` | success | continue |
+| `1` | generic / unexpected | surface stderr to the user; usually unrecoverable |
+| `2` | usage error (clap) | check your command — usually a bug in your script |
+| `10` | VM (or template) already exists | use `--if-not-exists`, or `agv destroy` first if you actually want a clean one |
+| `11` | VM / template / image not found | check `agv ls`; the user may have destroyed the VM |
+| `12` | wrong state | use a different verb (e.g. `agv resume` instead of `agv start` for a suspended VM) |
+| `20` | host RAM over-committed | `agv stop` / `agv destroy` something first, or pass `--force` |
+
+Full table with examples in [`docs/json-schema.md`](../../docs/json-schema.md#exit-codes).
 
 ## Common pitfalls
 

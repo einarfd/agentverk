@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Err(err) = agv::run(cli).await {
         eprintln!("Error: {err:#}");
-        std::process::exit(1);
+        std::process::exit(i32::from(agv::error::exit_code_for(&err)));
     }
     Ok(())
 }

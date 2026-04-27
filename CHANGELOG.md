@@ -51,6 +51,20 @@ All notable changes to `agv` will be documented here. This project follows
   itself as `--quiet`) so JSON parsing isn't broken by spinner
   residue. Saves the post-action `agv inspect` round trip an agent
   would otherwise need.
+- **Distinct, documented exit codes** for the agent-relevant failure
+  modes: `10` (VM/template already exists), `11` (VM/template/image
+  not found), `12` (VM in wrong state for the operation), `20`
+  (host capacity refused — only fires on `agv create --start` when
+  the projected RAM commitment would exceed 90% of host total).
+  Generic failures stay at `1`; clap usage errors at `2`. The
+  resource-capacity check now returns a structured `Error::HostCapacity`
+  variant instead of an untyped `anyhow!()` so the mapping is clean.
+- **`docs/json-schema.md`** documents every `--json` shape and the
+  exit-code table. Treats both as a stability contract over the 0.x
+  series — additions OK in any minor, renames/removals only on a
+  major bump. Schema-pin tests in the codebase (already shipped)
+  enforce this: a removal or rename of a documented field fails CI
+  loudly.
 
 ### Changed
 

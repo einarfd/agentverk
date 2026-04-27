@@ -169,6 +169,62 @@ fn json_flag_is_registered_on_every_lifecycle_verb() {
     }
 }
 
+/// Documented exit codes (see `docs/json-schema.md`):
+/// - 0 success
+/// - 1 generic
+/// - 2 clap usage error
+/// - 10 already exists
+/// - 11 not found
+/// - 12 wrong state
+/// - 20 host capacity refused
+///
+/// These tests verify the codes that are easy to trigger from a clean
+/// host (mostly the not-found path). The wrong-state and already-exists
+/// codes are exercised by the unit tests in src/error.rs and by the
+/// slow-boot integration tests; capacity is exercised at the unit level.
+#[test]
+fn exit_code_11_for_not_found_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cases: &[&[&str]] = &[
+        &["start", "agv-no-such-vm-12345"],
+        &["stop", "agv-no-such-vm-12345"],
+        &["suspend", "agv-no-such-vm-12345"],
+        &["resume", "agv-no-such-vm-12345"],
+        &["inspect", "agv-no-such-vm-12345"],
+        &["destroy", "--force", "agv-no-such-vm-12345"],
+    ];
+    for args in cases {
+        let output = agv()
+            .env("AGV_DATA_DIR", tmp.path())
+            .args(*args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(11),
+            "{args:?} should exit 11 (not found), got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+#[test]
+fn exit_code_2_for_clap_usage_errors() {
+    // Unknown subcommand and missing required arg both go through clap and
+    // come back as exit 2 — the conventional Unix usage-error code.
+    let exit_code_unknown_cmd = agv()
+        .args(["definitely-not-a-subcommand"])
+        .output()
+        .unwrap()
+        .status
+        .code();
+    assert_eq!(exit_code_unknown_cmd, Some(2));
+
+    let exit_code_missing_arg = agv().arg("inspect").output().unwrap().status.code();
+    assert_eq!(exit_code_missing_arg, Some(2));
+}
+
 #[test]
 fn resources_json_has_expected_top_level_keys() {
     let output = agv()
