@@ -238,6 +238,16 @@ pub struct CreateArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Attach a free-form `key=value` label to the VM. Repeatable.
+    /// Bare `key` (no `=`) is shorthand for `key=""`. Labels are stored
+    /// with the VM and surfaced via `agv inspect`, `agv ls --labels`,
+    /// and the `labels` field of `--json` output. Filterable via
+    /// `agv ls --label k=v` and `agv destroy --label k=v`. agv doesn't
+    /// interpret label contents — they're for you (or your agent) to
+    /// track which VMs you own.
+    #[arg(long = "label", value_name = "K=V")]
+    pub labels: Vec<String>,
+
     /// Start the VM after creation.
     #[arg(short, long)]
     pub start: bool,
@@ -310,8 +320,18 @@ pub struct ResumeArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DestroyArgs {
-    /// Name of the VM to destroy.
-    pub name: String,
+    /// Name of the VM to destroy. Optional when `--label` is given —
+    /// bulk-destroy by label selector instead of naming a single VM.
+    pub name: Option<String>,
+
+    /// Destroy every VM whose labels match this `key=value` selector.
+    /// Repeatable; multiple `--label` filters AND together. Bare
+    /// `key` (no `=`) matches any value. With `--force`, running VMs
+    /// are torn down too; otherwise the bulk delete is refused if any
+    /// matched VM is running. Without `-y`, agv lists matched VMs and
+    /// prompts before doing anything.
+    #[arg(long = "label", value_name = "K=V", conflicts_with = "name")]
+    pub label: Vec<String>,
 
     /// Destroy even if the VM is currently running (force-stops it first).
     #[arg(short, long)]
@@ -319,7 +339,8 @@ pub struct DestroyArgs {
 
     /// Output a small JSON object on success: `{ "name": "...",
     /// "destroyed": true }`. Intentionally a different shape from
-    /// `VmStateReport` since the VM no longer exists.
+    /// `VmStateReport` since the VM no longer exists. With label-based
+    /// bulk destroy, emits a JSON array of these.
     #[arg(long)]
     pub json: bool,
 }
@@ -377,6 +398,18 @@ pub struct LsArgs {
     /// `agv inspect --json` and `agv create --json`).
     #[arg(long)]
     pub json: bool,
+
+    /// Show the `labels` column in human output. Hidden by default to
+    /// keep the table compact when no labels are in use. The labels
+    /// field is always present in `--json` output regardless.
+    #[arg(long)]
+    pub labels: bool,
+
+    /// Filter to VMs with this `key=value` label set. Repeatable;
+    /// multiple `--label` filters AND together. A bare `key` (no `=`)
+    /// matches any VM that has that key, regardless of value.
+    #[arg(long = "label", value_name = "K=V")]
+    pub label: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

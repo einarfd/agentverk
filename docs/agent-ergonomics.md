@@ -132,27 +132,34 @@ Tests:
 
 Effort actual: ~150 LOC + tests + the schema doc.
 
-## Labels for session tracking
+## Labels for session tracking ✓ shipped
 
-> An agent juggling multiple VMs across a session loses track. There's
-> no "I created these" view today.
+**Shipped:**
 
-Proposed:
+- `agv create --label k=v` (repeatable; bare `--label foo` is shorthand
+  for `foo=""`). Stored in the saved `ResolvedConfig` (and so in the
+  per-instance `config.toml`).
+- `agv ls --label k=v` filters; multiple filters AND together; bare-key
+  matches any value.
+- `agv ls --labels` shows the labels column in human output (hidden by
+  default to keep the table compact).
+- `agv destroy --label k=v` does bulk destroy by selector. Lists matched
+  VMs and prompts unless `-y` or `--json`. Refuses running matches
+  unless `--force`.
+- `agv inspect` shows a Labels: section in human output (only when
+  there are any).
+- `VmStateReport` gains a `labels` field, documented in
+  `docs/json-schema.md`. Always present in JSON, even when empty.
+- `agv.*` namespace **not** reserved — fully user-owned today; will be
+  reserved in a future minor only if we actually need built-in
+  agv-managed labels.
 
-- **`agv create --label key=value`** (repeatable). Labels are stored
-  in the saved instance config and shown in `agv inspect`.
-- **`agv ls --label key=value`** filters to matching VMs.
-- **`agv destroy --label key=value`** (with confirmation) tears down
-  every VM with the label. Useful for "clean up all the VMs my session
-  created".
+Convention an agent should follow: `--label session=<short-id>` on
+every create. Then a single `agv destroy --label session=<short-id>
+--force` cleans up everything that session created, including running
+VMs. The skill recipe shows this pattern.
 
-Convention an agent could follow: `--label session=<short-id>` on
-every create, plus `--label agv-skill-version=<x>` so future skill
-versions know which VMs they own.
-
-Effort: M. New schema field on ResolvedConfig; small CLI plumbing.
-Worth pairing with the resource-awareness work since both touch
-`agv ls --json`'s schema.
+Effort actual: ~300 LOC including tests + docs.
 
 ## `agv create --json` output on success ✓ shipped
 

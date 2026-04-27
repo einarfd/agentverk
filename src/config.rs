@@ -120,6 +120,22 @@ pub struct Config {
     /// provision step, not a manual step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_steps: Vec<String>,
+
+    /// Free-form key=value metadata an agent or user attaches to a VM
+    /// at create time. agv stores them and surfaces them via
+    /// `agv inspect`, `agv ls --labels`, and the `labels` field of
+    /// `VmStateReport`, but doesn't interpret them. Useful for an
+    /// agent tracking which VMs it created in the current session
+    /// (`session=abc123`), or for a human distinguishing
+    /// hand-created VMs from agent-created ones.
+    ///
+    /// Filterable via `agv ls --label k=v` and `agv destroy --label
+    /// k=v`. Repeated `--label` filters AND together.
+    ///
+    /// Empty default; immutable for the VM's life in v1 (no `agv label
+    /// add/rm` verb yet — easy to add later if demand shows).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Declaration of a named auto-allocated forward.
@@ -453,6 +469,11 @@ pub struct ResolvedConfig {
     /// Empty for instance configs saved before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_manual_steps: Vec<String>,
+
+    /// Free-form key=value labels set at create time. Empty default;
+    /// see [`Config::labels`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Notes contributed by a single mixin, tagged with the mixin's name.
@@ -570,6 +591,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         auto_forwards: child_auto_forwards,
         notes: child_notes,
         manual_steps: child_manual_steps,
+        labels: child_labels,
     } = config;
 
     if let Some(parent_name) = from {
@@ -613,6 +635,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         // Merge child scalars on top of resolved parent.
@@ -631,6 +654,10 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         }
         resolved.config_notes.extend(child_notes);
         resolved.config_manual_steps.extend(child_manual_steps);
+        // Labels: child's set wins over inherited (rare, but explicit).
+        for (k, v) in child_labels {
+            resolved.labels.insert(k, v);
+        }
 
         Ok(resolved)
     } else {
@@ -684,6 +711,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         // Apply includes before the config's own steps.
@@ -699,6 +727,9 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
         }
         resolved.config_notes.extend(child_notes);
         resolved.config_manual_steps.extend(child_manual_steps);
+        for (k, v) in child_labels {
+            resolved.labels.insert(k, v);
+        }
 
         Ok(resolved)
     }
@@ -994,6 +1025,7 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         config_notes: parent.config_notes,
         mixin_manual_steps: parent.mixin_manual_steps,
         config_manual_steps: parent.config_manual_steps,
+        labels: parent.labels,
     }
 }
 
@@ -1041,6 +1073,36 @@ pub async fn save(config: &ResolvedConfig, path: &Path) -> anyhow::Result<()> {
 /// the user must pass `--config` explicitly if they want a config file.
 /// This keeps `agv create` behaving the same regardless of which directory
 /// it is invoked from.
+/// Parse `--label k=v` strings (each entry like `"foo=bar"` or `"foo"`)
+/// into a [`BTreeMap`].
+///
+/// Rules:
+/// - Key/value separator is the first `=`. Anything after is the value
+///   (so `--label cmd=echo a=b` produces `{"cmd": "echo a=b"}`).
+/// - A bare `--label foo` (no `=`) maps to `{"foo": ""}` — useful when
+///   the label name itself carries the meaning and you don't need a
+///   value.
+/// - Empty key (`--label =foo`, `--label =`) is rejected as an error.
+/// - A duplicate key within one invocation is an error (almost
+///   certainly a typo; safer to fail than silently overwrite).
+pub fn parse_labels(raw: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for entry in raw {
+        let (key, value) = match entry.split_once('=') {
+            Some((k, v)) => (k, v.to_string()),
+            None => (entry.as_str(), String::new()),
+        };
+        if key.is_empty() {
+            bail!("invalid --label {entry:?}: key cannot be empty");
+        }
+        if out.contains_key(key) {
+            bail!("duplicate --label key {key:?}: would overwrite earlier value");
+        }
+        out.insert(key.to_string(), value);
+    }
+    Ok(out)
+}
+
 pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 1. Determine the base config source.
     //    Also record the config file's directory so we can look for .env there.
@@ -1159,12 +1221,69 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         resolved.skip_checksum = true;
     }
 
+    // 12. Apply --label flags. CLI labels override config-file labels
+    // (the `--label` flag is the explicit, ad-hoc form; the config file
+    // is the durable default).
+    let cli_labels = parse_labels(&args.labels)?;
+    for (k, v) in cli_labels {
+        resolved.labels.insert(k, v);
+    }
+
     Ok(resolved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_labels_basic_kv_pairs() {
+        let raw = vec!["session=abc".to_string(), "owner=alice".to_string()];
+        let parsed = parse_labels(&raw).unwrap();
+        assert_eq!(parsed.get("session").map(String::as_str), Some("abc"));
+        assert_eq!(parsed.get("owner").map(String::as_str), Some("alice"));
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn parse_labels_bare_key_maps_to_empty_value() {
+        let raw = vec!["needs-cleanup".to_string()];
+        let parsed = parse_labels(&raw).unwrap();
+        assert_eq!(parsed.get("needs-cleanup").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn parse_labels_first_equals_is_the_separator() {
+        // Subsequent `=` characters end up in the value verbatim — useful
+        // for tagging with shell snippets, URLs, etc.
+        let raw = vec!["cmd=echo a=b".to_string()];
+        let parsed = parse_labels(&raw).unwrap();
+        assert_eq!(parsed.get("cmd").map(String::as_str), Some("echo a=b"));
+    }
+
+    #[test]
+    fn parse_labels_rejects_empty_key() {
+        let cases = ["=foo", "="];
+        for c in cases {
+            let err = parse_labels(&[c.to_string()]).unwrap_err();
+            assert!(format!("{err}").contains("key cannot be empty"), "for input {c:?}");
+        }
+    }
+
+    #[test]
+    fn parse_labels_rejects_duplicate_key_in_one_invocation() {
+        let raw = vec!["session=abc".to_string(), "session=def".to_string()];
+        let err = parse_labels(&raw).unwrap_err();
+        assert!(format!("{err}").contains("duplicate"));
+        assert!(format!("{err}").contains("session"));
+    }
+
+    #[test]
+    fn parse_labels_empty_value_explicit_form() {
+        let raw = vec!["foo=".to_string()];
+        let parsed = parse_labels(&raw).unwrap();
+        assert_eq!(parsed.get("foo").map(String::as_str), Some(""));
+    }
 
     fn minimal_args() -> CreateArgs {
         CreateArgs {
@@ -1186,6 +1305,7 @@ mod tests {
             force: false,
             if_not_exists: false,
             json: false,
+            labels: vec![],
             start: false,
             interactive: false,
             from: None,
@@ -1224,6 +1344,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let resolved = resolve(config).unwrap();
@@ -1273,6 +1394,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let resolved = resolve(config).unwrap();
@@ -1312,6 +1434,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let resolved = resolve(child).unwrap();
@@ -1350,6 +1473,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let resolved = resolve(project).unwrap();
@@ -1393,6 +1517,7 @@ mod tests {
                 "API key lives at {{HOME}}/.foo".to_string(),
             ],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let resolved = resolve(project).unwrap();
@@ -1441,6 +1566,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let resolved = resolve(config).unwrap();
         assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "9000:3000"]);
@@ -1474,6 +1600,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1508,6 +1635,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let err = resolve(config).unwrap_err();
         let msg = format!("{err:#}");
@@ -1531,6 +1659,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let resolved = resolve(child).unwrap();
         assert_eq!(resolved.forwards, vec!["9000"]);
@@ -1558,6 +1687,7 @@ mod tests {
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let child = Config {
             base: None,
@@ -1571,6 +1701,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
         let result = merge(parent, child);
         assert_eq!(result.forwards, vec!["8080", "9090"]);
@@ -1617,6 +1748,7 @@ mod tests {
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let child = Config {
@@ -1635,6 +1767,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let result = merge(parent, child);
@@ -1679,6 +1812,7 @@ mod tests {
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let child = Config {
@@ -1705,6 +1839,7 @@ mod tests {
         auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         let result = merge(parent, child);
@@ -1889,6 +2024,7 @@ cpus = 4
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         };
 
         save(&config, &path).await.unwrap();
@@ -2049,6 +2185,7 @@ run = ["echo one", "echo two"]
             auto_forwards: None,
             notes: vec![],
             manual_steps: vec![],
+            labels: BTreeMap::new(),
         }
     }
 

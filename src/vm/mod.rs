@@ -73,6 +73,12 @@ pub struct VmStateReport {
     /// `~/.local/share/agv/instances/`. Useful for agents that want to
     /// tail `provision.log` / `serial.log` for debugging.
     pub data_dir: String,
+
+    /// Free-form key=value labels set at create time. Empty object when
+    /// none were specified. agv stores them but doesn't interpret them
+    /// — they're for callers to track which VMs they own (an agent's
+    /// session, a human's hand-tagged distinguishing marks, etc.).
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 /// JSON shape returned by `agv destroy --json`.
@@ -120,6 +126,7 @@ pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmSt
         manual_steps: cfg.mixin_manual_steps,
         config_manual_steps: cfg.config_manual_steps,
         data_dir: inst.dir.display().to_string(),
+        labels: cfg.labels,
     })
 }
 
@@ -661,6 +668,21 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     println!("  {:<w$}  {provisioned}", "Provisioned");
     println!("  {:<w$}  {}", "Data dir", inst.dir.display());
 
+    // Labels — only print the section when there are any. Empty values
+    // render as just the key (matches the `--label foo` shorthand for
+    // `foo=""`).
+    if !config.labels.is_empty() {
+        println!();
+        println!("  Labels");
+        for (k, v) in &config.labels {
+            if v.is_empty() {
+                println!("    {k}");
+            } else {
+                println!("    {k}={v}");
+            }
+        }
+    }
+
     // Surface manual setup steps the mixins / top-level config flagged.
     // These are imperative instructions for the human invoker (auth flows,
     // etc) — agv prints them on the first successful provision, but
@@ -904,6 +926,9 @@ mod tests {
     use super::*;
 
     fn fixture() -> VmStateReport {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("session".to_string(), "abc123".to_string());
+        labels.insert("task".to_string(), String::new());
         VmStateReport {
             name: "myvm".to_string(),
             status: "running".to_string(),
@@ -920,6 +945,7 @@ mod tests {
             }],
             config_manual_steps: vec!["Configure VPN before starting work.".to_string()],
             data_dir: "/Users/u/.local/share/agv/instances/myvm".to_string(),
+            labels,
         }
     }
 
@@ -942,6 +968,7 @@ mod tests {
             "created",
             "data_dir",
             "disk",
+            "labels",
             "manual_steps",
             "memory",
             "mixins_applied",
@@ -997,6 +1024,31 @@ mod tests {
                 "{key} should serialize as an array"
             );
         }
+    }
+
+    /// Empty labels must still serialize as `{}` (an empty object), not
+    /// be omitted. Agents iterate / index into it without first checking
+    /// for presence.
+    #[test]
+    fn vm_state_report_empty_labels_serialize_as_object() {
+        let mut report = fixture();
+        report.labels = std::collections::BTreeMap::new();
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().unwrap();
+        let labels = obj.get("labels").expect("labels key must be present even when empty");
+        assert!(labels.is_object(), "labels must serialize as an object");
+        assert!(labels.as_object().unwrap().is_empty());
+    }
+
+    /// Empty-string label values round-trip cleanly. `--label foo` with
+    /// no `=` is shorthand for `foo=""`, and consumers should see exactly
+    /// `""` in JSON, not the key being omitted.
+    #[test]
+    fn vm_state_report_empty_label_value_serializes_as_empty_string() {
+        let report = fixture();  // fixture has "task" -> ""
+        let json = serde_json::to_value(&report).unwrap();
+        let labels = json.get("labels").unwrap().as_object().unwrap();
+        assert_eq!(labels.get("task"), Some(&serde_json::Value::String(String::new())));
     }
 
     /// Schema pin for `agv destroy --json`. Same idea as the

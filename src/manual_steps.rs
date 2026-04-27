@@ -95,6 +95,7 @@ mod tests {
             config_notes: vec![],
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
+            labels: BTreeMap::new(),
         }
     }
 

@@ -56,7 +56,11 @@ the same order as the human-readable output.
     }
   ],
   "config_manual_steps": ["Configure VPN before starting work."],
-  "data_dir": "/Users/u/.local/share/agv/instances/myvm"
+  "data_dir": "/Users/u/.local/share/agv/instances/myvm",
+  "labels": {
+    "session": "abc123",
+    "needs-cleanup": ""
+  }
 }
 ```
 
@@ -74,6 +78,7 @@ the same order as the human-readable output.
 | `manual_steps` | object[] | Per-mixin manual steps the human invoker still needs to do. Each has `{name: string, steps: string[]}`. Empty array, never omitted |
 | `config_manual_steps` | string[] | Top-level manual steps from the user's `agv.toml`. Empty array, never omitted |
 | `data_dir` | string | Absolute path to `~/.local/share/agv/instances/<name>/` |
+| `labels` | object<string,string> | Free-form `key=value` metadata set at create time. Always present, even when empty. agv doesn't interpret these — they're for callers (often agents) to tag VMs by session/purpose/etc. The `agv.*` namespace is unreserved today; see CHANGELOG if that ever changes |
 
 ### `DestroyReport`
 

@@ -210,6 +210,53 @@ fn exit_code_11_for_not_found_commands() {
 }
 
 #[test]
+fn ls_with_label_filter_against_empty_data_dir_returns_empty_json() {
+    // No VMs at all → ls --label whatever --json must return [].
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["ls", "--label", "session=anything", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(parsed.as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn destroy_without_name_or_label_errors() {
+    // `agv destroy` with neither a positional name nor `--label` is a
+    // usage error. clap doesn't catch this (both are optional/repeatable),
+    // so the runtime check in destroy_command must.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["destroy"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("either a VM name or --label"),
+        "expected explanatory error; stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn destroy_with_label_against_no_matches_succeeds() {
+    // No matching VMs is not an error — it's a no-op (idempotent cleanup).
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["destroy", "--label", "session=ghost", "--force"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn exit_code_2_for_clap_usage_errors() {
     // Unknown subcommand and missing required arg both go through clap and
     // come back as exit 2 — the conventional Unix usage-error code.

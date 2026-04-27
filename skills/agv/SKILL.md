@@ -104,6 +104,29 @@ the user to clean up. If you're handing the VM over to the user (e.g.
 "here's your dev environment"), tell them the name explicitly and that
 they own its lifecycle.
 
+## Track your session with labels
+
+Tag every VM you create with `--label session=<id>`, then a single
+command at session end cleans up everything you made:
+
+```bash
+SESSION="agv-$(date +%s)-$RANDOM"
+
+# every create gets the session label
+agv create --label session=$SESSION --include devtools --start work-1
+agv create --label session=$SESSION --include claude   --start work-2
+
+# at session end, destroy everything you tagged. --force tears down
+# running VMs (otherwise the bulk destroy refuses).
+agv destroy --label session=$SESSION --force -y
+```
+
+Labels are pure metadata — agv stores them but doesn't interpret them.
+You can add as many as you want (`--label session=$SESSION --label
+purpose=experiment`). Use `agv ls --label session=$SESSION` to see what
+you have outstanding mid-session, or `agv ls --labels` to see every VM's
+labels in the human table.
+
 ## Recipes
 
 ### Disposable shell sandbox
@@ -361,6 +384,13 @@ agv create --interactive              # step through provisioning (debugging)
 agv create --if-not-exists            # succeed if the VM is already there
 agv create --json                     # parseable post-create state (use with --if-not-exists for retries)
 agv create --force                    # bypass the host-RAM capacity check
+agv create --label k=v                # repeatable; tag a VM (free-form)
+
+agv ls --label k=v                    # filter to VMs matching the selector
+agv ls --labels                       # show labels column in human output
+
+agv destroy --label k=v               # bulk destroy by selector (prompts unless -y)
+agv destroy --label k=v --force       # also tear down running matches
 
 agv start --retry <name>              # resume after a broken provision
 agv start --interactive <name>

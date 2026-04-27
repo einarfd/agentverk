@@ -101,6 +101,175 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Render a labels map as a single-line `k=v, k=v` string for inline
+/// display in tables. Empty map produces an empty string (no visual
+/// noise on rows that have no labels).
+fn format_labels_inline(labels: &std::collections::BTreeMap<String, String>) -> String {
+    labels
+        .iter()
+        .map(|(k, v)| if v.is_empty() { k.clone() } else { format!("{k}={v}") })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Match an instance against a set of `key=value` (or bare-key) selectors.
+/// Returns true when every selector matches; bare key matches any value.
+fn instance_matches_labels(
+    inst_labels: &std::collections::BTreeMap<String, String>,
+    selectors: &std::collections::BTreeMap<String, Option<String>>,
+) -> bool {
+    selectors.iter().all(|(k, want)| match (want, inst_labels.get(k)) {
+        (None, Some(_)) => true, // bare-key selector matches any value
+        (Some(want_v), Some(have_v)) => want_v == have_v,
+        _ => false,
+    })
+}
+
+/// Parse `--label k=v` selectors used by `agv ls` / `agv destroy`. The
+/// shape differs slightly from `config::parse_labels` (used by `agv
+/// create`): a bare key without `=` is a "key exists" wildcard rather
+/// than `key=""`. Duplicate selectors collapse (the OR of "I want this
+/// value" and "any value" is "any value", so the bare form wins).
+fn parse_label_selectors(
+    raw: &[String],
+) -> anyhow::Result<std::collections::BTreeMap<String, Option<String>>> {
+    let mut out: std::collections::BTreeMap<String, Option<String>> =
+        std::collections::BTreeMap::new();
+    for entry in raw {
+        let (key, want) = match entry.split_once('=') {
+            Some((k, v)) => (k.to_string(), Some(v.to_string())),
+            None => (entry.clone(), None),
+        };
+        if key.is_empty() {
+            anyhow::bail!("invalid --label {entry:?}: key cannot be empty");
+        }
+        // Bare-key wildcard wins over an exact-value selector for the same
+        // key (more permissive).
+        if !matches!(out.get(&key), Some(None)) {
+            out.insert(key, want);
+        }
+    }
+    Ok(out)
+}
+
+/// Implementation for `agv destroy`. Handles both single-VM (positional
+/// name) and bulk-by-label (`--label k=v`) modes. clap's `conflicts_with`
+/// already prevents both being set; here we also reject the case where
+/// neither is set.
+async fn destroy_command(args: &cli::DestroyArgs, yes: bool) -> anyhow::Result<()> {
+    if args.name.is_none() && args.label.is_empty() {
+        anyhow::bail!("agv destroy requires either a VM name or --label <k=v>");
+    }
+
+    if let Some(name) = &args.name {
+        // Single-VM path — same behaviour as before, just with the
+        // structured DestroyReport on --json.
+        tracing::info!(name = %name, force = args.force, "destroying VM");
+        vm::destroy(name, args.force).await?;
+        if args.json {
+            let report = vm::DestroyReport {
+                name: name.clone(),
+                destroyed: true,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("  ✓ VM '{name}' destroyed");
+        }
+        return Ok(());
+    }
+
+    // Bulk path: enumerate VMs, filter by label selectors, list, prompt,
+    // destroy.
+    let selectors = parse_label_selectors(&args.label)?;
+    let instances = vm::list().await?;
+    let mut matches = Vec::new();
+    for inst in &instances {
+        let Ok(cfg) = config::load_resolved(&inst.config_path()) else {
+            continue;
+        };
+        if instance_matches_labels(&cfg.labels, &selectors) {
+            let status = inst
+                .reconcile_status()
+                .await
+                .unwrap_or(vm::instance::Status::Stopped);
+            matches.push((inst.name.clone(), status));
+        }
+    }
+
+    if matches.is_empty() {
+        if args.json {
+            println!("[]");
+        } else {
+            eprintln!("No VMs match the given label selectors.");
+        }
+        return Ok(());
+    }
+
+    // Refuse running VMs unless --force.
+    if !args.force {
+        let running: Vec<&String> = matches
+            .iter()
+            .filter(|(_, s)| matches!(s, vm::instance::Status::Running | vm::instance::Status::Configuring))
+            .map(|(n, _)| n)
+            .collect();
+        if !running.is_empty() {
+            anyhow::bail!(
+                "{} matched VM(s) are running ({}); pass --force to tear them down anyway",
+                running.len(),
+                running.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", "),
+            );
+        }
+    }
+
+    // Confirmation prompt unless -y.
+    if !yes && !args.json {
+        use std::io::Write as _;
+        eprintln!("Will destroy {} VM(s):", matches.len());
+        for (n, s) in &matches {
+            eprintln!("  - {n}  ({s})");
+        }
+        eprintln!();
+        eprint!("Continue? [y/N] ");
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Destroy each. Collect reports for --json output.
+    let mut reports = Vec::with_capacity(matches.len());
+    for (name, _) in &matches {
+        tracing::info!(name = %name, force = args.force, "bulk destroying VM");
+        match vm::destroy(name, args.force).await {
+            Ok(()) => {
+                if args.json {
+                    reports.push(vm::DestroyReport {
+                        name: name.clone(),
+                        destroyed: true,
+                    });
+                } else {
+                    println!("  ✓ VM '{name}' destroyed");
+                }
+            }
+            Err(e) => {
+                // One failure shouldn't abort the rest of the bulk action.
+                // Report it and keep going so the user gets a clean state at
+                // the end (or as clean as we can manage).
+                eprintln!("  ✗ failed to destroy '{name}': {e:#}");
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+    }
+    Ok(())
+}
+
 /// Open the named instance, build a `VmStateReport` (with `created: false`
 /// since by definition we're past the create boundary), and print it as
 /// pretty-formatted JSON. Used by every lifecycle verb that has a `--json`
@@ -358,20 +527,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Destroy(args) => {
-            tracing::info!(name = %args.name, force = args.force, "destroying VM");
-            vm::destroy(&args.name, args.force).await?;
-            if args.json {
-                let report = vm::DestroyReport {
-                    name: args.name.clone(),
-                    destroyed: true,
-                };
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!("  ✓ VM '{}' destroyed", args.name);
-            }
-            Ok(())
-        }
+        Command::Destroy(args) => destroy_command(&args, cli.yes).await,
         Command::Rename(args) => {
             tracing::info!(old = %args.old, new = %args.new, "renaming VM");
             vm::rename(&args.old, &args.new).await?;
@@ -410,9 +566,33 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 memory: String,
                 cpus: String,
                 disk: String,
+                labels: String,
             }
 
-            let instances = vm::list().await?;
+            // Pre-parse label selectors once. Empty Vec → empty selector
+            // map → matches every VM (instance_matches_labels returns true
+            // when all of zero selectors match).
+            let selectors = parse_label_selectors(&args.label)?;
+
+            let all_instances = vm::list().await?;
+
+            // Filter by label selector when one is given. Best-effort: a
+            // VM whose saved config can't load is excluded from labelled
+            // queries (we have no labels to match against).
+            let instances: Vec<_> = if selectors.is_empty() {
+                all_instances
+            } else {
+                let mut filtered = Vec::new();
+                for inst in all_instances {
+                    let Ok(cfg) = config::load_resolved(&inst.config_path()) else {
+                        continue;
+                    };
+                    if instance_matches_labels(&cfg.labels, &selectors) {
+                        filtered.push(inst);
+                    }
+                }
+                filtered
+            };
 
             if args.json {
                 // VmStateReport for every instance — best-effort: VMs whose
@@ -436,7 +616,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
 
             if instances.is_empty() {
-                eprintln!("No VMs found. Create one with: agv create <name>");
+                if args.label.is_empty() {
+                    eprintln!("No VMs found. Create one with: agv create <name>");
+                } else {
+                    eprintln!("No VMs match the given label selectors.");
+                }
                 return Ok(());
             }
 
@@ -455,16 +639,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 // Best-effort: show "?" if config can't be read, but leave
                 // a debug trace so `agv -v ls` surfaces the parse/IO error
                 // instead of silently hiding it behind "?".
-                let (memory, cpus, disk_max) =
+                let (memory, cpus, disk_max, labels_str) =
                     match config::load_resolved(&inst.config_path()) {
-                        Ok(c) => (c.memory, c.cpus.to_string(), c.disk),
+                        Ok(c) => {
+                            let labels_str = format_labels_inline(&c.labels);
+                            (c.memory, c.cpus.to_string(), c.disk, labels_str)
+                        }
                         Err(e) => {
                             tracing::debug!(
                                 vm = %inst.name,
                                 error = %format!("{e:#}"),
                                 "failed to read instance config for ls row"
                             );
-                            ("?".to_string(), "?".to_string(), "?".to_string())
+                            ("?".to_string(), "?".to_string(), "?".to_string(), String::new())
                         }
                     };
                 // Actual on-disk size of the qcow2 file. qcow2 grows as the
@@ -479,6 +666,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     memory,
                     cpus,
                     disk,
+                    labels: labels_str,
                 });
             }
 
@@ -488,10 +676,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let cpus_w = rows.iter().map(|r| r.cpus.len()).max().unwrap_or(0);
             let disk_w = rows.iter().map(|r| r.disk.len()).max().unwrap_or(0);
             for r in &rows {
-                println!(
-                    "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
-                    r.name, r.status, r.memory, r.cpus, r.disk,
-                );
+                if args.labels {
+                    println!(
+                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk  {labels}",
+                        r.name, r.status, r.memory, r.cpus, r.disk,
+                        labels = r.labels,
+                    );
+                } else {
+                    println!(
+                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
+                        r.name, r.status, r.memory, r.cpus, r.disk,
+                    );
+                }
             }
             Ok(())
         }

@@ -59,6 +59,18 @@ All notable changes to `agv` will be documented here. This project follows
   Generic failures stay at `1`; clap usage errors at `2`. The
   resource-capacity check now returns a structured `Error::HostCapacity`
   variant instead of an untyped `anyhow!()` so the mapping is clean.
+- **Labels — free-form key=value metadata on VMs.** `agv create
+  --label k=v` (repeatable) attaches labels at create time; bare
+  `--label foo` is shorthand for `foo=""`. Labels persist with the
+  VM, surface via `agv inspect` and `agv ls --labels`, and appear
+  in `--json` output as a `labels` field on `VmStateReport`.
+  `agv ls --label k=v` filters to matching VMs (repeated filters
+  AND together; bare-key matches any value). `agv destroy --label
+  k=v` does bulk destroy by selector — refuses running VMs unless
+  `--force`, and prompts (listing the matched VMs) unless `-y` or
+  `--json`. agv doesn't interpret label contents; they're for
+  agents tracking session ownership and for humans tagging VMs by
+  purpose.
 - **`docs/json-schema.md`** documents every `--json` shape and the
   exit-code table. Treats both as a stability contract over the 0.x
   series — additions OK in any minor, renames/removals only on a
