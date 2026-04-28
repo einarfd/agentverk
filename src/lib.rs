@@ -331,6 +331,12 @@ async fn print_resources(json: bool) -> anyhow::Result<()> {
 async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
     if args.list {
         let active = vm::forwarding::list(&args.name).await?;
+        if args.json {
+            let entries: Vec<forward::ForwardJson> =
+                active.iter().copied().map(Into::into).collect();
+            println!("{}", serde_json::to_string_pretty(&entries)?);
+            return Ok(());
+        }
         if active.is_empty() {
             if !quiet {
                 println!("No active forwards on '{}'.", args.name);
@@ -693,8 +699,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Images => {
+        Command::Images(args) => {
             let all = images::list_all()?;
+            if args.json {
+                let entries: Vec<images::ImageJson> =
+                    all.iter().map(images::ImageJson::from).collect();
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+                return Ok(());
+            }
             if all.is_empty() {
                 eprintln!("No images found.");
                 return Ok(());
@@ -739,8 +751,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Cache(args) => match args.command {
-            CacheCommand::Ls => {
+            CacheCommand::Ls(largs) => {
                 let entries = image::list_cache().await?;
+                if largs.json {
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                    return Ok(());
+                }
                 if entries.is_empty() {
                     eprintln!("No cached images.");
                     return Ok(());
@@ -885,8 +901,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
-        Command::Specs => {
+        Command::Specs(args) => {
             let all = specs::list_all()?;
+            if args.json {
+                let entries: Vec<specs::SpecJson> =
+                    all.iter().map(specs::SpecJson::from).collect();
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+                return Ok(());
+            }
             if all.is_empty() {
                 eprintln!("No specs found.");
                 return Ok(());
@@ -913,8 +935,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 );
                 vm::create_template(&targs.vm, &targs.name, targs.stop, verbose, quiet).await
             }
-            TemplateCommand::Ls => {
+            TemplateCommand::Ls(targs) => {
                 let templates = vm::list_templates().await?;
+                if targs.json {
+                    println!("{}", serde_json::to_string_pretty(&templates)?);
+                    return Ok(());
+                }
                 if templates.is_empty() {
                     eprintln!("No templates found. Create one with: agv template create <vm> <name>");
                     return Ok(());
@@ -983,6 +1009,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             if args.remove_ssh {
                 return ssh_config::remove_include();
+            }
+            if args.json {
+                return doctor::run_json();
             }
             doctor::run()
 

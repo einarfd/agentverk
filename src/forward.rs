@@ -183,6 +183,28 @@ impl ActiveForward {
     }
 }
 
+/// JSON projection of `ActiveForward` for `agv forward --list --json`.
+///
+/// Drops `pid` (an internal supervisor process detail that's not part of
+/// the agent-facing contract). Stable across the 0.x series — additions
+/// OK, removals/renames need a major bump.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ForwardJson {
+    pub host: u16,
+    pub guest: u16,
+    pub origin: Origin,
+}
+
+impl From<ActiveForward> for ForwardJson {
+    fn from(a: ActiveForward) -> Self {
+        Self {
+            host: a.host,
+            guest: a.guest,
+            origin: a.origin,
+        }
+    }
+}
+
 /// Wrapper used for TOML (de)serialization of the state file.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ActiveForwardsFile {
@@ -524,5 +546,42 @@ mod tests {
         .unwrap();
         clear_active(&path).await.unwrap();
         assert!(!path.exists());
+    }
+
+    /// Schema pin for `agv forward --list --json` entries — drift in this
+    /// shape is a major-version bump.
+    #[test]
+    fn forward_json_schema_pin() {
+        let entry = ForwardJson {
+            host: 8080,
+            guest: 8080,
+            origin: Origin::Config,
+        };
+        let json = serde_json::to_value(entry).unwrap();
+        let obj = json.as_object().expect("ForwardJson must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["guest", "host", "origin"].into_iter().collect();
+        assert_eq!(actual, expected, "ForwardJson keys drifted");
+    }
+
+    /// `Origin` round-trips as a lowercase string variant — agents
+    /// pattern-match on it.
+    #[test]
+    fn forward_json_origin_serializes_lowercase() {
+        let cases = [
+            (Origin::Config, "config"),
+            (Origin::Adhoc, "adhoc"),
+            (Origin::Auto, "auto"),
+        ];
+        for (origin, expected) in cases {
+            let entry = ForwardJson { host: 1, guest: 1, origin };
+            let json = serde_json::to_value(entry).unwrap();
+            assert_eq!(
+                json.get("origin"),
+                Some(&serde_json::Value::String(expected.to_string())),
+            );
+        }
     }
 }

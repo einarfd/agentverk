@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dirs;
 
@@ -51,6 +51,40 @@ pub enum SpecSource {
     BuiltIn,
     /// User-provided file.
     User(PathBuf),
+}
+
+/// JSON projection of `SpecInfo` for `agv specs --json`.
+///
+/// Stable across the 0.x series — additions OK, removals/renames need
+/// a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpecJson {
+    pub name: String,
+    pub memory: String,
+    pub cpus: u32,
+    pub disk: String,
+    /// `true` for built-ins baked into the binary, `false` for
+    /// user-provided files in `<data_dir>/specs/`.
+    pub built_in: bool,
+    /// Path to the user-provided file, or `null` for built-ins.
+    pub path: Option<String>,
+}
+
+impl From<&SpecInfo> for SpecJson {
+    fn from(info: &SpecInfo) -> Self {
+        let (built_in, path) = match &info.source {
+            SpecSource::BuiltIn => (true, None),
+            SpecSource::User(p) => (false, Some(p.display().to_string())),
+        };
+        Self {
+            name: info.name.clone(),
+            memory: info.spec.memory.clone(),
+            cpus: info.spec.cpus,
+            disk: info.spec.disk.clone(),
+            built_in,
+            path,
+        }
+    }
 }
 
 impl std::fmt::Display for SpecSource {
@@ -196,5 +230,31 @@ mod tests {
         assert!(names.contains(&"medium"));
         assert!(names.contains(&"large"));
         assert!(names.contains(&"xlarge"));
+    }
+
+    /// Schema pin for `agv specs --json` entries — drift here is a
+    /// major-version bump.
+    #[test]
+    fn spec_json_schema_pin() {
+        let info = SpecInfo {
+            name: "small".to_string(),
+            spec: Spec {
+                memory: "4G".to_string(),
+                cpus: 2,
+                disk: "20G".to_string(),
+            },
+            source: SpecSource::BuiltIn,
+        };
+        let json = serde_json::to_value(SpecJson::from(&info)).unwrap();
+        let obj = json.as_object().expect("SpecJson must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["built_in", "cpus", "disk", "memory", "name", "path"]
+                .into_iter()
+                .collect();
+        assert_eq!(actual, expected, "SpecJson keys drifted");
+        assert_eq!(obj.get("path"), Some(&serde_json::Value::Null));
+        assert_eq!(obj.get("built_in"), Some(&serde_json::Value::Bool(true)));
     }
 }

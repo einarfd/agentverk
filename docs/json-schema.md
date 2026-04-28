@@ -143,6 +143,140 @@ and agv's allocation.
 | `total_disk_bytes` | uint64 | Sum of declared disk sizes across every VM (qcow2 max sizes — actual usage is lower because of copy-on-write) |
 | `total_count` | uint32 | Total VMs known to agv |
 
+### List-like read commands
+
+The following commands emit a JSON array (or object, for `agv doctor`) when called with `--json`. Each shape is a separate stability contract — additions OK across the 0.x series, removals/renames need a major bump.
+
+#### `agv images --json`
+
+Array of image and mixin entries (built-ins plus any user-provided files in `<data_dir>/images/`).
+
+```json
+[
+  {"name": "ubuntu-24.04", "type": "image", "built_in": true,  "path": null},
+  {"name": "claude",       "type": "mixin", "built_in": true,  "path": null},
+  {"name": "myimage",      "type": "image", "built_in": false, "path": "/Users/u/.local/share/agv/images/myimage.toml"}
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Image or mixin name |
+| `type` | string | `"image"` (full base image) or `"mixin"` (overlays files / setup / provision steps) |
+| `built_in` | bool | `true` for entries baked into the binary |
+| `path` | string \| null | Absolute path to the user-provided file; `null` for built-ins |
+
+#### `agv specs --json`
+
+Array of hardware-spec entries (built-ins plus any user-provided files in `<data_dir>/specs/`).
+
+```json
+[
+  {"name": "small",  "memory": "4G",  "cpus": 2, "disk": "20G", "built_in": true, "path": null},
+  {"name": "medium", "memory": "8G",  "cpus": 4, "disk": "40G", "built_in": true, "path": null}
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Spec name (e.g. `small`, `medium`) |
+| `memory` | string | Memory allocation, e.g. `"8G"` |
+| `cpus` | uint32 | Virtual CPU count |
+| `disk` | string | Disk size, e.g. `"40G"` |
+| `built_in` | bool | `true` for entries baked into the binary |
+| `path` | string \| null | Absolute path to the user-provided file; `null` for built-ins |
+
+#### `agv template ls --json`
+
+Array of saved-template entries. Empty array when no templates exist.
+
+```json
+[
+  {
+    "name": "claude-base",
+    "source_vm": "claude-source",
+    "memory": "8G",
+    "cpus": 4,
+    "disk": "40G",
+    "dependents": ["claude-vm-1", "claude-vm-2"]
+  }
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Template name |
+| `source_vm` | string | Name of the VM the template was created from |
+| `memory` | string | Default memory for VMs cloned from this template |
+| `cpus` | uint32 | Default CPU count |
+| `disk` | string | Backing-disk size |
+| `dependents` | string[] | Names of existing VMs whose disk is backed by this template. Always present, possibly empty |
+
+#### `agv cache ls --json`
+
+Array of cached-image entries. Empty array when the cache is empty.
+
+```json
+[
+  {"filename": "ubuntu-24.04-arm64.img", "size": 345678901, "in_use": true},
+  {"filename": "fedora-43-aarch64.qcow2", "size": 412300000, "in_use": false}
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `filename` | string | File in the image cache directory |
+| `size` | uint64 | File size in bytes |
+| `in_use` | bool | `true` when at least one VM's disk references this file as a backing image |
+
+#### `agv forward <name> --list --json`
+
+Array of active forwards on a running VM. Empty array when no forwards are active.
+
+```json
+[
+  {"host": 8080, "guest": 8080, "origin": "config"},
+  {"host": 5432, "guest": 5432, "origin": "adhoc"}
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `host` | uint16 | Host port on `127.0.0.1` |
+| `guest` | uint16 | Guest port the forward terminates at |
+| `origin` | string | One of: `"config"` (declared in `agv.toml`), `"adhoc"` (added at runtime via `agv forward`), `"auto"` (provisioned by an `[auto_forwards.<name>]` mixin entry) |
+
+The supervisor PID tracked internally is intentionally not exposed — it's an implementation detail of how agv keeps the SSH tunnel alive.
+
+#### `agv doctor --json`
+
+Object with the dependency check results. Always emits the same keys (no omissions for missing dependencies — a missing tool surfaces as `found: false`).
+
+```json
+{
+  "ok": false,
+  "issues": 1,
+  "checks": [
+    {"name": "qemu-system-aarch64", "found": true},
+    {"name": "qemu-img",            "found": true},
+    {"name": "ssh",                 "found": true},
+    {"name": "ssh-keygen",          "found": true},
+    {"name": "scp",                 "found": true},
+    {"name": "hdiutil",             "found": false}
+  ],
+  "ssh_include_installed": true
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `ok` | bool | `true` iff every check passed (i.e. `issues == 0`) |
+| `issues` | uint32 | Count of failed dependency checks. Does not factor in `ssh_include_installed` — the include is best-effort, not required |
+| `checks` | object[] | One entry per dependency, in display order. Each has `{name: string, found: bool}` |
+| `ssh_include_installed` | bool \| null | `true` if the agv-managed Include line is present in `~/.ssh/config`; `null` when the host config could not be read |
+
+The check `name` field is human-oriented and may be a slash-joined alternates list (e.g. `"mkisofs / genisoimage"` on Linux); don't pattern-match on it as if it were a stable identifier.
+
 ---
 
 ## Exit codes
@@ -189,18 +323,18 @@ if result.returncode == 10:
 
 ## Things that don't have `--json` yet
 
-Commands left out of the JSON contract as of 0.2.x:
+Commands left out of the JSON contract:
 
-- `agv images`, `agv specs`, `agv template ls`, `agv cache ls`,
-  `agv forward --list`, `agv config view`, `agv doctor` — list-like
-  informational commands, called rarely. Will land in a future minor
-  version when there's concrete demand.
+- `agv config show` — overlaps with `agv inspect --json`'s
+  `VmStateReport`; pinning the full resolved-config schema is a bigger
+  commitment than the rest. Will land if concrete demand shows up.
 - `agv ssh`, `agv cp` — pass-through commands; output is whatever the
   user's command / scp produced. Adding `--json` would require
   re-defining the I/O model.
 - `agv gui` — opens the user's browser; the URL line is parseable as
   text already (`agv gui --no-launch <vm>` prints just the URL).
-- `agv init`, `agv doctor --setup-ssh / --remove-ssh` — produce side
-  effects rather than data.
+- `agv init`, `agv doctor --setup-ssh / --remove-ssh`,
+  `agv config set`, `agv cache clean`, `agv template create`,
+  `agv template rm` — produce side effects rather than data.
 
 When these gain `--json` support, their shapes will land here.

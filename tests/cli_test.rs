@@ -731,3 +731,127 @@ fn create_from_and_image_conflict() {
         .assert()
         .failure();
 }
+
+// ── --json on list-like commands ──────────────────────────────────────────────
+
+#[test]
+fn images_json_emits_array_with_expected_keys() {
+    // Run against an isolated empty data dir so only built-ins are returned.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["images", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let arr = parsed.as_array().expect("images --json must emit an array");
+    assert!(!arr.is_empty(), "expected built-in images");
+    let obj = arr[0].as_object().unwrap();
+    for key in ["name", "type", "built_in", "path"] {
+        assert!(obj.contains_key(key), "image entry missing key: {key}");
+    }
+    // Built-ins serialize path as null.
+    let claude = arr.iter().find(|e| e["name"] == "claude").expect("claude mixin not found");
+    assert_eq!(claude["built_in"], serde_json::Value::Bool(true));
+    assert_eq!(claude["path"], serde_json::Value::Null);
+    assert_eq!(claude["type"], serde_json::Value::String("mixin".to_string()));
+}
+
+#[test]
+fn specs_json_emits_array_with_expected_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["specs", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let arr = parsed.as_array().expect("specs --json must emit an array");
+    assert!(arr.iter().any(|e| e["name"] == "small"));
+    let obj = arr[0].as_object().unwrap();
+    for key in ["name", "memory", "cpus", "disk", "built_in", "path"] {
+        assert!(obj.contains_key(key), "spec entry missing key: {key}");
+    }
+}
+
+#[test]
+fn cache_ls_json_against_empty_data_dir_returns_empty_array() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["cache", "ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(parsed.as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn template_ls_json_against_empty_data_dir_returns_empty_array() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["template", "ls", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(parsed.as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn doctor_json_emits_object_with_expected_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    // Note: doctor exits 0 even with missing tools (it's a report).
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let obj = parsed.as_object().expect("doctor --json must emit an object");
+    for key in ["ok", "issues", "checks", "ssh_include_installed"] {
+        assert!(obj.contains_key(key), "doctor report missing key: {key}");
+    }
+    assert!(obj["checks"].is_array(), "checks must be an array");
+}
+
+/// Catches "I forgot to register --json on this list-like command". Each
+/// of these should accept --json without clap rejecting (which would be
+/// exit code 2). A few may exit non-zero at runtime (e.g. forward against
+/// a missing VM), but never with code 2.
+#[test]
+fn json_flag_is_registered_on_list_like_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cases: &[&[&str]] = &[
+        &["images", "--json"],
+        &["specs", "--json"],
+        &["cache", "ls", "--json"],
+        &["template", "ls", "--json"],
+        &["doctor", "--json"],
+        &["forward", "--json", "--list", "agv-no-such-vm-12345"],
+    ];
+    for args in cases {
+        let output = agv()
+            .env("AGV_DATA_DIR", tmp.path())
+            .args(*args)
+            .output()
+            .unwrap();
+        let code = output.status.code().unwrap_or(-1);
+        assert!(
+            code != 2,
+            "{args:?} exited with code 2 (clap usage error) — \
+             is --json registered on this command?\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}

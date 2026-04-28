@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context as _;
+use serde::Serialize;
 
 use crate::config::Config;
 use crate::dirs;
@@ -116,6 +117,38 @@ pub struct ImageInfo {
     pub image_type: ImageType,
     /// Where this image comes from.
     pub source: ImageSource,
+}
+
+/// JSON projection of `ImageInfo` for `agv images --json`.
+///
+/// Stable across the 0.x series — additions OK, removals/renames need
+/// a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageJson {
+    pub name: String,
+    /// `"image"` or `"mixin"`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `true` for built-ins baked into the binary, `false` for
+    /// user-provided files in `<data_dir>/images/`.
+    pub built_in: bool,
+    /// Path to the user-provided file, or `null` for built-ins.
+    pub path: Option<String>,
+}
+
+impl From<&ImageInfo> for ImageJson {
+    fn from(info: &ImageInfo) -> Self {
+        let (built_in, path) = match &info.source {
+            ImageSource::BuiltIn => (true, None),
+            ImageSource::User(p) => (false, Some(p.display().to_string())),
+        };
+        Self {
+            name: info.name.clone(),
+            kind: info.image_type.to_string(),
+            built_in,
+            path,
+        }
+    }
 }
 
 /// Where an image definition was found.
@@ -502,5 +535,48 @@ mod tests {
         assert!(names.contains(&"ssh-key"));
         assert!(names.contains(&"uv"));
         assert!(names.contains(&"zsh"));
+    }
+
+    /// Schema pin for `agv images --json` entries — drift here is a
+    /// major-version bump.
+    #[test]
+    fn image_json_schema_pin() {
+        let info = ImageInfo {
+            name: "claude".to_string(),
+            image_type: ImageType::Mixin,
+            source: ImageSource::BuiltIn,
+        };
+        let json = serde_json::to_value(ImageJson::from(&info)).unwrap();
+        let obj = json.as_object().expect("ImageJson must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["built_in", "name", "path", "type"].into_iter().collect();
+        assert_eq!(actual, expected, "ImageJson keys drifted");
+        // Built-ins serialize path as null, not omit it.
+        assert_eq!(obj.get("path"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            obj.get("type"),
+            Some(&serde_json::Value::String("mixin".to_string())),
+        );
+    }
+
+    #[test]
+    fn image_json_user_source_serializes_path() {
+        let info = ImageInfo {
+            name: "myimage".to_string(),
+            image_type: ImageType::Image,
+            source: ImageSource::User(PathBuf::from("/tmp/myimage.toml")),
+        };
+        let json = serde_json::to_value(ImageJson::from(&info)).unwrap();
+        assert_eq!(json.get("built_in"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            json.get("path"),
+            Some(&serde_json::Value::String("/tmp/myimage.toml".to_string())),
+        );
+        assert_eq!(
+            json.get("type"),
+            Some(&serde_json::Value::String("image".to_string())),
+        );
     }
 }

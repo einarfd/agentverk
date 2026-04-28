@@ -65,7 +65,7 @@ pub enum Command {
     Ls(LsArgs),
 
     /// List available images.
-    Images,
+    Images(ImagesArgs),
 
     /// Show detailed information about a VM.
     Inspect(InspectArgs),
@@ -77,7 +77,7 @@ pub enum Command {
     Cache(CacheArgs),
 
     /// List available VM hardware specs.
-    Specs,
+    Specs(SpecsArgs),
 
     /// Show host capacity (RAM, CPUs, disk) and what agv has allocated.
     ///
@@ -423,6 +423,20 @@ pub struct ResourcesArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct ImagesArgs {
+    /// Output as a JSON array of image entries.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SpecsArgs {
+    /// Output as a JSON array of spec entries.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct CacheArgs {
     #[command(subcommand)]
     pub command: CacheCommand,
@@ -431,10 +445,17 @@ pub struct CacheArgs {
 #[derive(Debug, Subcommand)]
 pub enum CacheCommand {
     /// List cached images and their disk usage.
-    Ls,
+    Ls(CacheLsArgs),
 
     /// Remove cached images that are no longer referenced by any VM.
     Clean,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CacheLsArgs {
+    /// Output as a JSON array of cache entries.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -449,10 +470,17 @@ pub enum TemplateCommand {
     Create(TemplateCreateArgs),
 
     /// List available templates.
-    Ls,
+    Ls(TemplateLsArgs),
 
     /// Delete a template.
     Rm(TemplateRmArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TemplateLsArgs {
+    /// Output as a JSON array of template entries.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -513,6 +541,10 @@ pub struct DoctorArgs {
     /// Remove the agv Include line from ~/.ssh/config.
     #[arg(long)]
     pub remove_ssh: bool,
+
+    /// Output the dependency report as JSON.
+    #[arg(long, conflicts_with_all = ["setup_ssh", "remove_ssh"])]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -542,6 +574,11 @@ pub struct ForwardArgs {
     /// specs, every active forward (config and ad-hoc) is removed.
     #[arg(long)]
     pub stop: bool,
+
+    /// Output as JSON. With `--list`, prints an array of active forwards;
+    /// without `--list`, ignored.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

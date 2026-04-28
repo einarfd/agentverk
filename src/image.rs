@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _};
 use futures_util::StreamExt as _;
+use serde::Serialize;
 use sha2::{Digest as _, Sha256, Sha512};
 use tokio::io::AsyncWriteExt as _;
 use tracing::info;
@@ -421,6 +422,12 @@ async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
 }
 
 /// An entry in the image cache.
+///
+/// Used for both human-readable `agv cache ls` output and as the stable
+/// JSON shape for `agv cache ls --json` (additions OK across the 0.x
+/// series, removals/renames need a major bump). The `size` field is in
+/// bytes; consumers format it for display.
+#[derive(Debug, Serialize)]
 pub struct CacheEntry {
     pub filename: String,
     pub size: u64,
@@ -679,6 +686,24 @@ mod tests {
     #[test]
     fn normalize_size_invalid_unit_fails() {
         assert!(normalize_size("8X").is_err());
+    }
+
+    /// Schema pin for `agv cache ls --json` entries — drift here is a
+    /// major-version bump.
+    #[test]
+    fn cache_entry_json_schema_pin() {
+        let entry = CacheEntry {
+            filename: "ubuntu-24.04-arm64.img".to_string(),
+            size: 345_678_901,
+            in_use: true,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let obj = json.as_object().expect("CacheEntry must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["filename", "in_use", "size"].into_iter().collect();
+        assert_eq!(actual, expected, "CacheEntry JSON keys drifted");
     }
 
     #[tokio::test]

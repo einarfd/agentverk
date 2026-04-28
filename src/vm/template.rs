@@ -52,7 +52,11 @@ fn default_template_os_family() -> String {
 }
 
 /// Summary information about an available template.
-#[derive(Debug)]
+///
+/// Used for both human-readable `agv template ls` output and as the
+/// stable JSON shape for `agv template ls --json` (additions OK across
+/// the 0.x series, removals/renames need a major bump).
+#[derive(Debug, Serialize)]
 pub struct TemplateInfo {
     pub name: String,
     pub source_vm: String,
@@ -500,4 +504,52 @@ async fn clear_machine_id_via_ssh(
     .context("failed to clear machine-id on VM")?;
     step_done(spinner, "Cleared machine-id");
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Schema pin for `agv template ls --json` entries — drift here is a
+    /// major-version bump.
+    #[test]
+    fn template_info_json_schema_pin() {
+        let info = TemplateInfo {
+            name: "claude-base".to_string(),
+            source_vm: "_template-source".to_string(),
+            memory: "8G".to_string(),
+            cpus: 4,
+            disk: "40G".to_string(),
+            dependents: vec!["myvm-1".to_string()],
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        let obj = json
+            .as_object()
+            .expect("TemplateInfo must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["cpus", "dependents", "disk", "memory", "name", "source_vm"]
+                .into_iter()
+                .collect();
+        assert_eq!(actual, expected, "TemplateInfo JSON keys drifted");
+    }
+
+    /// `dependents` must round-trip as `[]` when empty, not be omitted.
+    #[test]
+    fn template_info_dependents_serialize_as_array_when_empty() {
+        let info = TemplateInfo {
+            name: "x".to_string(),
+            source_vm: "y".to_string(),
+            memory: "1G".to_string(),
+            cpus: 1,
+            disk: "10G".to_string(),
+            dependents: vec![],
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        let deps = json.get("dependents").expect("dependents key must be present");
+        assert!(deps.is_array());
+        assert_eq!(deps.as_array().unwrap().len(), 0);
+    }
 }

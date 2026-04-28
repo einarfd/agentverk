@@ -6,6 +6,17 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`--json` on every list-like read command.** `agv images`,
+  `agv specs`, `agv template ls`, `agv cache ls`,
+  `agv forward --list`, and `agv doctor` now accept `--json` and
+  emit a documented, schema-pinned shape (see
+  `docs/json-schema.md`). Closes the last gap in the agent-facing
+  read surface — every command an agent uses to discover
+  available images, specs, templates, cached files, forwards, or
+  host setup state now has a stable JSON contract.
+
 ### Fixed
 
 - **Race condition in the managed `ssh_config` file when two

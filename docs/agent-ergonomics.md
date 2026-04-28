@@ -57,21 +57,29 @@ State of play (as of post-0.2.2):
   `--json` is registered (catches "I forgot the flag on a new
   command" regressions).
 
-Still pending (3c, lower priority):
+**Shipped (3c, post-0.2.3):**
 
-- **List-like informational commands**: `forward --list`, `images`,
-  `specs`, `template ls`, `cache ls`, `config view`, `doctor`.
-  Called rarely; agents can usually work without these. Defer until
-  concrete demand shows up.
-- **`docs/json-schema.md`** — a single page documenting every
-  `--json` output's shape and the stability contract (additions OK
-  on minor; renames/removals on major). Pairs naturally with the
-  exit-code documentation since both are the "agent-readable
-  interface" surface.
+- ✓ **List-like informational commands**: `agv images`, `agv specs`,
+  `agv template ls`, `agv cache ls`, `agv forward --list`, and
+  `agv doctor` all accept `--json` and emit a documented,
+  schema-pinned shape (each shape is a separate `0.x` stability
+  contract; additions OK, removals/renames need a major bump).
+  Schema-pin tests live next to each struct (`ForwardJson`,
+  `ImageJson`, `SpecJson`, `TemplateInfo`, `CacheEntry`,
+  `DoctorReport`) and an integration sweep in `tests/cli_test.rs`
+  verifies clap accepts `--json` on each verb (catches "I forgot
+  the flag on a new list command" regressions).
+- ✓ **`docs/json-schema.md`** — every `--json` shape is documented
+  with field-by-field tables, plus a "things that don't have
+  `--json` yet" section listing the deliberate omissions
+  (`config show`, side-effect commands, pass-through commands).
 
-Effort remaining: S–M. The shape work is essentially done — every
-VM-touching command emits JSON. What's left is the schema doc page
-(easy but careful) and (separately) the exit-code work below.
+Still pending:
+
+- **`agv config show --json`** — overlaps with `inspect --json`'s
+  `VmStateReport`; pinning the full resolved-config shape (mixin
+  list, files, setup, provision steps) is a bigger commitment than
+  the rest. Defer until a concrete need surfaces.
 
 ### Side note — slow boot tests should validate JSON, not text
 

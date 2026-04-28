@@ -4,6 +4,7 @@
 //! what is missing together with platform-specific install instructions.
 
 use anstyle::{AnsiColor, Style};
+use serde::Serialize;
 
 const GREEN: Style = AnsiColor::Green.on_default();
 const RED: Style = AnsiColor::Red.on_default();
@@ -114,6 +115,64 @@ fn is_available(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// JSON shapes
+// ---------------------------------------------------------------------------
+
+/// One dependency-check result for `agv doctor --json`.
+///
+/// Stable across the 0.x series — additions OK, removals/renames need
+/// a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckJson {
+    /// Human label (often the binary name, occasionally a slash-joined
+    /// alternates list like `"mkisofs / genisoimage"`).
+    pub name: String,
+    /// `true` when at least one of the candidate binaries was found on PATH.
+    pub found: bool,
+}
+
+/// Aggregate doctor report for `agv doctor --json`.
+///
+/// Stable across the 0.x series — additions OK, removals/renames need
+/// a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct DoctorReport {
+    /// `true` iff every dependency check passed.
+    pub ok: bool,
+    /// Number of failed dependency checks. Does not include
+    /// `ssh_include_installed` — the include is best-effort.
+    pub issues: u32,
+    /// One entry per dependency, in the same order as the human output.
+    pub checks: Vec<CheckJson>,
+    /// `true` if the agv-managed Include line is present in
+    /// `~/.ssh/config`. `null` if the host config could not be read.
+    pub ssh_include_installed: Option<bool>,
+}
+
+fn build_report() -> DoctorReport {
+    let checks = all_checks();
+    let mut entries = Vec::with_capacity(checks.len());
+    let mut issues: u32 = 0;
+    for check in &checks {
+        let found = check.candidates.iter().any(|b| is_available(b));
+        if !found {
+            issues += 1;
+        }
+        entries.push(CheckJson {
+            name: check.label.to_string(),
+            found,
+        });
+    }
+    let ssh_include_installed = crate::ssh_config::is_include_installed().ok();
+    DoctorReport {
+        ok: issues == 0,
+        issues,
+        checks: entries,
+        ssh_include_installed,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -166,6 +225,13 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Run the dependency check and emit a JSON report to stdout.
+pub fn run_json() -> anyhow::Result<()> {
+    let report = build_report();
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 /// Append the SSH-config-Include status line to the dependency report.
 ///
 /// Called from [`run`] so all doctor output stays in one place. Errors
@@ -186,5 +252,69 @@ fn print_ssh_include_status() {
             anstream::println!("    enables IDE remote development (VS Code, JetBrains, etc.).");
         }
         Err(_) => {}
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Schema pin for `agv doctor --json` — drift here is a major-version
+    /// bump.
+    #[test]
+    fn doctor_report_json_schema_pin() {
+        let report = DoctorReport {
+            ok: true,
+            issues: 0,
+            checks: vec![CheckJson {
+                name: "qemu-img".to_string(),
+                found: true,
+            }],
+            ssh_include_installed: Some(true),
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().expect("DoctorReport must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["checks", "issues", "ok", "ssh_include_installed"]
+                .into_iter()
+                .collect();
+        assert_eq!(actual, expected, "DoctorReport JSON keys drifted");
+    }
+
+    /// `checks` always serializes as an array, never omitted, even on
+    /// platforms with very few checks.
+    #[test]
+    fn doctor_report_checks_serialize_as_array() {
+        let report = DoctorReport {
+            ok: true,
+            issues: 0,
+            checks: vec![],
+            ssh_include_installed: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.get("checks").is_some_and(serde_json::Value::is_array));
+        assert_eq!(
+            obj.get("ssh_include_installed"),
+            Some(&serde_json::Value::Null),
+        );
+    }
+
+    #[test]
+    fn check_json_schema_pin() {
+        let entry = CheckJson {
+            name: "ssh".to_string(),
+            found: true,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let obj = json.as_object().unwrap();
+        let actual: std::collections::BTreeSet<&str> =
+            obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["found", "name"].into_iter().collect();
+        assert_eq!(actual, expected, "CheckJson keys drifted");
     }
 }
