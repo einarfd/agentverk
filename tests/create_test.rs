@@ -180,50 +180,16 @@ async fn inspect(data_dir: &Path, name: &str) -> serde_json::Value {
     parse_json(&format!("agv inspect {name}"), &output.stdout)
 }
 
-/// Run a command inside the VM and return stdout.
-///
-/// Invokes the system `ssh` client directly using the port and key
-/// surfaced by `agv inspect --json`, with `-F /dev/null` so the user's
-/// `~/.ssh/config` can't interfere with test runs. This is what `agv
-/// ssh` does under the hood; testing the wrapper's argument parsing is
-/// out of scope for the slow boot suite (covered in `tests/cli_test.rs`).
+/// Run a command inside the VM via `agv ssh` and return stdout.
 async fn ssh_exec(data_dir: &Path, name: &str, cmd: &str) -> String {
-    let report = inspect(data_dir, name).await;
-    let port = u16::try_from(
-        report["ssh_port"]
-            .as_u64()
-            .expect("ssh_port must be set on a running VM"),
-    )
-    .expect("ssh_port must fit u16");
-    let inst_dir = PathBuf::from(report["data_dir"].as_str().unwrap());
-    let key = inst_dir.join("id_ed25519");
-
-    let output = tokio::process::Command::new("ssh")
-        .args([
-            "-i",
-            key.to_str().unwrap(),
-            "-p",
-            &port.to_string(),
-            "-F",
-            "/dev/null",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "ConnectTimeout=5",
-            "agent@localhost",
-            "--",
-            cmd,
-        ])
+    let output = agv(data_dir)
+        .args(["ssh", name, "--", cmd])
         .output()
         .await
         .unwrap();
     assert!(
         output.status.success(),
-        "ssh {name} -- {cmd} failed (exit {:?})\nstderr: {}\nstdout: {}",
+        "agv ssh {name} -- {cmd} failed (exit {:?})\nstderr: {}\nstdout: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout),
