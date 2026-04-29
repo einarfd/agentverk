@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-29
+
 ### Added
 
 - **`--json` on every list-like read command.** `agv images`,
@@ -19,6 +21,14 @@ All notable changes to `agv` will be documented here. This project follows
 
 ### Fixed
 
+- **`agv ssh <name> -- <cmd>` was silently broken.** clap's
+  `trailing_var_arg + allow_hyphen_values` consumes a *leading*
+  `--`, so the remote command words ended up as ssh options, ssh
+  treated the first one as the destination, and complained
+  "hostname contains invalid characters". The dispatcher now
+  recovers the boundary by walking `std::env::args_os()` when
+  clap discards the `--`. `agv ssh myvm -A -- ls` was unaffected
+  (with at least one value before `--`, clap preserves it).
 - **Race condition in the managed `ssh_config` file when two
   `agv` invocations updated it concurrently.** Two parallel
   `agv start` calls against different VMs would each
@@ -384,7 +394,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/einarfd/agentverk/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/einarfd/agentverk/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/einarfd/agentverk/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/einarfd/agentverk/compare/v0.2.0...v0.2.1
