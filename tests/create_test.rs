@@ -498,6 +498,27 @@ run = "cat /home/agent/.config/agv-test/agv-test-inject.txt"
         "provision.log should contain injected file content — file copy via SCP failed",
     );
 
+    // End-to-end check that `agv ssh <name> -- <cmd>` correctly
+    // routes the trailing arg as a remote command (and not as an
+    // ssh option, which would make ssh treat it as a hostname).
+    // Regression coverage for the clap quirk where leading `--` is
+    // silently consumed; the dispatcher recovers from raw argv.
+    let ssh_output = agv(data_dir.path())
+        .args(["ssh", name, "--", "echo agv-ssh-double-dash-ok"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        ssh_output.status.success(),
+        "agv ssh {name} -- <cmd> failed: {}",
+        String::from_utf8_lossy(&ssh_output.stderr),
+    );
+    let ssh_stdout = String::from_utf8(ssh_output.stdout).unwrap();
+    assert!(
+        ssh_stdout.contains("agv-ssh-double-dash-ok"),
+        "expected echo output via `agv ssh <name> -- <cmd>`, got:\n{ssh_stdout}",
+    );
+
     destroy(data_dir.path(), name).await;
 }
 

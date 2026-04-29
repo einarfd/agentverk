@@ -369,6 +369,11 @@ pub struct SshArgs {
     /// SSH options and/or remote command.
     /// Options (e.g. -A, -L 8080:localhost:8080) are passed through to ssh.
     /// Use -- to separate ssh options from a remote command.
+    ///
+    /// Note: clap's `trailing_var_arg` silently consumes a leading `--`
+    /// so this `Vec<String>` may not include the `--` the user typed.
+    /// `split_ssh_args` re-detects that case from `std::env::args_os()`
+    /// and routes accordingly.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }
@@ -629,5 +634,79 @@ pub struct TemplateCreateArgs {
     /// Stop the VM first if it is currently running.
     #[arg(long)]
     pub stop: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin clap's quirky behaviour for `agv ssh <name> -- <cmd>`.
+    /// `trailing_var_arg + allow_hyphen_values` silently consumes a
+    /// *leading* `--`, so this `args` field will NOT contain it.
+    /// The runtime recovers the boundary by inspecting raw argv —
+    /// see `split_ssh_args` and `raw_argv_has_leading_dash_dash_after_ssh`
+    /// in `lib.rs`. This test exists to make the silent eating
+    /// loud if clap ever changes behaviour, since the recovery
+    /// path is only needed because of it.
+    #[test]
+    fn ssh_clap_swallows_leading_dash_dash() {
+        let cli = Cli::try_parse_from(["agv", "ssh", "myvm", "--", "cat /tmp/foo"])
+            .expect("agv ssh ... -- ... should parse");
+        let Command::Ssh(ssh) = cli.command else {
+            panic!("expected Command::Ssh");
+        };
+        assert_eq!(ssh.name, "myvm");
+        assert_eq!(
+            ssh.args,
+            vec!["cat /tmp/foo".to_string()],
+            "clap discards the `--` here — this is the quirk",
+        );
+    }
+
+    /// When at least one non-`--` value precedes `--`, clap *does*
+    /// preserve `--` in `args`. The runtime's `split_ssh_args` then
+    /// uses it directly without consulting raw argv.
+    #[test]
+    fn ssh_clap_preserves_dash_dash_after_value() {
+        let cli = Cli::try_parse_from([
+            "agv", "ssh", "myvm", "-A", "--", "ls", "-la",
+        ])
+        .expect("agv ssh myvm -A -- ls -la should parse");
+        let Command::Ssh(ssh) = cli.command else {
+            panic!("expected Command::Ssh");
+        };
+        assert_eq!(
+            ssh.args,
+            vec![
+                "-A".to_string(),
+                "--".to_string(),
+                "ls".to_string(),
+                "-la".to_string(),
+            ],
+        );
+    }
+
+    /// `agv ssh myvm -A` (no command, just an ssh option) — `args`
+    /// has just the option.
+    #[test]
+    fn ssh_clap_accepts_lone_hyphen_value() {
+        let cli = Cli::try_parse_from(["agv", "ssh", "myvm", "-A"])
+            .expect("agv ssh myvm -A should parse");
+        let Command::Ssh(ssh) = cli.command else {
+            panic!("expected Command::Ssh");
+        };
+        assert_eq!(ssh.args, vec!["-A".to_string()]);
+    }
+
+    /// `agv ssh myvm` (bare interactive) parses with empty args.
+    #[test]
+    fn ssh_clap_bare_interactive() {
+        let cli = Cli::try_parse_from(["agv", "ssh", "myvm"])
+            .expect("agv ssh myvm should parse");
+        let Command::Ssh(ssh) = cli.command else {
+            panic!("expected Command::Ssh");
+        };
+        assert!(ssh.args.is_empty());
+    }
 }
 

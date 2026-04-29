@@ -66,17 +66,72 @@ fn not_running_error(name: &str, status: vm::instance::Status) -> anyhow::Error 
     anyhow::anyhow!("VM '{name}' is not running (status: {status}). {action}")
 }
 
-/// Split `agv ssh` trailing args at `--`.
+/// Split `agv ssh` trailing args into `(ssh_opts, remote_command)`.
 ///
-/// Everything before `--` is passed to ssh before the destination (ssh options
-/// such as `-A`, `-L port:host:port`). Everything after `--` is the remote
-/// command, passed after the destination. With no `--`, all args are treated
-/// as ssh options and no remote command is run.
-fn split_ssh_args(args: &[String]) -> (&[String], &[String]) {
-    match args.iter().position(|a| a == "--") {
-        Some(i) => (&args[..i], &args[i + 1..]),
-        None => (args, &[]),
+/// Routing rules, in order:
+/// 1. If `args` contains `--`, split there. (Happens when the user
+///    passed e.g. `-A -- ls`: clap preserves the `--` once at least
+///    one non-`--` value precedes it.)
+/// 2. Otherwise, check whether the user typed `--` immediately after
+///    the VM name on the *raw* command line. clap's `trailing_var_arg`
+///    silently consumes a *leading* `--`, so without this check
+///    `agv ssh myvm -- ls` would parse as `args = ["ls"]` and our
+///    function would mistakenly treat `ls` as an ssh option (which
+///    ssh then tries to use as a hostname). When that pattern is
+///    detected, every captured arg is the remote command.
+/// 3. Else, no `--` was involved at all — treat everything as ssh
+///    options (interactive session with extra flags, or no args at
+///    all).
+fn split_ssh_args<'a>(name: &str, args: &'a [String]) -> (&'a [String], &'a [String]) {
+    if let Some(i) = args.iter().position(|a| a == "--") {
+        return (&args[..i], &args[i + 1..]);
     }
+    if raw_argv_has_leading_dash_dash_after_ssh(name) {
+        return (&[], args);
+    }
+    (args, &[])
+}
+
+/// Did the user type `--` immediately after `agv ssh <name>` on the
+/// shell? Walks `std::env::args_os()` to recover what clap discarded.
+fn raw_argv_has_leading_dash_dash_after_ssh(name: &str) -> bool {
+    has_leading_dash_dash_after_ssh(std::env::args_os(), name)
+}
+
+/// Pure version of [`raw_argv_has_leading_dash_dash_after_ssh`] —
+/// takes an iterator of argv tokens so it's directly testable
+/// without spawning a subprocess.
+fn has_leading_dash_dash_after_ssh<I>(argv: I, name: &str) -> bool
+where
+    I: IntoIterator,
+    I::Item: AsRef<std::ffi::OsStr>,
+{
+    let mut iter = argv.into_iter();
+    // Skip until the literal "ssh" subcommand. Global flags
+    // (`--quiet`, `--verbose`) don't share that name.
+    let mut found_ssh = false;
+    for arg in iter.by_ref() {
+        if arg.as_ref() == "ssh" {
+            found_ssh = true;
+            break;
+        }
+    }
+    if !found_ssh {
+        return false;
+    }
+    // Skip until the VM name. Defensive against future flags
+    // sitting between `ssh` and the positional name.
+    let mut found_name = false;
+    for arg in iter.by_ref() {
+        if arg.as_ref() == name {
+            found_name = true;
+            break;
+        }
+    }
+    if !found_name {
+        return false;
+    }
+    iter.next().is_some_and(|a| a.as_ref() == "--")
 }
 
 /// Format a byte count as `<n>K`, `<n>M`, `<n.n>G`, or `<n.n>T` to match
@@ -562,7 +617,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 return Err(not_running_error(&args.name, status));
             }
             let cfg = config::load_resolved(&inst.config_path())?;
-            let (ssh_opts, command) = split_ssh_args(&args.args);
+            let (ssh_opts, command) = split_ssh_args(&args.name, &args.args);
             ssh::session(&inst, &cfg.user, ssh_opts, command).await
         }
         Command::Gui(args) => gui::run(&args.name, args.no_launch).await,
@@ -1030,51 +1085,94 @@ mod tests {
         s.to_string()
     }
 
+    /// When `args` contains an explicit `--` (clap-preserved
+    /// case — at least one value preceded it), split there. The
+    /// raw-argv fallback isn't exercised in these tests because
+    /// `std::env::args_os()` reflects the test binary's own argv
+    /// at the time the test runs.
     #[test]
-    fn split_ssh_args_empty() {
-        let (opts, cmd) = split_ssh_args(&[]);
-        assert!(opts.is_empty());
-        assert!(cmd.is_empty());
-    }
-
-    #[test]
-    fn split_ssh_args_opts_only() {
-        let args = vec![s("-A"), s("-L"), s("8080:localhost:8080")];
-        let (opts, cmd) = split_ssh_args(&args);
-        assert_eq!(opts, &[s("-A"), s("-L"), s("8080:localhost:8080")]);
-        assert!(cmd.is_empty());
-    }
-
-    #[test]
-    fn split_ssh_args_command_only() {
-        let args = vec![s("--"), s("ls"), s("-la")];
-        let (opts, cmd) = split_ssh_args(&args);
-        assert!(opts.is_empty());
-        assert_eq!(cmd, &[s("ls"), s("-la")]);
-    }
-
-    #[test]
-    fn split_ssh_args_opts_and_command() {
-        let args = vec![s("-A"), s("--"), s("ls"), s("-la")];
-        let (opts, cmd) = split_ssh_args(&args);
+    fn split_ssh_args_separator_in_middle() {
+        let args = [s("-A"), s("--"), s("ls"), s("-la")];
+        let (opts, cmd) = split_ssh_args("myvm", &args);
         assert_eq!(opts, &[s("-A")]);
         assert_eq!(cmd, &[s("ls"), s("-la")]);
     }
 
     #[test]
-    fn split_ssh_args_separator_at_start() {
-        let args = vec![s("--"), s("ls")];
-        let (opts, cmd) = split_ssh_args(&args);
+    fn split_ssh_args_separator_at_start_in_args() {
+        let args = [s("--"), s("ls")];
+        let (opts, cmd) = split_ssh_args("myvm", &args);
         assert!(opts.is_empty());
         assert_eq!(cmd, &[s("ls")]);
     }
 
     #[test]
     fn split_ssh_args_separator_at_end() {
-        let args = vec![s("-N"), s("--")];
-        let (opts, cmd) = split_ssh_args(&args);
+        let args = [s("-N"), s("--")];
+        let (opts, cmd) = split_ssh_args("myvm", &args);
         assert_eq!(opts, &[s("-N")]);
         assert!(cmd.is_empty());
+    }
+
+    /// No `--` and no leading `--` in raw argv — everything is
+    /// ssh options.
+    #[test]
+    fn split_ssh_args_only_opts() {
+        let args = [s("-A"), s("-L"), s("8080:localhost:8080")];
+        let (opts, cmd) = split_ssh_args("myvm", &args);
+        assert_eq!(opts, &[s("-A"), s("-L"), s("8080:localhost:8080")]);
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn split_ssh_args_empty() {
+        let (opts, cmd) = split_ssh_args("myvm", &[]);
+        assert!(opts.is_empty());
+        assert!(cmd.is_empty());
+    }
+
+    /// `has_leading_dash_dash_after_ssh` is the recovery path for
+    /// the case where clap eats `--`. It scans raw argv looking for
+    /// `agv ssh <name> --`.
+    #[test]
+    fn detects_dash_dash_after_vm_name() {
+        let argv = ["agv", "ssh", "myvm", "--", "cat", "foo"];
+        assert!(has_leading_dash_dash_after_ssh(argv, "myvm"));
+    }
+
+    #[test]
+    fn detects_dash_dash_after_global_flags() {
+        let argv = ["agv", "--quiet", "ssh", "myvm", "--", "cat"];
+        assert!(has_leading_dash_dash_after_ssh(argv, "myvm"));
+    }
+
+    #[test]
+    fn no_dash_dash_when_value_precedes_it() {
+        let argv = ["agv", "ssh", "myvm", "-A", "--", "ls"];
+        assert!(!has_leading_dash_dash_after_ssh(argv, "myvm"));
+    }
+
+    #[test]
+    fn no_dash_dash_for_bare_interactive() {
+        let argv = ["agv", "ssh", "myvm"];
+        assert!(!has_leading_dash_dash_after_ssh(argv, "myvm"));
+    }
+
+    /// VM names that collide with the `ssh` subcommand string
+    /// itself shouldn't fool the scanner. Skipping the first match
+    /// of "ssh" lands us at the subcommand; the name search
+    /// continues from there.
+    #[test]
+    fn vm_name_named_ssh_still_works() {
+        let argv = ["agv", "ssh", "ssh", "--", "cat"];
+        assert!(has_leading_dash_dash_after_ssh(argv, "ssh"));
+    }
+
+    /// Different subcommand — the scanner doesn't trigger.
+    #[test]
+    fn ignores_dash_dash_in_other_subcommands() {
+        let argv = ["agv", "ls", "--", "myvm"];
+        assert!(!has_leading_dash_dash_after_ssh(argv, "myvm"));
     }
 
     #[test]
