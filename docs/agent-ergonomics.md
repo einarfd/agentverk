@@ -81,14 +81,30 @@ Still pending:
   list, files, setup, provision steps) is a bigger commitment than
   the rest. Defer until a concrete need surfaces.
 
-### Side note — slow boot tests should validate JSON, not text
+### Side note — slow boot tests now validate JSON ✓ shipped
 
-Today `tests/create_test.rs` validates outcomes by parsing
-human-readable output (status strings, log file presence, etc.).
-Once the lifecycle verbs all emit `--json`, those slow boot tests
-should switch to asserting on the JSON `VmStateReport` instead — it's
-a more stable contract, easier to query, and dogfoods the agent path
-the skill recommends. Separate work item; ship after 3b lands.
+`tests/create_test.rs` was previously calling `vm::create()` /
+`vm::start()` in-process and introspecting via `Instance::open()` +
+state-file reads. It now subprocesses the `agv` binary, asserts on
+`VmStateReport` JSON for every lifecycle action, and uses the
+`data_dir` field as the anchor for any artifact-level checks
+(provision.log content, on-disk files). Each test runs against an
+isolated `AGV_DATA_DIR` tempdir so they no longer pollute the user's
+real `~/.local/share/agv/`. This dogfoods the agent path end-to-end
+under a real boot — a regression in the JSON contract or in the
+production CLI path will surface here.
+
+Lost in the conversion: in-process introspection of
+`provision_state` (phase / index / error) and the resolver's
+shape-level sanity checks. The behavioural assertions (log file
+content, log "first" appears once after retry) cover what we
+actually care about; the rest was implementation-detail testing.
+
+Side benefit: `vm::forwarding::set_agv_binary_for_tests` (a
+test-only hack to point the forward supervisor at the right binary
+when re-execing from libtest) is no longer needed and was removed —
+inside an `agv` subprocess, `current_exe()` already points at the
+right binary.
 
 ## Idempotent `agv create` ✓ shipped
 
