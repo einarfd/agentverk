@@ -65,17 +65,12 @@ fn spawn_supervisor(vm: &str, spec: ForwardSpec) -> anyhow::Result<u32> {
     Ok(pid)
 }
 
-/// Check whether a process with this PID is still alive.
-fn is_alive(pid: u32) -> bool {
-    forward::pid_from_u32(pid).is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
-}
-
 /// Drop entries whose supervisor is no longer running, persisting the
 /// trimmed set. Returns the live entries.
 async fn sweep_dead(inst: &Instance) -> anyhow::Result<Vec<ActiveForward>> {
     let active = forward::read_active(&inst.forwards_path()).await?;
     let (live, dead): (Vec<_>, Vec<_>) =
-        active.into_iter().partition(|a| is_alive(a.pid));
+        active.into_iter().partition(|a| forward::is_alive(a.pid));
     if !dead.is_empty() {
         forward::write_active(&inst.forwards_path(), &live).await?;
     }

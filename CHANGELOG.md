@@ -22,6 +22,35 @@ All notable changes to `agv` will be documented here. This project follows
   default (`idle_suspend_minutes = 0` or omitted). Resume with
   `agv resume`.
 
+### Changed
+
+- **`VmStateReport` (the JSON shape behind `agv inspect --json` and the
+  lifecycle verbs) gained two fields.** `forwards` is a snapshot of the
+  active port forwards for the VM — same per-entry shape as
+  `agv forward --list --json`, plus a new `alive` boolean so a stale
+  entry from a dead supervisor surfaces clearly. `idle_suspend` is
+  `null` for VMs without auto-suspend configured; otherwise it's an
+  `IdleSuspendStatus` object with the configured `minutes` /
+  `load_threshold` and the watcher's `watcher_pid` /
+  `watcher_alive` — distinguishing "configured + healthy",
+  "configured but watcher died", and "not configured" cleanly. Per
+  `docs/json-schema.md`, additions to a `0.x` schema are
+  forward-compatible; existing consumers that pattern-match on
+  specific keys keep working.
+- **`agv forward --list --json` entries also gained `alive`.** Always
+  `true` there because `--list` sweeps dead entries before
+  serializing, but the field is present for shape consistency with
+  the `forwards` array under `VmStateReport`.
+- **`agv inspect` (human output) now shows forwards and auto-suspend.**
+  A unified "Forwards" section lists every active forward with origin
+  tag (`config` / `adhoc` / `auto`) and a friendly name for
+  `auto_forwards`-named entries — replaces the previous per-name
+  `<name> port  localhost:<port>` lines, which only covered the auto
+  origin and missed config + ad-hoc forwards. An "Auto-suspend"
+  section renders when `idle_suspend_minutes > 0`, showing the
+  configured threshold and the watcher's PID + liveness so a dead
+  watcher is visible without dropping into `--json`.
+
 ## [0.2.4] - 2026-04-29
 
 ### Added

@@ -60,6 +60,15 @@ the same order as the human-readable output.
   "labels": {
     "session": "abc123",
     "needs-cleanup": ""
+  },
+  "forwards": [
+    {"host": 8080, "guest": 8080, "origin": "config", "alive": true}
+  ],
+  "idle_suspend": {
+    "minutes": 30,
+    "load_threshold": 0.2,
+    "watcher_pid": 4242,
+    "watcher_alive": true
   }
 }
 ```
@@ -79,6 +88,26 @@ the same order as the human-readable output.
 | `config_manual_steps` | string[] | Top-level manual steps from the user's `agv.toml`. Empty array, never omitted |
 | `data_dir` | string | Absolute path to `~/.local/share/agv/instances/<name>/` |
 | `labels` | object<string,string> | Free-form `key=value` metadata set at create time. Always present, even when empty. agv doesn't interpret these — they're for callers (often agents) to tag VMs by session/purpose/etc. The `agv.*` namespace is unreserved today; see CHANGELOG if that ever changes |
+| `forwards` | object[] | Snapshot of active port forwards for this VM. Each entry is a `ForwardJson` (see below). Empty array when no forwards are active. Read without sweeping `forwards.toml`, so an entry with `alive: false` indicates a stale supervisor that the next `agv forward --list` would clean up |
+| `idle_suspend` | object \| null | Auto-suspend status. `null` when `idle_suspend_minutes == 0` (the default). When set, an `IdleSuspendStatus` object (see below) — the watcher's configured thresholds plus its PID and liveness |
+
+#### `IdleSuspendStatus` (sub-shape of `VmStateReport.idle_suspend`)
+
+```json
+{
+  "minutes": 30,
+  "load_threshold": 0.2,
+  "watcher_pid": 4242,
+  "watcher_alive": true
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `minutes` | uint32 | Configured `idle_suspend_minutes`. Always `> 0` when this object is present (the parent field is `null` for the disabled case) |
+| `load_threshold` | float | Configured `idle_load_threshold` (default `0.2`) — the 5-min loadavg below which the guest counts as idle |
+| `watcher_pid` | uint32 \| null | The watcher supervisor's PID, or `null` if `<instance>/idle_watcher.pid` doesn't exist (watcher hasn't started yet, or already exited) |
+| `watcher_alive` | bool | Whether the recorded PID is still a running process. `false` distinguishes "configured but no monitor active" from `null` PID. Both cases mean the VM is not currently being watched |
 
 ### `DestroyReport`
 
@@ -231,12 +260,12 @@ Array of cached-image entries. Empty array when the cache is empty.
 
 #### `agv forward <name> --list --json`
 
-Array of active forwards on a running VM. Empty array when no forwards are active.
+Array of active forwards on a running VM. Empty array when no forwards are active. The same per-entry shape (`ForwardJson`) appears as the `forwards` field of `VmStateReport`.
 
 ```json
 [
-  {"host": 8080, "guest": 8080, "origin": "config"},
-  {"host": 5432, "guest": 5432, "origin": "adhoc"}
+  {"host": 8080, "guest": 8080, "origin": "config", "alive": true},
+  {"host": 5432, "guest": 5432, "origin": "adhoc",  "alive": true}
 ]
 ```
 
@@ -245,6 +274,7 @@ Array of active forwards on a running VM. Empty array when no forwards are activ
 | `host` | uint16 | Host port on `127.0.0.1` |
 | `guest` | uint16 | Guest port the forward terminates at |
 | `origin` | string | One of: `"config"` (declared in `agv.toml`), `"adhoc"` (added at runtime via `agv forward`), `"auto"` (provisioned by an `[auto_forwards.<name>]` mixin entry) |
+| `alive` | bool | Whether the supervisor process for this forward is still running. `agv forward --list` sweeps dead entries before serializing, so `--list` always returns `true`. `VmStateReport.forwards` doesn't sweep, so a stale entry surfaces as `false` |
 
 The supervisor PID tracked internally is intentionally not exposed — it's an implementation detail of how agv keeps the SSH tunnel alive.
 

@@ -79,6 +79,42 @@ pub struct VmStateReport {
     /// — they're for callers to track which VMs they own (an agent's
     /// session, a human's hand-tagged distinguishing marks, etc.).
     pub labels: std::collections::BTreeMap<String, String>,
+
+    /// Active port forwards (config-declared, ad-hoc, and auto-allocated).
+    /// Empty array when no forwards are active. Each entry exposes
+    /// `alive` so a stale forwards.toml entry whose supervisor died
+    /// shows up clearly. Read without sweeping, so this is a snapshot
+    /// of `<instance>/forwards.toml` plus per-PID liveness.
+    pub forwards: Vec<crate::forward::ForwardJson>,
+
+    /// Auto-suspend (idle-watcher) status. `null` when
+    /// `idle_suspend_minutes == 0` (the default — auto-suspend not
+    /// enabled). When the VM has it configured, the field carries the
+    /// thresholds plus the watcher's PID and liveness so consumers can
+    /// distinguish "configured + healthy" from "configured but watcher
+    /// died" from "not configured."
+    pub idle_suspend: Option<IdleSuspendStatus>,
+}
+
+/// Auto-suspend configuration and live watcher state, surfaced via
+/// `VmStateReport::idle_suspend`. Stable shape across the 0.x series —
+/// additions OK, removals/renames need a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdleSuspendStatus {
+    /// Configured `idle_suspend_minutes`. Always `> 0` when this struct
+    /// is present (the parent field is `None` for the disabled case).
+    pub minutes: u32,
+    /// Configured `idle_load_threshold` (default `0.2`).
+    pub load_threshold: f32,
+    /// Watcher supervisor PID, or `null` if no `idle_watcher.pid` file
+    /// is on disk (e.g. the watcher hasn't been spawned yet, or its
+    /// pidfile was cleaned up after exit).
+    pub watcher_pid: Option<u32>,
+    /// Whether the PID above is still a running process. `false` when
+    /// `watcher_pid` is `null` or when the recorded PID no longer
+    /// exists — in either case the VM has auto-suspend configured but
+    /// nothing is currently monitoring it.
+    pub watcher_alive: bool,
 }
 
 /// JSON shape returned by `agv destroy --json`.
@@ -113,6 +149,17 @@ pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmSt
         Err(_) => None,
     };
 
+    // Snapshot of active forwards. Read without sweeping — `inspect`
+    // shouldn't mutate state files; let the consumer see stale entries
+    // explicitly via `alive: false` if any.
+    let forwards: Vec<crate::forward::ForwardJson> =
+        match crate::forward::read_active(&inst.forwards_path()).await {
+            Ok(active) => active.into_iter().map(Into::into).collect(),
+            Err(_) => Vec::new(),
+        };
+
+    let idle_suspend = idle_suspend_status(inst, &cfg).await;
+
     Ok(VmStateReport {
         name: inst.name.clone(),
         status,
@@ -127,6 +174,60 @@ pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmSt
         config_manual_steps: cfg.config_manual_steps,
         data_dir: inst.dir.display().to_string(),
         labels: cfg.labels,
+        forwards,
+        idle_suspend,
+    })
+}
+
+/// Render the auto-suspend section of `agv inspect` (human output).
+/// No-op when auto-suspend is not configured.
+async fn print_auto_suspend(inst: &Instance, config: &ResolvedConfig) {
+    if config.idle_suspend_minutes == 0 {
+        return;
+    }
+    let pid_raw = tokio::fs::read_to_string(inst.idle_watcher_pid_path())
+        .await
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let watcher_state = match pid_raw {
+        Some(pid) if crate::forward::is_alive(pid) => format!("pid {pid}, alive"),
+        Some(pid) => format!("pid {pid}, dead"),
+        None => "not running".to_string(),
+    };
+    println!();
+    println!("  Auto-suspend");
+    println!(
+        "    after {min} idle min (5-min loadavg < {thr:.2})",
+        min = config.idle_suspend_minutes,
+        thr = config.idle_load_threshold,
+    );
+    println!("    watcher: {watcher_state}");
+}
+
+/// Build the `idle_suspend` field of `VmStateReport`.
+///
+/// Returns `None` when `idle_suspend_minutes == 0` (auto-suspend not
+/// configured). Otherwise reads `<instance>/idle_watcher.pid` to fill
+/// in `watcher_pid` and probes the PID for liveness — both the
+/// "watcher hasn't started yet" and "watcher died" cases surface as
+/// `watcher_alive: false`.
+async fn idle_suspend_status(
+    inst: &Instance,
+    cfg: &ResolvedConfig,
+) -> Option<IdleSuspendStatus> {
+    if cfg.idle_suspend_minutes == 0 {
+        return None;
+    }
+    let watcher_pid = match tokio::fs::read_to_string(inst.idle_watcher_pid_path()).await {
+        Ok(raw) => raw.trim().parse::<u32>().ok(),
+        Err(_) => None,
+    };
+    let watcher_alive = watcher_pid.is_some_and(crate::forward::is_alive);
+    Some(IdleSuspendStatus {
+        minutes: cfg.idle_suspend_minutes,
+        load_threshold: cfg.idle_load_threshold,
+        watcher_pid,
+        watcher_alive,
     })
 }
 
@@ -680,17 +781,42 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
         }
     }
 
-    // Auto-allocated forwards (e.g. from a `gui-xfce` mixin exposing RDP).
-    // Only meaningful on a running VM — when the VM is stopped the port
-    // files are cleaned up, so the BTreeMap lookup is fine either way.
-    if status == Status::Running && !config.auto_forwards.is_empty() {
-        for name in config.auto_forwards.keys() {
-            let raw = tokio::fs::read_to_string(inst.auto_forward_port_path(name))
-                .await
-                .unwrap_or_default();
-            let port = raw.trim();
-            if !port.is_empty() {
-                println!("  {:<w$}  localhost:{port}", format!("{name} port"));
+    // Active port forwards (config-declared, ad-hoc, and auto-allocated).
+    // Subsumes the older "<name> port" display for auto_forwards: the
+    // friendly name is shown inline on the matching entry, and ad-hoc
+    // and config forwards now show up too instead of needing a separate
+    // `agv forward --list` invocation.
+    if status == Status::Running {
+        let active = crate::forward::read_active(&inst.forwards_path())
+            .await
+            .unwrap_or_default();
+        if !active.is_empty() {
+            // Map guest_port → declared auto_forward name so we can label
+            // auto entries with their friendly name.
+            let auto_names: std::collections::BTreeMap<u16, &str> = config
+                .auto_forwards
+                .iter()
+                .map(|(n, af)| (af.guest_port, n.as_str()))
+                .collect();
+            println!("  Forwards");
+            for entry in &active {
+                let alive_marker = if crate::forward::is_alive(entry.pid) {
+                    ""
+                } else {
+                    " [dead]"
+                };
+                let label = match entry.origin {
+                    crate::forward::Origin::Auto => auto_names
+                        .get(&entry.guest)
+                        .map_or_else(|| "auto".to_string(), |n| format!("auto: {n}")),
+                    crate::forward::Origin::Config => "config".to_string(),
+                    crate::forward::Origin::Adhoc => "adhoc".to_string(),
+                };
+                println!(
+                    "    127.0.0.1:{host} → guest:{guest}  ({label}){alive_marker}",
+                    host = entry.host,
+                    guest = entry.guest,
+                );
             }
         }
     }
@@ -698,6 +824,8 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     let provisioned = if inst.is_provisioned() { "yes" } else { "no" };
     println!("  {:<w$}  {provisioned}", "Provisioned");
     println!("  {:<w$}  {}", "Data dir", inst.dir.display());
+
+    print_auto_suspend(&inst, &config).await;
 
     // Labels — only print the section when there are any. Empty values
     // render as just the key (matches the `--label foo` shorthand for
@@ -988,6 +1116,18 @@ mod tests {
             config_manual_steps: vec!["Configure VPN before starting work.".to_string()],
             data_dir: "/Users/u/.local/share/agv/instances/myvm".to_string(),
             labels,
+            forwards: vec![crate::forward::ForwardJson {
+                host: 8080,
+                guest: 8080,
+                origin: crate::forward::Origin::Config,
+                alive: true,
+            }],
+            idle_suspend: Some(IdleSuspendStatus {
+                minutes: 30,
+                load_threshold: 0.2,
+                watcher_pid: Some(4242),
+                watcher_alive: true,
+            }),
         }
     }
 
@@ -1010,6 +1150,8 @@ mod tests {
             "created",
             "data_dir",
             "disk",
+            "forwards",
+            "idle_suspend",
             "labels",
             "manual_steps",
             "memory",
@@ -1034,7 +1176,7 @@ mod tests {
         );
     }
 
-    /// Optional fields (currently just `ssh_port`) must round-trip as
+    /// Optional fields (`ssh_port`, `idle_suspend`) must round-trip as
     /// `null` when not set, not be omitted entirely. Agents parsing the
     /// JSON should be able to rely on every documented key being present.
     #[test]
@@ -1042,11 +1184,53 @@ mod tests {
         let mut report = fixture();
         report.ssh_port = None;
         report.created = false;
+        report.idle_suspend = None;
         let json = serde_json::to_value(&report).unwrap();
         let obj = json.as_object().unwrap();
         assert!(obj.contains_key("ssh_port"), "ssh_port must be in the object even when None");
         assert_eq!(obj.get("ssh_port"), Some(&serde_json::Value::Null));
         assert_eq!(obj.get("created"), Some(&serde_json::Value::Bool(false)));
+        assert!(
+            obj.contains_key("idle_suspend"),
+            "idle_suspend must be in the object even when None"
+        );
+        assert_eq!(obj.get("idle_suspend"), Some(&serde_json::Value::Null));
+    }
+
+    /// Schema pin for `VmStateReport.idle_suspend` — drift here is also
+    /// a major-version bump.
+    #[test]
+    fn idle_suspend_status_json_schema_pin() {
+        let status = IdleSuspendStatus {
+            minutes: 30,
+            load_threshold: 0.2,
+            watcher_pid: Some(4242),
+            watcher_alive: true,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        let obj = json.as_object().expect("IdleSuspendStatus must serialize as an object");
+        let actual: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["load_threshold", "minutes", "watcher_alive", "watcher_pid"]
+                .into_iter()
+                .collect();
+        assert_eq!(actual, expected, "IdleSuspendStatus keys drifted");
+    }
+
+    /// `watcher_pid` must be `null` (not omitted) when the pid file is
+    /// missing — same convention as the parent `idle_suspend` field.
+    #[test]
+    fn idle_suspend_status_serializes_null_pid() {
+        let status = IdleSuspendStatus {
+            minutes: 30,
+            load_threshold: 0.2,
+            watcher_pid: None,
+            watcher_alive: false,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("watcher_pid"));
+        assert_eq!(obj.get("watcher_pid"), Some(&serde_json::Value::Null));
     }
 
     /// `manual_steps` and `mixins_applied` must serialize as arrays

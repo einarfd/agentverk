@@ -183,16 +183,22 @@ impl ActiveForward {
     }
 }
 
-/// JSON projection of `ActiveForward` for `agv forward --list --json`.
+/// JSON projection of `ActiveForward` for `agv forward --list --json`
+/// and the `forwards` field of `VmStateReport`.
 ///
 /// Drops `pid` (an internal supervisor process detail that's not part of
-/// the agent-facing contract). Stable across the 0.x series — additions
+/// the agent-facing contract) but exposes `alive`, computed from that
+/// PID at conversion time. `--list` always emits `alive: true` because
+/// it sweeps dead entries before serializing; `inspect` doesn't sweep,
+/// so a stale entry in `forwards.toml` shows up with `alive: false` —
+/// useful diagnostically. Stable across the 0.x series — additions
 /// OK, removals/renames need a major bump.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ForwardJson {
     pub host: u16,
     pub guest: u16,
     pub origin: Origin,
+    pub alive: bool,
 }
 
 impl From<ActiveForward> for ForwardJson {
@@ -201,6 +207,7 @@ impl From<ActiveForward> for ForwardJson {
             host: a.host,
             guest: a.guest,
             origin: a.origin,
+            alive: is_alive(a.pid),
         }
     }
 }
@@ -264,6 +271,19 @@ pub async fn clear_active(path: &Path) -> anyhow::Result<()> {
 #[must_use]
 pub fn pid_from_u32(pid: u32) -> Option<rustix::process::Pid> {
     rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)
+}
+
+/// Check whether a process with this PID is still alive.
+///
+/// Used by `sweep_dead` to drop forward entries whose supervisor died,
+/// and by `inspect`/`VmStateReport` to surface the per-forward and
+/// idle-watcher liveness flags. `rustix::process::test_kill_process`
+/// returns `Ok(())` when signal 0 to the PID would have been
+/// deliverable — i.e. the process exists; we don't actually send a
+/// signal.
+#[must_use]
+pub fn is_alive(pid: u32) -> bool {
+    pid_from_u32(pid).is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
 }
 
 /// Send SIGTERM to a supervisor process group. Tolerates an already-dead PID.
@@ -556,13 +576,14 @@ mod tests {
             host: 8080,
             guest: 8080,
             origin: Origin::Config,
+            alive: true,
         };
         let json = serde_json::to_value(entry).unwrap();
         let obj = json.as_object().expect("ForwardJson must serialize as an object");
         let actual: std::collections::BTreeSet<&str> =
             obj.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> =
-            ["guest", "host", "origin"].into_iter().collect();
+            ["alive", "guest", "host", "origin"].into_iter().collect();
         assert_eq!(actual, expected, "ForwardJson keys drifted");
     }
 
@@ -576,7 +597,7 @@ mod tests {
             (Origin::Auto, "auto"),
         ];
         for (origin, expected) in cases {
-            let entry = ForwardJson { host: 1, guest: 1, origin };
+            let entry = ForwardJson { host: 1, guest: 1, origin, alive: true };
             let json = serde_json::to_value(entry).unwrap();
             assert_eq!(
                 json.get("origin"),
