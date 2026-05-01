@@ -6,6 +6,22 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-suspend for idle VMs.** Set `idle_suspend_minutes = N` in the
+  `[vm]` section of an `agv.toml` and the VM will save its state and
+  exit QEMU after `N` minutes of confirmed idleness. Idle is the AND
+  of "no interactive SSH session" and "guest 5-min load average below
+  `idle_load_threshold` (default `0.2`)". Port-forward supervisors run
+  `ssh -N` and don't allocate a PTY, so they never count as activity —
+  config-declared forwards alone won't pin a VM as active. The watcher
+  also detects host suspend (closed laptop lid) by a wall-clock gap
+  between ticks and resets the idle timer on wake, so reopening the
+  laptop gives the user the full configured grace window again
+  instead of suspending the VM within a probe interval. Disabled by
+  default (`idle_suspend_minutes = 0` or omitted). Resume with
+  `agv resume`.
+
 ## [0.2.4] - 2026-04-29
 
 ### Added

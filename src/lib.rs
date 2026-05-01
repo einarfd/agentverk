@@ -27,6 +27,8 @@ pub mod forward;
 #[doc(hidden)]
 pub mod forward_daemon;
 #[doc(hidden)]
+pub mod idle_watcher;
+#[doc(hidden)]
 pub mod image;
 #[doc(hidden)]
 pub mod images;
@@ -1025,6 +1027,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::ForwardDaemon(args) => {
             let spec: forward::ForwardSpec = args.spec.parse()?;
             forward_daemon::run(&args.name, spec).await
+        }
+        Command::IdleWatcher(args) => {
+            idle_watcher::run(&args.name, args.threshold_minutes, args.load_threshold).await
         }
         Command::Cp(args) => {
             // Validate path syntax before opening the VM.

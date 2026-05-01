@@ -356,6 +356,8 @@ EMPTY=
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: std::collections::BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         };
 
         expand_config(&mut config, &vars).unwrap();

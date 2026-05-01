@@ -32,7 +32,7 @@ use serde::Serialize;
 
 use crate::config::{MixinManualSteps, ResolvedConfig};
 use crate::error::Error;
-use crate::{dirs, image, ssh, ssh_config};
+use crate::{dirs, idle_watcher, image, ssh, ssh_config};
 use instance::{Instance, Phase, ProvisionState, Status};
 
 /// Machine-readable snapshot of a VM's current state.
@@ -246,6 +246,33 @@ async fn apply_and_report_forwards(
     }
 }
 
+/// Spawn the per-VM idle watcher if `idle_suspend_minutes > 0` in the
+/// resolved config.
+///
+/// Best-effort and non-fatal: on failure the VM is still up, the user
+/// just doesn't get auto-suspend until the next start. Mirrors how
+/// forward-supervisor failures are handled in
+/// [`apply_and_report_forwards`].
+async fn maybe_spawn_idle_watcher(inst: &Instance, config: &ResolvedConfig, spinner: &ProgressBar) {
+    if config.idle_suspend_minutes == 0 {
+        return;
+    }
+    idle_watcher::spawn(
+        &inst.name,
+        config.idle_suspend_minutes,
+        config.idle_load_threshold,
+    )
+    .await;
+    step_done(
+        spinner,
+        &format!(
+            "Auto-suspend after {} idle minute{}",
+            config.idle_suspend_minutes,
+            if config.idle_suspend_minutes == 1 { "" } else { "s" }
+        ),
+    );
+}
+
 /// Mark a VM as broken and persist the error to all the relevant places.
 ///
 /// Used by both `create()` and `start()` when first-boot provisioning fails.
@@ -412,6 +439,8 @@ async fn create_inner(
     // `start` and `resume` — keeping it here means `agv create --start`
     // yields a VM with its forwards already live.
     apply_and_report_forwards(inst, config, &spinner).await;
+
+    maybe_spawn_idle_watcher(inst, config, &spinner).await;
 
     // Update managed SSH config so IDEs can connect by VM name.
     update_ssh_config(inst, &config.user).await;
@@ -606,6 +635,8 @@ pub async fn start(
     // would print before any forward could possibly work.
     apply_and_report_forwards(&inst, &config, &spinner).await;
 
+    maybe_spawn_idle_watcher(&inst, &config, &spinner).await;
+
     update_ssh_config(&inst, &config.user).await;
 
     spinner.finish_with_message(format!("  ✓ VM '{name}' is running"));
@@ -742,7 +773,9 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
         }
     );
     // Tear down forward supervisors before QEMU exits, so they don't spend
-    // a few seconds retrying against a dying SSH server.
+    // a few seconds retrying against a dying SSH server. The idle watcher
+    // gets the same treatment so it doesn't keep probing a stopping VM.
+    idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
     if force {
         qemu::force_stop(&inst).await?;
@@ -770,6 +803,10 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
             expected: "running".to_string(),
         }
     );
+    // Idempotent: the watcher (when triggering this code path itself)
+    // removes its own pid file before calling us, so this is a no-op
+    // in the auto-suspend case and a real cleanup in the manual case.
+    idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
     qemu::suspend(&inst).await?;
     inst.write_status(Status::Suspended).await?;
@@ -806,6 +843,8 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
     step_done(&spinner, "SSH is ready");
 
     apply_and_report_forwards(&inst, &config, &spinner).await;
+
+    maybe_spawn_idle_watcher(&inst, &config, &spinner).await;
 
     update_ssh_config(&inst, &config.user).await;
 
@@ -882,11 +921,14 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
             force,
             "VM '{name}' is running — stop it first, or pass --force to destroy it anyway"
         );
+        idle_watcher::stop(&inst).await;
         forwarding::stop_all_for_instance(&inst).await;
         let _ = qemu::force_stop(&inst).await;
     } else {
         // Even on a stopped/broken VM, sweep any stale supervisors that
-        // a previous run might have left in forwards.toml.
+        // a previous run might have left in forwards.toml or the watcher
+        // pid file.
+        idle_watcher::stop(&inst).await;
         forwarding::stop_all_for_instance(&inst).await;
     }
 

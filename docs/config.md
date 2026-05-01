@@ -96,6 +96,22 @@ CLI equivalents: `--memory 8G`, `--cpus 4`, `--disk 40G`
 Disk can only be grown after creation, not shrunk. After resizing with `agv config set`,
 run `growpart` and `resize2fs` inside the VM to use the extra space.
 
+### `idle_suspend_minutes`
+
+Auto-suspend the VM after this many minutes of confirmed idleness. Disabled by default
+(`0` or unset). Idle is the AND of "no interactive SSH session" (port-forward supervisors
+run `ssh -N` and don't allocate a PTY, so they don't count) and "guest 5-min load average
+below `idle_load_threshold`".
+
+```toml
+[vm]
+idle_suspend_minutes = 30   # save state and exit QEMU after 30 idle minutes
+idle_load_threshold  = 0.2  # optional; default 0.2
+```
+
+A long-running tmux agent will keep the VM up via the load signal even if no SSH
+session is currently attached. Resume with `agv resume <name>`.
+
 ## `[[files]]`
 
 Copy files or directories from the host into the VM before any provisioning runs.

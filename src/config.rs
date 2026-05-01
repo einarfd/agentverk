@@ -238,6 +238,23 @@ pub struct VmConfig {
 
     /// Disk size, e.g. "20G".
     pub disk: Option<String>,
+
+    /// Suspend the VM after this many minutes of confirmed idleness.
+    ///
+    /// Idleness is "no interactive SSH session AND guest 5-min load average
+    /// below `idle_load_threshold`". `-N` SSH connections (port-forward
+    /// supervisors) don't appear in `who`, so config-declared forwards
+    /// don't count as activity.
+    ///
+    /// Defaults to disabled (`0` or unset). Set this on long-lived VMs that
+    /// you tend to leave running with nothing useful happening.
+    pub idle_suspend_minutes: Option<u32>,
+
+    /// Guest 5-min load-average threshold below which the VM is considered
+    /// idle (paired with `idle_suspend_minutes`). Default `0.2` — typical
+    /// idle Linux sits well under `0.05`, while an active agent compiling
+    /// or running tests will push above `0.5`.
+    pub idle_load_threshold: Option<f32>,
 }
 
 /// A file or directory to copy into the VM.
@@ -474,6 +491,24 @@ pub struct ResolvedConfig {
     /// see [`Config::labels`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
+
+    /// Auto-suspend after this many idle minutes (`0` = disabled).
+    ///
+    /// `#[serde(default)]` so instance configs saved before this field
+    /// existed deserialize as `0` (disabled).
+    #[serde(default)]
+    pub idle_suspend_minutes: u32,
+
+    /// Load-average threshold below which the guest counts as idle.
+    /// See [`VmConfig::idle_load_threshold`] for the semantics.
+    #[serde(default = "default_idle_load_threshold")]
+    pub idle_load_threshold: f32,
+}
+
+/// Default for [`ResolvedConfig::idle_load_threshold`]. Pulled into a
+/// function so serde can reference it from `#[serde(default = "...")]`.
+fn default_idle_load_threshold() -> f32 {
+    0.2
 }
 
 /// Notes contributed by a single mixin, tagged with the mixin's name.
@@ -712,6 +747,14 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: vm
+                .as_ref()
+                .and_then(|v| v.idle_suspend_minutes)
+                .unwrap_or(0),
+            idle_load_threshold: vm
+                .as_ref()
+                .and_then(|v| v.idle_load_threshold)
+                .unwrap_or_else(default_idle_load_threshold),
         };
 
         // Apply includes before the config's own steps.
@@ -1026,6 +1069,12 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         mixin_manual_steps: parent.mixin_manual_steps,
         config_manual_steps: parent.config_manual_steps,
         labels: parent.labels,
+        idle_suspend_minutes: vm
+            .and_then(|v| v.idle_suspend_minutes)
+            .unwrap_or(parent.idle_suspend_minutes),
+        idle_load_threshold: vm
+            .and_then(|v| v.idle_load_threshold)
+            .unwrap_or(parent.idle_load_threshold),
     }
 }
 
@@ -1334,6 +1383,7 @@ mod tests {
                 memory: Some("4G".to_string()),
                 cpus: Some(4),
                 disk: Some("30G".to_string()),
+                ..Default::default()
             }),
             files: vec![],
             setup: vec![],
@@ -1416,6 +1466,7 @@ mod tests {
                 memory: Some("8G".to_string()),
                 cpus: Some(4),
                 disk: None,
+                ..Default::default()
             }),
             files: vec![FileEntry {
                 source: "./child-file".to_string(),
@@ -1459,6 +1510,7 @@ mod tests {
                 memory: Some("16G".to_string()),
                 cpus: None,
                 disk: None,
+                ..Default::default()
             }),
             files: vec![],
             setup: vec![],
@@ -1688,6 +1740,8 @@ mod tests {
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         };
         let child = Config {
             base: None,
@@ -1749,6 +1803,8 @@ mod tests {
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         };
 
         let child = Config {
@@ -1757,6 +1813,7 @@ mod tests {
                 memory: Some("8G".to_string()),
                 cpus: Some(4),
                 disk: None,
+                ..Default::default()
             }),
             files: vec![],
             setup: vec![],
@@ -1813,6 +1870,8 @@ mod tests {
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         };
 
         let child = Config {
@@ -2025,6 +2084,8 @@ cpus = 4
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         };
 
         save(&config, &path).await.unwrap();

@@ -96,6 +96,8 @@ mod tests {
             mixin_manual_steps: vec![],
             config_manual_steps: vec![],
             labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
         }
     }
 

@@ -291,6 +291,29 @@ agv resume agv-project-x          # back to exactly where you left off
 Suspended VMs use only disk (the qcow2 holds RAM + device state).
 `agv resume` is much faster than re-creating.
 
+### Auto-suspend for VMs you hand to a user
+
+When you create a VM the user will own afterwards, set
+`idle_suspend_minutes` in the `[vm]` section so it doesn't sit
+running forever consuming RAM if they don't get back to it
+immediately:
+
+```toml
+[vm]
+idle_suspend_minutes = 30   # save state and exit QEMU after 30 idle min
+```
+
+Idle = no interactive SSH session AND guest 5-min load average below
+`idle_load_threshold` (default `0.2`). Port-forward supervisors run
+`ssh -N` and don't allocate a PTY, so they don't count as activity. A
+detached `tmux` running a long task does count (load average catches
+it). The watcher also detects host suspend (closed laptop) and resets
+the timer on wake, so reopening the lid gives the user the full grace
+window again.
+
+Resume with `agv resume <name>`. Disabled by default — only enabled
+when explicitly set in config.
+
 ## Output formats
 
 For human-facing output, agv prints tables and friendly text. For parsing,
@@ -342,6 +365,14 @@ Full table with examples in [`docs/json-schema.md`](../../docs/json-schema.md#ex
   clear message; don't paper over it, fix the include list or the image.
 - **Suspending a VM with active SSH sessions** — agv handles it cleanly,
   but any in-flight commands die. Finish work before suspending.
+- **Auto-suspend has caveats.** With `idle_suspend_minutes` set, the
+  watcher decides idleness from `who` (interactive sessions only) and
+  guest load average. A non-interactive `agv ssh <vm> -- <cmd>` does
+  not allocate a PTY by default and so does not show up in `who` —
+  long-running such commands rely on raising guest load to stay
+  classified as active. If you're handing the user a VM and they want
+  bulletproof "stay up while I'm working," document the resume path
+  (`agv resume <name>`) rather than tuning the threshold.
 - **Concurrent `agv` calls against different VMs are safe** — shared
   state (managed `ssh_config`, image cache) is protected by file locks.
   Concurrent calls **against the same VM** are not safe; serialise
@@ -411,6 +442,7 @@ agv gui --no-launch <name>            # just print the URL; safe to run from a n
 
 agv suspend <name>
 agv resume <name>
+# auto-suspend is set per-VM in agv.toml as `[vm] idle_suspend_minutes = N`
 
 agv destroy <name>                    # confirmation prompt
 agv destroy --force <name>            # no prompt; for cleanup scripts

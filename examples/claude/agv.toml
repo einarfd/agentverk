@@ -8,11 +8,17 @@ from = "ubuntu-24.04"  # also works: "debian-12", "fedora-43"
 include = ["devtools", "claude"]
 spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 
-# Override individual resource settings if needed:
+# Override individual resource settings if needed. `idle_suspend_minutes`
+# saves state and exits QEMU after that many idle minutes — handy when you
+# routinely walk away from a VM mid-session. Idle = no interactive SSH AND
+# guest 5-min load below `idle_load_threshold`; a long-running `claude` in
+# tmux keeps the VM up via the load signal. Resume with `agv resume <name>`.
+#
 # [vm]
 # memory = "16G"
 # cpus = 8
 # disk = "80G"
+# idle_suspend_minutes = 30
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 # Skip the manual `/login` step by setting ANTHROPIC_API_KEY in your shell or

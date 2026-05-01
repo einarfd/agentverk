@@ -1057,3 +1057,162 @@ run = "echo third >> /tmp/agv-retry-log"
 
     destroy(data_dir.path(), name).await;
 }
+
+/// `idle_suspend_minutes` triggers an automatic suspend after one probe
+/// interval (~60s) when the VM is genuinely idle.
+///
+/// Threshold is set generously high (`2.0`) so a freshly-provisioned VM,
+/// whose 5-min loadavg can briefly sit a few hundredths above zero from
+/// recent provisioning churn, still classifies as idle on the first probe.
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
+async fn auto_suspend_idle_vm_suspends() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping auto_suspend_idle_vm_suspends");
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+
+    let config_toml = r#"
+[base]
+from = "debian-12"
+
+[vm]
+memory = "1G"
+cpus = 2
+disk = "10G"
+idle_suspend_minutes = 1
+idle_load_threshold = 2.0
+"#;
+    let toml_path = write_config(host_tmp.path(), config_toml).await;
+
+    let name = "_test-auto-suspend-idle";
+
+    let create_output = agv(data_dir.path())
+        .args([
+            "create",
+            "--start",
+            "--json",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    if !create_output.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr),
+        );
+    }
+    let report = parse_json("agv create", &create_output.stdout);
+    assert_eq!(report["status"], "running");
+
+    // Watcher probes every 60s; with idle_suspend_minutes=1 the first
+    // idle probe (≈60s after spawn) will trigger a savevm + QEMU exit.
+    // 100s gives the suspend RPC and status-file write time to land.
+    tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+
+    let report = inspect(data_dir.path(), name).await;
+    let status = report["status"].as_str().unwrap_or("");
+    if status != "suspended" {
+        destroy(data_dir.path(), name).await;
+        panic!("expected VM to auto-suspend, got status={status:?}: {report:?}");
+    }
+
+    destroy(data_dir.path(), name).await;
+}
+
+/// An interactive SSH session keeps the VM out of auto-suspend even when
+/// `idle_suspend_minutes=1` would otherwise have already fired.
+///
+/// `-tt` forces PTY allocation, so the session shows up in the guest's
+/// `who` output (which `-N` port-forward supervisors don't). That's the
+/// exact discriminator the watcher uses, so this test pins the guarantee
+/// that "I'm SSH'd in" never gets stomped on by auto-suspend.
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
+async fn auto_suspend_active_session_keeps_vm_running() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!(
+            "required tools not installed — skipping auto_suspend_active_session_keeps_vm_running"
+        );
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+
+    let config_toml = r#"
+[base]
+from = "debian-12"
+
+[vm]
+memory = "1G"
+cpus = 2
+disk = "10G"
+idle_suspend_minutes = 1
+idle_load_threshold = 2.0
+"#;
+    let toml_path = write_config(host_tmp.path(), config_toml).await;
+
+    let name = "_test-auto-suspend-active";
+
+    let create_output = agv(data_dir.path())
+        .args([
+            "create",
+            "--start",
+            "--json",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    if !create_output.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv create failed: {}",
+            String::from_utf8_lossy(&create_output.stderr),
+        );
+    }
+    let report = parse_json("agv create", &create_output.stdout);
+    assert_eq!(report["status"], "running");
+
+    // Long-lived interactive SSH session. -tt forces a PTY so the guest's
+    // `who` output lists this session, which the watcher reads as activity.
+    // kill_on_drop ensures the child dies if the test panics before its
+    // explicit kill below.
+    let mut keepalive = agv(data_dir.path())
+        .args(["ssh", name, "-tt", "--", "sleep", "9999"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+
+    // Wait long enough for at least one probe with the active session
+    // present (probe interval is 60s).
+    tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+
+    let report = inspect(data_dir.path(), name).await;
+    let status = report["status"].as_str().unwrap_or("").to_string();
+    let _ = keepalive.kill().await;
+
+    if status != "running" {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "expected VM to stay running with an active SSH session, got status={status:?}: {report:?}"
+        );
+    }
+
+    destroy(data_dir.path(), name).await;
+}

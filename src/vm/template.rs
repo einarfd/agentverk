@@ -452,6 +452,8 @@ async fn create_from_template_inner(
         mixin_manual_steps: vec![],
         config_manual_steps: vec![],
         labels: std::collections::BTreeMap::new(),
+        idle_suspend_minutes: 0,
+        idle_load_threshold: 0.2,
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
 

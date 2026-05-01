@@ -129,6 +129,16 @@ pub enum Command {
     #[command(name = "__forward-daemon", hide = true)]
     ForwardDaemon(ForwardDaemonArgs),
 
+    /// Internal: per-VM auto-suspend supervisor.
+    ///
+    /// Not meant for end users — spawned by `agv start`/`agv resume` when
+    /// `idle_suspend_minutes > 0`. Polls the guest for activity and
+    /// triggers `agv suspend` after the configured number of idle
+    /// minutes. Exits when sent SIGTERM/SIGINT or after a successful
+    /// auto-suspend.
+    #[command(name = "__idle-watcher", hide = true)]
+    IdleWatcher(IdleWatcherArgs),
+
     /// Write a starter config file to a given path (use with `agv create --config`).
     Init(InitArgs),
 }
@@ -559,6 +569,18 @@ pub struct ForwardDaemonArgs {
 
     /// Forward spec in HOST[:GUEST] form.
     pub spec: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct IdleWatcherArgs {
+    /// Name of the VM to watch.
+    pub name: String,
+
+    /// Suspend after this many minutes of confirmed idleness.
+    pub threshold_minutes: u32,
+
+    /// Guest 5-min load average below which the VM counts as idle.
+    pub load_threshold: f32,
 }
 
 #[derive(Debug, clap::Args)]

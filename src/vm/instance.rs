@@ -247,6 +247,17 @@ impl Instance {
         self.dir.join("forwards.toml")
     }
 
+    /// Path to the idle-watcher's PID file.
+    ///
+    /// Present only while a watcher is running for this VM (spawned at
+    /// `start`/`resume` when `idle_suspend_minutes > 0`). The file holds the
+    /// supervisor process's decimal PID; cleanup paths kill the PID and
+    /// remove the file alongside the forward supervisors.
+    #[must_use]
+    pub fn idle_watcher_pid_path(&self) -> PathBuf {
+        self.dir.join("idle_watcher.pid")
+    }
+
     /// Path to the auto-allocated host port for a named auto-forward.
     ///
     /// Mixins declare `[auto_forwards.<name>]`; at VM start agv picks a free
