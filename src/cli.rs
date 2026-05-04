@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 
 /// Create and manage QEMU VMs for AI agents.
 #[derive(Debug, Parser)]
-#[command(name = "agv", version, about, long_about = None)]
+#[command(name = "agv", version = env!("AGV_VERSION"), about, long_about = None)]
 pub struct Cli {
     /// Enable verbose output.
     #[arg(short, long, global = true)]
