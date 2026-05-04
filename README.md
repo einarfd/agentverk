@@ -105,6 +105,20 @@ agv gui myvm
 See [`examples/gui/agv.toml`](examples/gui/agv.toml) for a ready-to-use
 config and [`docs/config.md`](docs/config.md) for the auth model.
 
+**Port forwards** — run a Vite/Next.js/Django/etc. dev server (or any
+other service) inside the VM and reach it from your host browser at
+`http://localhost:PORT`. Declare persistent forwards in `agv.toml`:
+
+```toml
+forwards = ["8080", "5173:5173", "5433:5432"]   # HOST[:GUEST]
+```
+
+They are reapplied on every `agv start` / `agv resume`. For one-off
+tunnels, `agv forward myvm 3000:8080` adds an ephemeral forward — wiped
+on the next start/resume. See
+[`docs/config.md#forwards`](docs/config.md#forwards) for the full
+reference.
+
 **What the agent sees** — at first boot, agv writes `~/.agv/system.md`
 inside the VM: a short summary of the base OS, user + sudo
 capability, and every mixin that was applied (one line each). The
@@ -176,6 +190,9 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk
 # [vm]
 # memory = "16G"
 # disk = "80G"
+
+# Expose VM ports on your host (host:8080 → VM:8080):
+forwards = ["8080"]
 
 # Copy files into the VM (use {{HOME}} not ~/, see docs/config.md):
 [[files]]

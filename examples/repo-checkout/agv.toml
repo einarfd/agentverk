@@ -15,6 +15,12 @@ spec    = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # Set ANTHROPIC_API_KEY in your shell or .env before `agv create` to skip
 # Claude Code's manual `/login` step too — the claude mixin picks it up.
 
+# Expose VM ports on your host so you can point a browser, db client, or
+# test runner at services running inside the VM. Each entry is HOST[:GUEST];
+# runtime `agv forward` changes are ephemeral — declare here for persistence.
+#
+# forwards = ["8080", "5173:5173", "5433:5432"]
+
 # Copy dotfiles from the host (optional — remove if not needed).
 [[files]]
 source = "{{HOME}}/.gitconfig"

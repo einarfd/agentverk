@@ -20,6 +20,14 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # disk = "80G"
 # idle_suspend_minutes = 30
 
+# ── Port forwards (host → VM) ────────────────────────────────────────────────
+# Expose VM ports on your host so you can point a browser, db client, or
+# test runner at services running inside the VM. Each entry is HOST[:GUEST];
+# the supervisor reconnects automatically if SSH drops. Runtime changes via
+# `agv forward` are ephemeral — declare here for "every time the VM starts".
+#
+# forwards = ["8080", "5173:5173", "5433:5432"]
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 # Skip the manual `/login` step by setting ANTHROPIC_API_KEY in your shell or
 # in a .env file next to this one before running `agv create`. The claude

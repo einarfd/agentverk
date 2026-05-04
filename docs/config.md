@@ -378,6 +378,10 @@ when there's a real human-in-the-loop requirement.
 
 ## `forwards`
 
+Use this whenever a service running inside the VM — a web server, database,
+test runner, etc. — needs to be reachable from the host. Declare it once in
+`agv.toml` and point your browser or client at `http://localhost:PORT`.
+
 Port forwards from the host into the VM, applied automatically on every `agv start`
 or `agv resume`. Each forward runs as a small supervisor process around
 `ssh -N -L`, so services bound to `127.0.0.1` inside the guest are reachable —
@@ -448,6 +452,10 @@ Debian (where Firefox/Chromium are plain .debs) and Fedora are
 unaffected.
 
 ## `[auto_forwards.<name>]` (mixin authors)
+
+> For user-level `forwards = [...]` declarations in your own `agv.toml`,
+> see [the `forwards` section above](#forwards). The block below covers
+> the related mixin-author mechanism for auto-allocated host ports.
 
 Named, auto-allocated port forwards — agv picks a free host port at VM
 start and writes it to `<instance>/<name>_port` for other commands or

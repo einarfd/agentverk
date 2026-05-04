@@ -37,6 +37,14 @@ spec    = "medium"                      # 2G RAM, 2 vCPUs, 20G disk (`agv specs`
 # cpus   = 4
 # disk   = "40G"
 
+# ── Port forwards (host → VM) ───────────────────────────────────────────────
+# Expose VM ports on your host so you can point a browser, db client, or
+# test runner at services running inside the VM. Each entry is HOST[:GUEST];
+# the supervisor reconnects automatically if SSH drops. Runtime changes via
+# `agv forward` are ephemeral — declare here for "every time the VM starts".
+#
+# forwards = ["8080", "5173:5173", "5433:5432"]
+
 # ── Files copied from the host into the VM ──────────────────────────────────
 # Use {{HOME}} for host paths and /home/{{AGV_USER}} for VM paths.
 # (~/ is NOT expanded — it would be passed literally to scp.)
