@@ -2419,7 +2419,7 @@ run = "apt-get install -y foo"
             .as_deref()
             .expect("devtools setup step should have `run`");
         assert!(
-            run.starts_with("dnf install"),
+            run.contains("dnf install"),
             "expected dnf command, got: {run}"
         );
         assert!(

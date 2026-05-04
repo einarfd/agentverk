@@ -96,7 +96,10 @@ async fn run_setup(
             let output = ssh::run_cmd(
                 instance,
                 user,
-                &[format!("sudo bash -c {}", shell_escape(&to_run))],
+                &[format!(
+                    "sudo bash -c {}",
+                    shell_escape(&with_set_e(&to_run))
+                )],
             )
             .await
             .with_context(|| format!("setup step {num}: inline script failed"))?;
@@ -211,7 +214,7 @@ async fn run_provision_steps(
             let output = ssh::run_cmd(
                 instance,
                 user,
-                &[format!("bash -c {}", shell_escape(&to_run))],
+                &[format!("bash -c {}", shell_escape(&with_set_e(&to_run)))],
             )
             .await
             .with_context(|| format!("provisioning step {num}: inline script failed"))?;
@@ -550,6 +553,16 @@ fn shell_escape(s: &str) -> String {
     format!("'{escaped}'")
 }
 
+/// Prepend `set -e` to an inline `run` script before handing it to bash.
+///
+/// Without this, a multi-line script that ends in a successful command
+/// (e.g. `apt-get install ...; ln -sf ...`) silently swallows mid-script
+/// failures because bash's exit status is the last command's. Mixins that
+/// want stricter modes (`-u`, `pipefail`) still set them themselves.
+fn with_set_e(script: &str) -> String {
+    format!("set -e\n{script}")
+}
+
 /// Extract the parent directory from a destination path.
 ///
 /// Returns `"."` when no slash is present, or the portion before the last
@@ -673,6 +686,40 @@ mod tests {
                 "shell round-trip mismatch for input {input:?} (escaped as {escaped:?})"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // with_set_e — injection prepends `set -e` and aborts on mid-script failure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn with_set_e_prepends_directive() {
+        let wrapped = with_set_e("echo hi");
+        assert!(wrapped.starts_with("set -e\n"));
+        assert!(wrapped.ends_with("echo hi"));
+    }
+
+    /// Without `set -e`, a script whose last command succeeds returns 0
+    /// even when an earlier command failed. With `set -e` injected, the
+    /// shell aborts at the first failure.
+    #[test]
+    fn with_set_e_makes_mid_script_failure_abort() {
+        let script = "false\necho should-not-print";
+        let plain = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .expect("failed to spawn bash");
+        assert!(plain.status.success(), "without set -e, plain script unexpectedly failed");
+        assert_eq!(String::from_utf8_lossy(&plain.stdout).trim(), "should-not-print");
+
+        let wrapped = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(with_set_e(script))
+            .output()
+            .expect("failed to spawn bash");
+        assert!(!wrapped.status.success(), "with set -e, script should abort on `false`");
+        assert!(wrapped.stdout.is_empty(), "abort should happen before echo runs");
     }
 
     // -----------------------------------------------------------------------
