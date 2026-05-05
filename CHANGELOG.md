@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-05-05
+
 ### Added
 
 - **Auto-suspend for idle VMs.** Set `idle_suspend_minutes = N` in the
@@ -21,6 +23,17 @@ All notable changes to `agv` will be documented here. This project follows
   instead of suspending the VM within a probe interval. Disabled by
   default (`idle_suspend_minutes = 0` or omitted). Resume with
   `agv resume`.
+- **`agv config set --idle-suspend-minutes` and `--idle-load-threshold`.**
+  Retune auto-suspend on an existing VM without hand-editing
+  `<instance>/config.toml`. Pass `--idle-suspend-minutes 0` to disable.
+  Takes effect on the next start/resume, matching the existing
+  `config set` semantics for `--memory`, `--cpus`, `--disk`,
+  `--forwards`.
+- **`agv --version` now embeds `git describe`.** A `build.rs` runs
+  `git describe --always --dirty --tags` at build time, so installs
+  from a dirty tree or commits past the last tag are visible in
+  `agv --version`. Falls back to `CARGO_PKG_VERSION` when no git repo
+  is present (crates.io builds).
 
 ### Changed
 
@@ -50,6 +63,35 @@ All notable changes to `agv` will be documented here. This project follows
   section renders when `idle_suspend_minutes > 0`, showing the
   configured threshold and the watcher's PID + liveness so a dead
   watcher is visible without dropping into `--json`.
+- **Inline `[[setup]]` and `[[provision]]` `run` scripts get `set -e`
+  injected before `bash -c` sees them.** Without it, a multi-line
+  script that ends in a successful command silently swallowed
+  mid-script failures because bash's exit status is just the last
+  command's — a failed `apt-get install` followed by a successful
+  `ln -sf` exited 0 and provisioning marched on with packages
+  missing. Mixins that want stricter modes (`-u`, `pipefail`) still
+  declare them themselves; this is just the safe default. Script-file
+  steps (`script = "..."`) are unaffected — those carry their own
+  shebang.
+- **Top-level `forwards = [...]` surfaced in README, `examples/`, and
+  `agv init` template.** Was only documented in `docs/config.md`,
+  with no path from the higher-traffic discovery surfaces; users
+  running a dev server in the VM had no obvious answer for "how do I
+  point my host browser at it". The `[auto_forwards.<name>]` section
+  in config.md (mixin-author-facing) could also be misread as the
+  only forwards mechanism.
+
+### Fixed
+
+- **Devtools mixin on Debian silently installed nothing.** The
+  package list included `git-delta`, which only exists in trixie/sid
+  (not bookworm or bookworm-backports), so `apt-get install -y`
+  failed to locate it and refused to install the rest. Without `set
+  -e`, the failure was masked. Now installs the rest from main and
+  fetches the latest `git-delta_<arch>.deb` straight from upstream
+  GitHub releases. Combined with the `set -e` injection above, future
+  package-list mistakes will fail loud instead of silently producing
+  a half-provisioned VM.
 
 ## [0.2.4] - 2026-04-29
 
@@ -439,7 +481,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/einarfd/agentverk/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/einarfd/agentverk/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/einarfd/agentverk/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/einarfd/agentverk/compare/v0.2.1...v0.2.2
