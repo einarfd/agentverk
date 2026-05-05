@@ -545,6 +545,17 @@ pub struct ConfigSetArgs {
     /// forwards. Takes effect on the next start/resume.
     #[arg(long, value_name = "SPECS")]
     pub forwards: Option<String>,
+
+    /// Suspend the VM after this many minutes of confirmed idleness.
+    /// `0` disables auto-suspend. Takes effect on the next start/resume.
+    #[arg(long, value_name = "MINUTES")]
+    pub idle_suspend_minutes: Option<u32>,
+
+    /// Guest 5-min load-average threshold below which the VM is considered
+    /// idle. Pairs with `--idle-suspend-minutes`. Takes effect on the next
+    /// start/resume.
+    #[arg(long, value_name = "LOAD")]
+    pub idle_load_threshold: Option<f32>,
 }
 
 #[derive(Debug, clap::Args)]

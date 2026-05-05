@@ -415,6 +415,26 @@ fn config_set_help_succeeds() {
     agv().args(["config", "set", "--help"]).assert().success();
 }
 
+#[test]
+fn config_set_help_lists_idle_flags() {
+    let out = agv()
+        .args(["config", "set", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+    assert!(
+        stdout.contains("--idle-suspend-minutes"),
+        "config set --help should list --idle-suspend-minutes; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--idle-load-threshold"),
+        "config set --help should list --idle-load-threshold; got:\n{stdout}"
+    );
+}
+
 // ── Subcommand help ───────────────────────────────────────────────────────────
 
 #[test]

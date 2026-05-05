@@ -913,6 +913,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 let old_cpus = inst_config.cpus;
                 let old_disk = inst_config.disk.clone();
                 let old_forwards = inst_config.forwards.clone();
+                let old_idle_minutes = inst_config.idle_suspend_minutes;
+                let old_idle_load = inst_config.idle_load_threshold;
 
                 vm::config_set(
                     &s.name,
@@ -920,6 +922,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     s.cpus,
                     s.disk.as_deref(),
                     s.forwards.as_deref(),
+                    s.idle_suspend_minutes,
+                    s.idle_load_threshold,
                 )
                 .await?;
 
@@ -953,6 +957,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         new.join(", ")
                     };
                     println!("  forwards: {old_fmt} → {new_fmt}");
+                }
+                if let Some(m) = s.idle_suspend_minutes {
+                    let old_fmt = if old_idle_minutes == 0 {
+                        "disabled".to_string()
+                    } else {
+                        format!("{old_idle_minutes} min")
+                    };
+                    let new_fmt = if m == 0 {
+                        "disabled".to_string()
+                    } else {
+                        format!("{m} min")
+                    };
+                    println!("  idle-suspend: {old_fmt} → {new_fmt}");
+                }
+                if let Some(t) = s.idle_load_threshold {
+                    println!("  idle-load:    {old_idle_load} → {t}");
                 }
                 println!("  ✓ VM '{}' updated", s.name);
                 Ok(())

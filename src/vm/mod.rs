@@ -562,11 +562,25 @@ pub async fn config_set(
     cpus: Option<u32>,
     disk: Option<&str>,
     forwards: Option<&str>,
+    idle_suspend_minutes: Option<u32>,
+    idle_load_threshold: Option<f32>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        memory.is_some() || cpus.is_some() || disk.is_some() || forwards.is_some(),
-        "no changes specified — provide at least one of --memory, --cpus, --disk, --forwards"
+        memory.is_some()
+            || cpus.is_some()
+            || disk.is_some()
+            || forwards.is_some()
+            || idle_suspend_minutes.is_some()
+            || idle_load_threshold.is_some(),
+        "no changes specified — provide at least one of --memory, --cpus, --disk, --forwards, --idle-suspend-minutes, --idle-load-threshold"
     );
+
+    if let Some(t) = idle_load_threshold {
+        anyhow::ensure!(
+            t.is_finite() && t > 0.0,
+            "--idle-load-threshold must be a positive finite number (got {t})"
+        );
+    }
 
     let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
@@ -622,6 +636,12 @@ pub async fn config_set(
         crate::forward::validate_unique(&specs)
             .context("invalid --forwards value")?;
         config.forwards = specs.iter().map(ToString::to_string).collect();
+    }
+    if let Some(m) = idle_suspend_minutes {
+        config.idle_suspend_minutes = m;
+    }
+    if let Some(t) = idle_load_threshold {
+        config.idle_load_threshold = t;
     }
 
     // Save config; if this fails after a disk resize the state is inconsistent.
@@ -1094,6 +1114,63 @@ pub async fn list() -> anyhow::Result<Vec<Instance>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn config_set_requires_at_least_one_flag() {
+        let err = config_set("nonexistent-vm", None, None, None, None, None, None)
+            .await
+            .expect_err("config_set with no flags should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no changes specified"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_set_rejects_zero_idle_load_threshold() {
+        // Validation runs before any filesystem access, so a fake VM name is fine.
+        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(0.0))
+            .await
+            .expect_err("zero load threshold should fail validation");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must be a positive finite number"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_set_rejects_negative_idle_load_threshold() {
+        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(-0.5))
+            .await
+            .expect_err("negative load threshold should fail validation");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must be a positive finite number"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_set_rejects_nan_idle_load_threshold() {
+        let err = config_set(
+            "nonexistent-vm",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(f32::NAN),
+        )
+        .await
+        .expect_err("NaN load threshold should fail validation");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must be a positive finite number"),
+            "unexpected error message: {msg}"
+        );
+    }
 
     fn fixture() -> VmStateReport {
         let mut labels = std::collections::BTreeMap::new();
