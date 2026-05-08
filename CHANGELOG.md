@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-08
+
 ### Added
 
 - **Pinned QEMU machine type per VM.** New `[vm].machine_type` config
