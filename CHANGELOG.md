@@ -6,6 +6,31 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Pinned QEMU machine type per VM.** New `[vm].machine_type` config
+  field (e.g. `pc-q35-9.2`, `virt-9.2`). Unset by default; on first
+  start agv runs `qemu-system-X -machine help`, picks the host QEMU's
+  current default version of the platform alias (`q35` / `virt`), and
+  writes it back into the instance config. From then on every start
+  uses the same `-machine` value, so a `brew upgrade qemu` or distro
+  bump can't silently change the guest's device topology underneath
+  an existing snapshot. Existing VMs are auto-pinned the same way on
+  their next start. Pinning machine type fixes the most common class
+  of resume-after-upgrade failure but is not a complete guard against
+  CPU vmstate schema bumps (`cpu_pre_load` assertions); for that the
+  options are bundling QEMU or dropping RAM snapshots, both deferred.
+- **`agv config set --machine-type`.** Force a specific pinned machine
+  type (e.g. to roll a VM back to an older version) without
+  hand-editing `<instance>/config.toml`. Takes effect on the next
+  start/resume.
+
+### Changed
+
+- **`ResolvedConfig` now derives `Clone`.** Internal change to support
+  the auto-pin lifecycle (the start path clones the config to update
+  `machine_type` and persist).
+
 ## [0.2.5] - 2026-05-05
 
 ### Added

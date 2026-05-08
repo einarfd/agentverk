@@ -915,6 +915,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 let old_forwards = inst_config.forwards.clone();
                 let old_idle_minutes = inst_config.idle_suspend_minutes;
                 let old_idle_load = inst_config.idle_load_threshold;
+                let old_machine_type = inst_config.machine_type.clone();
 
                 vm::config_set(
                     &s.name,
@@ -924,6 +925,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     s.forwards.as_deref(),
                     s.idle_suspend_minutes,
                     s.idle_load_threshold,
+                    s.machine_type.as_deref(),
                 )
                 .await?;
 
@@ -973,6 +975,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 if let Some(t) = s.idle_load_threshold {
                     println!("  idle-load:    {old_idle_load} → {t}");
+                }
+                if let Some(ref mt) = s.machine_type {
+                    let old_fmt = old_machine_type.as_deref().unwrap_or("(unset)");
+                    println!("  machine-type: {old_fmt} → {mt}");
                 }
                 println!("  ✓ VM '{}' updated", s.name);
                 Ok(())

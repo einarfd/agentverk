@@ -73,6 +73,10 @@ pub struct TemplateInfo {
 /// never been provisioned, a start/provision/stop cycle is run first.
 /// Before the disk is converted to a standalone image, the machine-id is
 /// cleared via SSH so that every clone boots with a freshly generated ID.
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear orchestration of stop/start/provision/clear-machine-id/convert; splitting it would just hide the lifecycle"
+)]
 pub async fn create_template(
     vm_name: &str,
     template_name: &str,
@@ -82,7 +86,7 @@ pub async fn create_template(
 ) -> anyhow::Result<()> {
     let inst = Instance::open(vm_name)?;
     let mut status = inst.reconcile_status().await?;
-    let config = crate::config::load_resolved(&inst.config_path())?;
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
 
     let templates_dir = dirs::templates_dir()?;
     tokio::fs::create_dir_all(&templates_dir).await.with_context(|| {
@@ -119,11 +123,12 @@ pub async fn create_template(
 
     // Run provisioning if the VM has never been provisioned.
     if !inst.is_provisioned() {
+        let machine_type = crate::vm::ensure_machine_type(&inst, &mut config).await?;
         spinner.set_message(format!(
             "Starting VM for provisioning ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus).await?;
+        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
         inst.write_status(Status::Running).await?;
         step_done(
             &spinner,
@@ -138,11 +143,12 @@ pub async fn create_template(
 
     // If the VM is stopped at this point, start it briefly to clear machine-id.
     if status == Status::Stopped {
+        let machine_type = crate::vm::ensure_machine_type(&inst, &mut config).await?;
         spinner.set_message(format!(
             "Starting VM to clear machine-id ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus).await?;
+        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
         inst.write_status(Status::Running).await?;
         step_done(
             &spinner,
@@ -431,7 +437,7 @@ async fn create_from_template_inner(
     step_done(&spinner, "Generated cloud-init seed");
 
     // Save a resolved config for this clone so `start` and `inspect` work.
-    let clone_config = ResolvedConfig {
+    let mut clone_config = ResolvedConfig {
         base_url: String::new(),
         base_checksum: String::new(),
         skip_checksum: true,
@@ -454,6 +460,7 @@ async fn create_from_template_inner(
         labels: std::collections::BTreeMap::new(),
         idle_suspend_minutes: 0,
         idle_load_threshold: 0.2,
+        machine_type: None,
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
 
@@ -468,10 +475,11 @@ async fn create_from_template_inner(
     }
 
     // Start QEMU.
+    let machine_type = crate::vm::ensure_machine_type(inst, &mut clone_config).await?;
     spinner.set_message(format!(
         "Starting QEMU ({memory} RAM, {cpus} vCPUs)..."
     ));
-    qemu::start(inst, memory, cpus).await?;
+    qemu::start(inst, memory, cpus, &machine_type).await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,

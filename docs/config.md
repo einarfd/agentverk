@@ -112,6 +112,27 @@ idle_load_threshold  = 0.2  # optional; default 0.2
 A long-running tmux agent will keep the VM up via the load signal even if no SSH
 session is currently attached. Resume with `agv resume <name>`.
 
+### `machine_type`
+
+Pin the QEMU `-machine` value for this VM (e.g. `pc-q35-9.2`, `virt-9.2`). Unset by
+default; on first start agv resolves the host QEMU's current default version of the
+platform alias (`q35` on x86, `virt` on aarch64) and writes the resolved value back
+into the instance config. From then on every start uses the same `-machine` value,
+so a `brew upgrade qemu` or distro bump can't silently change the guest's device
+topology underneath an existing `savevm`/`loadvm` snapshot. Existing VMs are
+auto-pinned the same way on their next start.
+
+You normally don't write this field by hand. Override only when you need to force
+a specific version — e.g. to roll a VM back to an older machine type after a known
+QEMU regression:
+
+```toml
+[vm]
+machine_type = "pc-q35-8.2"
+```
+
+CLI equivalent: `agv config set --machine-type pc-q35-8.2 <name>`.
+
 ## `[[files]]`
 
 Copy files or directories from the host into the VM before any provisioning runs.

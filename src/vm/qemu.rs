@@ -19,8 +19,19 @@ use crate::vm::instance::Instance;
 /// Allocates a free port for SSH forwarding, builds the QEMU command line,
 /// and spawns QEMU in daemon mode. On success, the PID file and SSH port
 /// file are written by QEMU and this function respectively.
-pub async fn start(instance: &Instance, memory: &str, cpus: u32) -> anyhow::Result<()> {
-    start_with_loadvm(instance, memory, cpus, None).await
+///
+/// `machine_type` is the pinned `-machine` value (e.g. `pc-q35-9.2`,
+/// `virt-9.2`). The caller is expected to resolve this once via
+/// [`current_default_machine_type`] when not yet pinned, persist it, and
+/// pass the same value on every subsequent start so QEMU upgrades don't
+/// silently change the guest's device topology.
+pub async fn start(
+    instance: &Instance,
+    memory: &str,
+    cpus: u32,
+    machine_type: &str,
+) -> anyhow::Result<()> {
+    start_with_loadvm(instance, memory, cpus, machine_type, None).await
 }
 
 /// Start QEMU, optionally loading from a saved snapshot.
@@ -28,10 +39,11 @@ pub async fn start_with_loadvm(
     instance: &Instance,
     memory: &str,
     cpus: u32,
+    machine_type: &str,
     loadvm: Option<&str>,
 ) -> anyhow::Result<()> {
     let ssh_port = allocate_free_port().await?;
-    let (binary, mut args) = build_qemu_args(instance, memory, cpus, ssh_port)?;
+    let (binary, mut args) = build_qemu_args(instance, memory, cpus, ssh_port, machine_type)?;
     if let Some(snapshot) = loadvm {
         args.push("-loadvm".to_string());
         args.push(snapshot.to_string());
@@ -363,25 +375,41 @@ fn nested_virt_available() -> bool {
     }
 }
 
+/// Per-platform info needed to build a QEMU command line.
+struct PlatformArgs {
+    /// Binary name (e.g. `qemu-system-x86_64`, `qemu-system-aarch64`).
+    binary: String,
+    /// Unversioned machine alias for the platform (`q35` or `virt`).
+    /// Used as the resolution target when no pinned `machine_type` is set.
+    machine_alias: &'static str,
+    /// Comma-suffix segments to append to the resolved/pinned machine type
+    /// (e.g. `["virtualization=on"]` for nested arm). Empty on platforms
+    /// that need no extras.
+    machine_extras: Vec<String>,
+    /// Accelerator and CPU flags (e.g. `-accel kvm -cpu host`). Emitted
+    /// verbatim after the `-machine` flag.
+    accel_and_cpu_args: Vec<String>,
+}
+
 /// Return the QEMU binary name and platform-specific machine/accel args.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "returns Err on unsupported platforms via #[cfg]; clippy can't see the conditional branches"
 )]
-fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
+fn platform_args() -> anyhow::Result<PlatformArgs> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        Ok((
-            "qemu-system-aarch64".to_string(),
-            vec![
-                "-machine".to_string(),
-                "virt".to_string(),
+        Ok(PlatformArgs {
+            binary: "qemu-system-aarch64".to_string(),
+            machine_alias: "virt",
+            machine_extras: vec![],
+            accel_and_cpu_args: vec![
                 "-accel".to_string(),
                 "hvf".to_string(),
                 "-cpu".to_string(),
                 "host".to_string(),
             ],
-        ))
+        })
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -390,39 +418,38 @@ fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
         if nested {
             info!("nested virtualization: enabled (host KVM module supports it)");
         }
-        Ok((
-            "qemu-system-x86_64".to_string(),
-            vec![
-                "-machine".to_string(),
-                "q35".to_string(),
+        Ok(PlatformArgs {
+            binary: "qemu-system-x86_64".to_string(),
+            machine_alias: "q35",
+            machine_extras: vec![],
+            accel_and_cpu_args: vec![
                 "-accel".to_string(),
                 "kvm".to_string(),
                 "-cpu".to_string(),
                 "host".to_string(),
             ],
-        ))
+        })
     }
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
         let nested = nested_virt_available();
-        let machine = if nested {
+        let mut extras: Vec<String> = vec![];
+        if nested {
             info!("nested virtualization: enabled (virtualization=on)");
-            "virt,virtualization=on"
-        } else {
-            "virt"
-        };
-        Ok((
-            "qemu-system-aarch64".to_string(),
-            vec![
-                "-machine".to_string(),
-                machine.to_string(),
+            extras.push("virtualization=on".to_string());
+        }
+        Ok(PlatformArgs {
+            binary: "qemu-system-aarch64".to_string(),
+            machine_alias: "virt",
+            machine_extras: extras,
+            accel_and_cpu_args: vec![
                 "-accel".to_string(),
                 "kvm".to_string(),
                 "-cpu".to_string(),
                 "host".to_string(),
             ],
-        ))
+        })
     }
 
     #[cfg(not(any(
@@ -433,6 +460,95 @@ fn platform_args() -> anyhow::Result<(String, Vec<String>)> {
     {
         bail!("unsupported platform: agv requires macOS/aarch64, Linux/x86_64, or Linux/aarch64")
     }
+}
+
+/// Resolve the host QEMU's current default version of this platform's
+/// machine alias (e.g. `q35` → `pc-q35-9.2`). Used for the auto-pin path
+/// when an instance has no `machine_type` set yet.
+///
+/// Shells out to `qemu-system-X -machine help` and parses the listing.
+/// Modern QEMU annotates the alias with `(alias of pc-q35-X.Y)`; we use
+/// that when present and fall back to "latest `<prefix>-X.Y` line" if
+/// not. Returns the pinned name (e.g. `"pc-q35-9.2"`).
+pub fn current_default_machine_type() -> anyhow::Result<String> {
+    let p = platform_args()?;
+    let output = std::process::Command::new(&p.binary)
+        .args(["-machine", "help"])
+        .output()
+        .with_context(|| format!("failed to run `{} -machine help`", p.binary))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "`{} -machine help` failed (exit {}): {stderr}",
+            p.binary,
+            output.status,
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_machine_help(&text, p.machine_alias).with_context(|| {
+        format!(
+            "could not resolve a pinned version for `-machine {}` from `{} -machine help` output",
+            p.machine_alias, p.binary,
+        )
+    })
+}
+
+/// Parse the output of `qemu-system-X -machine help` to find the pinned
+/// version of `alias` (e.g. `q35` → `pc-q35-9.2`).
+///
+/// Strategy:
+/// 1. Look for the alias's own line and read `(alias of pc-q35-X.Y)`. This
+///    is what every modern QEMU emits.
+/// 2. Fall back to the highest-version `<prefix>-X.Y` line in the listing,
+///    where prefix is `pc-q35-` for `q35` and `virt-` for `virt`.
+fn parse_machine_help(help_output: &str, alias: &str) -> Option<String> {
+    // Strategy 1: look for an `(alias of XXX)` annotation on the alias line.
+    for line in help_output.lines() {
+        let mut tokens = line.split_ascii_whitespace();
+        if tokens.next() != Some(alias) {
+            continue;
+        }
+        if let Some(idx) = line.find("(alias of ") {
+            let rest = &line[idx + "(alias of ".len()..];
+            if let Some(end) = rest.find(')') {
+                let resolved = rest[..end].trim();
+                if !resolved.is_empty() {
+                    return Some(resolved.to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 2: scan for the highest-version `<prefix>-X.Y` line.
+    let prefix = match alias {
+        "q35" => "pc-q35-",
+        "virt" => "virt-",
+        _ => return None,
+    };
+    let mut best: Option<((u32, u32), String)> = None;
+    for line in help_output.lines() {
+        let Some(name) = line.split_ascii_whitespace().next() else {
+            continue;
+        };
+        if line.contains("(deprecated)") {
+            continue;
+        }
+        let Some(suffix) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let mut parts = suffix.splitn(2, '.');
+        let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(minor) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let key = (major, minor);
+        if best.as_ref().is_none_or(|(k, _)| key > *k) {
+            best = Some((key, name.to_string()));
+        }
+    }
+    best.map(|(_, name)| name)
 }
 
 /// EFI firmware paths for aarch64: read-only code and writable vars template.
@@ -523,8 +639,18 @@ fn build_qemu_args(
     memory: &str,
     cpus: u32,
     ssh_port: u16,
+    machine_type: &str,
 ) -> anyhow::Result<(String, Vec<String>)> {
-    let (binary, mut args) = platform_args()?;
+    let p = platform_args()?;
+    let binary = p.binary;
+    let mut args: Vec<String> = Vec::new();
+    let machine_value = if p.machine_extras.is_empty() {
+        machine_type.to_string()
+    } else {
+        format!("{machine_type},{}", p.machine_extras.join(","))
+    };
+    args.extend(["-machine".to_string(), machine_value]);
+    args.extend(p.accel_and_cpu_args);
 
     // EFI firmware for aarch64: pflash drives for code (read-only) and
     // vars (writable per-instance copy for UEFI NVRAM).
@@ -769,18 +895,22 @@ mod tests {
 
     #[test]
     fn platform_args_returns_expected_binary() {
-        let (binary, args) = platform_args().unwrap();
+        let p = platform_args().unwrap();
 
         if cfg!(target_arch = "aarch64") {
-            assert_eq!(binary, "qemu-system-aarch64");
+            assert_eq!(p.binary, "qemu-system-aarch64");
+            assert_eq!(p.machine_alias, "virt");
         } else if cfg!(target_arch = "x86_64") {
-            assert_eq!(binary, "qemu-system-x86_64");
+            assert_eq!(p.binary, "qemu-system-x86_64");
+            assert_eq!(p.machine_alias, "q35");
         }
 
         // Should contain an accelerator.
         assert!(
-            args.contains(&"hvf".to_string()) || args.contains(&"kvm".to_string()),
-            "expected hvf or kvm in args: {args:?}"
+            p.accel_and_cpu_args.contains(&"hvf".to_string())
+                || p.accel_and_cpu_args.contains(&"kvm".to_string()),
+            "expected hvf or kvm in accel_and_cpu_args: {:?}",
+            p.accel_and_cpu_args
         );
     }
 
@@ -794,7 +924,7 @@ mod tests {
 
         // build_qemu_args may fail on platforms without EFI firmware,
         // which is fine — we only test the flag content when it succeeds.
-        let Ok((binary, args)) = build_qemu_args(&instance, "2G", 4, 2222) else {
+        let Ok((binary, args)) = build_qemu_args(&instance, "2G", 4, 2222, "pc-q35-9.2") else {
             eprintln!("skipping build_qemu_args test (EFI firmware not found)");
             return;
         };
@@ -813,6 +943,10 @@ mod tests {
         );
         assert!(joined.contains("-no-reboot"), "missing -no-reboot: {joined}");
         assert!(joined.contains("-daemonize"), "missing -daemonize: {joined}");
+        assert!(
+            joined.contains("pc-q35-9.2"),
+            "missing pinned machine type in args: {joined}"
+        );
         assert!(
             joined.contains("disk.qcow2"),
             "missing disk path: {joined}"
@@ -927,5 +1061,68 @@ mod tests {
             err.contains("failed to read PID file"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn parse_machine_help_resolves_q35_alias() {
+        let help = "\
+Supported machines are:
+none                 empty machine
+pc                   Standard PC (i440FX + PIIX, 1996) (alias of pc-i440fx-9.2)
+pc-i440fx-9.2        Standard PC (i440FX + PIIX, 1996) (default)
+pc-i440fx-9.1        Standard PC (i440FX + PIIX, 1996) (deprecated)
+q35                  Standard PC (Q35 + ICH9, 2009) (alias of pc-q35-9.2)
+pc-q35-9.2           Standard PC (Q35 + ICH9, 2009)
+pc-q35-9.1           Standard PC (Q35 + ICH9, 2009)
+microvm              microvm (i386)
+";
+        assert_eq!(
+            parse_machine_help(help, "q35").as_deref(),
+            Some("pc-q35-9.2"),
+        );
+    }
+
+    #[test]
+    fn parse_machine_help_resolves_virt_alias() {
+        let help = "\
+Supported machines are:
+none                 empty machine
+virt                 QEMU 9.2 ARM Virtual Machine (alias of virt-9.2)
+virt-9.2             QEMU 9.2 ARM Virtual Machine
+virt-9.1             QEMU 9.1 ARM Virtual Machine
+virt-8.2             QEMU 8.2 ARM Virtual Machine (deprecated)
+";
+        assert_eq!(
+            parse_machine_help(help, "virt").as_deref(),
+            Some("virt-9.2"),
+        );
+    }
+
+    #[test]
+    fn parse_machine_help_falls_back_to_highest_versioned() {
+        // No `(alias of ...)` annotation — older QEMU layout. We should
+        // still pick the highest non-deprecated version.
+        let help = "\
+Supported machines are:
+q35                  Standard PC (Q35 + ICH9, 2009)
+pc-q35-8.2           Standard PC (Q35 + ICH9, 2009)
+pc-q35-9.2           Standard PC (Q35 + ICH9, 2009)
+pc-q35-9.1           Standard PC (Q35 + ICH9, 2009)
+pc-q35-8.0           Standard PC (Q35 + ICH9, 2009) (deprecated)
+";
+        assert_eq!(
+            parse_machine_help(help, "q35").as_deref(),
+            Some("pc-q35-9.2"),
+        );
+    }
+
+    #[test]
+    fn parse_machine_help_returns_none_when_alias_absent() {
+        let help = "\
+Supported machines are:
+none                 empty machine
+";
+        assert_eq!(parse_machine_help(help, "q35"), None);
+        assert_eq!(parse_machine_help(help, "virt"), None);
     }
 }

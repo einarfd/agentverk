@@ -556,6 +556,13 @@ pub struct ConfigSetArgs {
     /// start/resume.
     #[arg(long, value_name = "LOAD")]
     pub idle_load_threshold: Option<f32>,
+
+    /// Override the pinned QEMU machine type (e.g. `pc-q35-9.2`,
+    /// `virt-9.2`). Normally agv resolves and pins this automatically on
+    /// first start; use this flag to force a specific version. Takes
+    /// effect on the next start/resume.
+    #[arg(long, value_name = "MACHINE")]
+    pub machine_type: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

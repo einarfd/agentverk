@@ -83,7 +83,8 @@ async fn qemu_start_and_force_stop() {
     let instance = setup_instance(dir.path(), "test-force-stop").await.unwrap();
 
     // Start QEMU.
-    qemu::start(&instance, "512M", 1).await.unwrap();
+    let machine_type = qemu::current_default_machine_type().unwrap();
+    qemu::start(&instance, "512M", 1, &machine_type).await.unwrap();
 
     // Verify start artifacts.
     assert_pid_alive(&instance.pid_path()).await;
@@ -144,7 +145,8 @@ async fn qemu_start_and_graceful_stop() {
         .unwrap();
 
     // Start QEMU.
-    qemu::start(&instance, "512M", 1).await.unwrap();
+    let machine_type = qemu::current_default_machine_type().unwrap();
+    qemu::start(&instance, "512M", 1, &machine_type).await.unwrap();
 
     // Verify it started.
     assert_pid_alive(&instance.pid_path()).await;
@@ -186,7 +188,8 @@ async fn qemu_start_writes_pid_and_port() {
     let dir = tempfile::tempdir().unwrap();
     let instance = setup_instance(dir.path(), "test-artifacts").await.unwrap();
 
-    qemu::start(&instance, "512M", 1).await.unwrap();
+    let machine_type = qemu::current_default_machine_type().unwrap();
+    qemu::start(&instance, "512M", 1, &machine_type).await.unwrap();
 
     // Verify PID file.
     let pid_raw = tokio::fs::read_to_string(instance.pid_path())

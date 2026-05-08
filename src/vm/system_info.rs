@@ -103,6 +103,7 @@ mod tests {
             labels: BTreeMap::new(),
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
+            machine_type: None,
         }
     }
 

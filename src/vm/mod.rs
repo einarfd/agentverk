@@ -374,6 +374,36 @@ async fn maybe_spawn_idle_watcher(inst: &Instance, config: &ResolvedConfig, spin
     );
 }
 
+/// Resolve and pin the QEMU machine type if the instance config doesn't
+/// have one yet, then return the value to pass to QEMU.
+///
+/// On a first start (config has `machine_type = None`), we shell out to
+/// `qemu-system-X -machine help` to pick the host QEMU's current default
+/// version (e.g. `pc-q35-9.2`) and persist it back into the instance
+/// config. From that point on every start uses the same `-machine`
+/// value, so a brew/distro QEMU upgrade can't silently change the
+/// guest's device topology underneath an existing snapshot.
+///
+/// Existing instances created before this field existed deserialize as
+/// `None` and get auto-pinned the same way on their next start.
+pub(super) async fn ensure_machine_type(
+    inst: &Instance,
+    config: &mut ResolvedConfig,
+) -> anyhow::Result<String> {
+    if let Some(existing) = config.machine_type.clone() {
+        return Ok(existing);
+    }
+    let resolved = qemu::current_default_machine_type()?;
+    info!(
+        vm = %inst.name,
+        machine_type = %resolved,
+        "auto-pinning QEMU machine type for this VM"
+    );
+    config.machine_type = Some(resolved.clone());
+    crate::config::save(config, &inst.config_path()).await?;
+    Ok(resolved)
+}
+
 /// Mark a VM as broken and persist the error to all the relevant places.
 ///
 /// Used by both `create()` and `start()` when first-boot provisioning fails.
@@ -469,8 +499,13 @@ async fn create_inner(
 ) -> anyhow::Result<()> {
     let spinner = status_spinner(verbose, quiet);
 
+    // Local clone for the machine-type auto-pin: ensure_machine_type sets
+    // the pinned value on this struct and re-saves, so the rest of the
+    // function should see and use the post-pin config.
+    let mut config = config.clone();
+
     // Save resolved config to instance dir so restarts / inspect can reload it.
-    crate::config::save(config, &inst.config_path()).await?;
+    crate::config::save(&config, &inst.config_path()).await?;
 
     // Derive a short image label from the URL for display.
     let image_label = config
@@ -519,13 +554,17 @@ async fn create_inner(
         return Ok(());
     }
 
+    // Resolve and persist the QEMU machine type pin (auto-pinned on first
+    // start; no-op once the value is recorded in the instance config).
+    let machine_type = ensure_machine_type(inst, &mut config).await?;
+
     // Start QEMU.
     spinner.set_message(format!(
         "Starting QEMU ({} RAM, {} vCPUs)...",
         config.memory, config.cpus
     ));
     info!(name, memory = %config.memory, cpus = config.cpus, "starting QEMU");
-    qemu::start(inst, &config.memory, config.cpus).await?;
+    qemu::start(inst, &config.memory, config.cpus, &machine_type).await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,
@@ -533,15 +572,15 @@ async fn create_inner(
     );
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
-    run_first_boot(inst, config, interactive_mode, verbose, quiet, &spinner).await?;
+    run_first_boot(inst, &config, interactive_mode, verbose, quiet, &spinner).await?;
 
     // Apply config-declared and auto-allocated forwards. Must run after
     // SSH is up (the supervisors tunnel through sshd). Same step runs in
     // `start` and `resume` — keeping it here means `agv create --start`
     // yields a VM with its forwards already live.
-    apply_and_report_forwards(inst, config, &spinner).await;
+    apply_and_report_forwards(inst, &config, &spinner).await;
 
-    maybe_spawn_idle_watcher(inst, config, &spinner).await;
+    maybe_spawn_idle_watcher(inst, &config, &spinner).await;
 
     // Update managed SSH config so IDEs can connect by VM name.
     update_ssh_config(inst, &config.user).await;
@@ -556,6 +595,10 @@ async fn create_inner(
 /// Sets the VM to `configuring` status for the duration of the operation so
 /// that concurrent `start` calls are safely rejected. Disk resize (grow-only)
 /// is performed via `qemu-img resize`; the guest filesystem is not touched.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one positional per knob; bundling them in a struct just shifts the boilerplate to the call site"
+)]
 pub async fn config_set(
     name: &str,
     memory: Option<&str>,
@@ -564,6 +607,7 @@ pub async fn config_set(
     forwards: Option<&str>,
     idle_suspend_minutes: Option<u32>,
     idle_load_threshold: Option<f32>,
+    machine_type: Option<&str>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         memory.is_some()
@@ -571,8 +615,9 @@ pub async fn config_set(
             || disk.is_some()
             || forwards.is_some()
             || idle_suspend_minutes.is_some()
-            || idle_load_threshold.is_some(),
-        "no changes specified — provide at least one of --memory, --cpus, --disk, --forwards, --idle-suspend-minutes, --idle-load-threshold"
+            || idle_load_threshold.is_some()
+            || machine_type.is_some(),
+        "no changes specified — provide at least one of --memory, --cpus, --disk, --forwards, --idle-suspend-minutes, --idle-load-threshold, --machine-type"
     );
 
     if let Some(t) = idle_load_threshold {
@@ -642,6 +687,9 @@ pub async fn config_set(
     }
     if let Some(t) = idle_load_threshold {
         config.idle_load_threshold = t;
+    }
+    if let Some(mt) = machine_type {
+        config.machine_type = Some(mt.to_string());
     }
 
     // Save config; if this fails after a disk resize the state is inconsistent.
@@ -713,7 +761,7 @@ pub async fn start(
         );
     }
 
-    let config = crate::config::load_resolved(&inst.config_path())?;
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
 
     let spinner = status_spinner(verbose, quiet);
 
@@ -723,11 +771,12 @@ pub async fn start(
     if qemu_already_running {
         step_done(&spinner, "QEMU already running — retrying provisioning");
     } else {
+        let machine_type = ensure_machine_type(&inst, &mut config).await?;
         spinner.set_message(format!(
             "Starting QEMU ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus).await?;
+        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
         step_done(
             &spinner,
             &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
@@ -975,7 +1024,7 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
         }
     );
 
-    let config = crate::config::load_resolved(&inst.config_path())?;
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
 
     let spinner = status_spinner(verbose, quiet);
     spinner.set_message(format!(
@@ -983,7 +1032,15 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
         config.memory, config.cpus
     ));
 
-    qemu::start_with_loadvm(&inst, &config.memory, config.cpus, Some("agv-suspend")).await?;
+    let machine_type = ensure_machine_type(&inst, &mut config).await?;
+    qemu::start_with_loadvm(
+        &inst,
+        &config.memory,
+        config.cpus,
+        &machine_type,
+        Some("agv-suspend"),
+    )
+    .await?;
     inst.write_status(Status::Running).await?;
     step_done(&spinner, "Resumed VM");
 
@@ -1117,7 +1174,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_set_requires_at_least_one_flag() {
-        let err = config_set("nonexistent-vm", None, None, None, None, None, None)
+        let err = config_set("nonexistent-vm", None, None, None, None, None, None, None)
             .await
             .expect_err("config_set with no flags should fail");
         let msg = format!("{err}");
@@ -1130,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn config_set_rejects_zero_idle_load_threshold() {
         // Validation runs before any filesystem access, so a fake VM name is fine.
-        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(0.0))
+        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(0.0), None)
             .await
             .expect_err("zero load threshold should fail validation");
         let msg = format!("{err}");
@@ -1142,7 +1199,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_set_rejects_negative_idle_load_threshold() {
-        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(-0.5))
+        let err = config_set("nonexistent-vm", None, None, None, None, None, Some(-0.5), None)
             .await
             .expect_err("negative load threshold should fail validation");
         let msg = format!("{err}");
@@ -1162,6 +1219,7 @@ mod tests {
             None,
             None,
             Some(f32::NAN),
+            None,
         )
         .await
         .expect_err("NaN load threshold should fail validation");

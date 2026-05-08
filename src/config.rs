@@ -255,6 +255,16 @@ pub struct VmConfig {
     /// idle Linux sits well under `0.05`, while an active agent compiling
     /// or running tests will push above `0.5`.
     pub idle_load_threshold: Option<f32>,
+
+    /// Pinned QEMU machine type (e.g. `pc-q35-9.2`, `virt-9.2`).
+    ///
+    /// Unset by default. When unset, agv resolves the host QEMU's current
+    /// default version of the platform alias (`q35` / `virt`) at start time
+    /// and writes it back here so subsequent starts use the same pin. This
+    /// keeps a brew/distro QEMU upgrade from silently changing the guest's
+    /// device topology and breaking `savevm`/`loadvm`. Set explicitly only
+    /// when overriding (e.g. forcing an older version).
+    pub machine_type: Option<String>,
 }
 
 /// A file or directory to copy into the VM.
@@ -384,7 +394,7 @@ where
 ///
 /// Produced by [`resolve()`] after flattening the entire inheritance chain.
 /// Saved to and loaded from instance config files.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResolvedConfig {
     /// Base image URL for the current architecture.
     pub base_url: String,
@@ -503,6 +513,17 @@ pub struct ResolvedConfig {
     /// See [`VmConfig::idle_load_threshold`] for the semantics.
     #[serde(default = "default_idle_load_threshold")]
     pub idle_load_threshold: f32,
+
+    /// Pinned QEMU machine type (e.g. `pc-q35-9.2`, `virt-9.2`). `None`
+    /// means "not yet resolved" — the start path will probe the host QEMU
+    /// and write the resolved version back into the instance config, after
+    /// which it stays put across QEMU upgrades. See
+    /// [`VmConfig::machine_type`] for the rationale.
+    ///
+    /// `#[serde(default)]` so instance configs saved before this field
+    /// existed deserialize as `None` and get auto-pinned on next start.
+    #[serde(default)]
+    pub machine_type: Option<String>,
 }
 
 /// Default for [`ResolvedConfig::idle_load_threshold`]. Pulled into a
@@ -755,6 +776,7 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
                 .as_ref()
                 .and_then(|v| v.idle_load_threshold)
                 .unwrap_or_else(default_idle_load_threshold),
+            machine_type: vm.as_ref().and_then(|v| v.machine_type.clone()),
         };
 
         // Apply includes before the config's own steps.
@@ -1075,6 +1097,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         idle_load_threshold: vm
             .and_then(|v| v.idle_load_threshold)
             .unwrap_or(parent.idle_load_threshold),
+        machine_type: vm
+            .and_then(|v| v.machine_type.clone())
+            .or(parent.machine_type),
     }
 }
 
@@ -1742,6 +1767,7 @@ mod tests {
             labels: BTreeMap::new(),
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
+            machine_type: None,
         };
         let child = Config {
             base: None,
@@ -1805,6 +1831,7 @@ mod tests {
             labels: BTreeMap::new(),
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
+            machine_type: None,
         };
 
         let child = Config {
@@ -1872,6 +1899,7 @@ mod tests {
             labels: BTreeMap::new(),
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
+            machine_type: None,
         };
 
         let child = Config {
@@ -2086,6 +2114,7 @@ cpus = 4
             labels: BTreeMap::new(),
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
+            machine_type: None,
         };
 
         save(&config, &path).await.unwrap();
