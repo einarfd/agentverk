@@ -3,6 +3,7 @@
 //! This module orchestrates the high-level VM operations, delegating to
 //! submodules for QEMU process management, cloud-init, and instance state.
 
+pub mod backend;
 pub mod cloud_init;
 pub mod forwarding;
 pub mod instance;
