@@ -18,6 +18,8 @@ build-release:
     cargo build --release
 
 # Build the Apple Virtualization helper binary (macOS only). No-op on Linux.
+# Ad-hoc signs the binary with the `com.apple.security.virtualization`
+# entitlement; without it, AVF API calls fail with VZErrorDomain Code=2.
 build-avf-runner:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -27,6 +29,8 @@ build-avf-runner:
     fi
     cd swift/avf-runner
     swift build -c release
+    codesign --sign - --entitlements entitlements.plist --force \
+        .build/release/agv-avf-runner
 
 # Run the fast test suite (no slow boot tests, no real cloud-image downloads).
 test:
