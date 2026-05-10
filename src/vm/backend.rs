@@ -13,17 +13,23 @@ use crate::vm::instance::Instance;
 use crate::vm::qemu;
 
 #[cfg(target_os = "macos")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use anyhow::{bail, Context as _};
 #[cfg(target_os = "macos")]
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt as _;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 #[cfg(target_os = "macos")]
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 #[cfg(target_os = "macos")]
 use tokio::net::UnixStream;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
+#[cfg(target_os = "macos")]
+use tracing::{debug, info, warn};
 
 /// Backends own VM lifecycle: boot, stop, suspend/resume, and the SSH
 /// endpoint of the guest.
@@ -188,7 +194,7 @@ impl VmBackend for LocalAvfBackend {
     /// Convert the cached qcow2 base image to a sparse raw under the
     /// instance directory, then grow it to the user-requested
     /// `size`. AVF doesn't support qcow2 directly; the raw is what
-    /// VZDiskImageStorageDeviceAttachment opens.
+    /// `VZDiskImageStorageDeviceAttachment` opens.
     ///
     /// Idempotent — if the raw already exists at the right size we
     /// no-op.
@@ -228,14 +234,137 @@ impl VmBackend for LocalAvfBackend {
         Ok(())
     }
 
+    /// Boot the VM under Apple Virtualization.
+    ///
+    /// Sequence:
+    ///   1. Refuse `loadvm` (suspend/resume snapshots aren't wired up
+    ///      yet for AVF).
+    ///   2. Serialize the runner's JSON config to
+    ///      `<instance>/avf-runner-config.json`.
+    ///   3. Locate the agv-avf-runner binary (env override → sibling
+    ///      of current agv binary).
+    ///   4. Spawn the runner detached, in its own process group, with
+    ///      stderr captured to `<instance>/avf-runner.log` for
+    ///      post-mortem debugging.
+    ///   5. Persist the runner's PID for stop/destroy cleanup.
+    ///   6. Poll the runner's control socket until state goes from
+    ///      `starting` to `running`. If the runner dies during boot
+    ///      or doesn't reach `running` in time, kill its process
+    ///      group and surface an error.
+    ///
+    /// `machine_type` is ignored — AVF picks its own platform config.
     async fn start(
         &self,
-        _inst: &Instance,
-        _cfg: &ResolvedConfig,
+        inst: &Instance,
+        cfg: &ResolvedConfig,
         _machine_type: &str,
-        _loadvm: Option<&str>,
+        loadvm: Option<&str>,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("AVF backend is not yet implemented (start)")
+        if loadvm.is_some() {
+            bail!(
+                "AVF backend doesn't support snapshot resume (loadvm) yet"
+            );
+        }
+
+        // Compose the JSON config the runner reads.
+        let runner_cfg = AvfRunnerConfig {
+            name: inst.name.clone(),
+            memory_bytes: parse_memory(&cfg.memory)?,
+            cpu_count: cfg.cpus,
+            disk_path: inst.avf_disk_path().display().to_string(),
+            seed_iso_path: inst.seed_path().display().to_string(),
+            efi_variable_store_path: inst.avf_efi_vars_path().display().to_string(),
+            serial_log_path: inst.serial_log_path().display().to_string(),
+            control_socket_path: inst.avf_control_socket_path().display().to_string(),
+        };
+        let cfg_path = inst.avf_runner_config_path();
+        let cfg_json = serde_json::to_vec_pretty(&runner_cfg)
+            .context("serializing AVF runner config")?;
+        tokio::fs::write(&cfg_path, &cfg_json)
+            .await
+            .with_context(|| format!("writing {}", cfg_path.display()))?;
+
+        // Stale socket from a previous unclean exit would cause the
+        // runner to fail bind() — clean up first.
+        let _ = tokio::fs::remove_file(inst.avf_control_socket_path()).await;
+
+        let binary = locate_avf_runner()?;
+        info!(
+            vm = %inst.name,
+            runner = %binary.display(),
+            "spawning agv-avf-runner"
+        );
+
+        let log_path = inst.dir.join("avf-runner.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("opening {}", log_path.display()))?;
+        let log_clone = log_file.try_clone().context("dup runner log fd")?;
+
+        let mut cmd = std::process::Command::new(&binary);
+        cmd.arg("--config")
+            .arg(&cfg_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_clone));
+        cmd.process_group(0);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawning {}", binary.display()))?;
+        let pid = child.id();
+        // Hand the runner off to the OS — same pattern as forward
+        // supervisors and the idle watcher. The runner's lifetime is
+        // managed via SIGTERM to the recorded PID, not a Rust handle.
+        std::mem::forget(child);
+
+        // Persist the PID so stop/destroy cleanup can find this
+        // runner by name later.
+        tokio::fs::write(inst.avf_runner_pid_path(), pid.to_string())
+            .await
+            .with_context(|| {
+                format!(
+                    "writing PID file {}",
+                    inst.avf_runner_pid_path().display()
+                )
+            })?;
+
+        // Wait for the runner to bind its control socket. If it fails
+        // before that (bad config, validate() error, missing
+        // entitlement) the process exits and we surface the runner's
+        // log file in the error.
+        match wait_for_avf_socket(inst, pid, Duration::from_secs(10)).await {
+            Ok(()) => {}
+            Err(e) => {
+                avf_kill_runner(pid);
+                let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
+                return Err(e.context(format!(
+                    "agv-avf-runner failed to start; see {} for details",
+                    log_path.display()
+                )));
+            }
+        }
+
+        // Now poll status until the VM reports `running`. AVF goes
+        // through `starting → running` quickly on Apple Silicon
+        // (typically under 2s), but the slow tests have shown cold
+        // boots can take longer when the host is busy.
+        match wait_for_avf_running(inst, Duration::from_secs(30)).await {
+            Ok(()) => {}
+            Err(e) => {
+                avf_kill_runner(pid);
+                let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
+                return Err(e.context(format!(
+                    "agv-avf-runner did not reach running state; see {} for details",
+                    log_path.display()
+                )));
+            }
+        }
+
+        debug!(vm = %inst.name, pid, "agv-avf-runner running");
+        Ok(())
     }
 
     /// Send `{"op":"stop"}` over the runner's control socket. The
@@ -281,6 +410,162 @@ impl VmBackend for LocalAvfBackend {
 }
 
 // ---------------------------------------------------------------------------
+// AVF runner spawn helpers.
+// ---------------------------------------------------------------------------
+
+/// Mirror of the Swift `RunnerConfig` struct (`snake_case` matches
+/// the JSON on the wire). Serializing this and writing it to
+/// `<instance>/avf-runner-config.json` is what the runner reads on
+/// `--config <path>`.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct AvfRunnerConfig {
+    name: String,
+    memory_bytes: u64,
+    cpu_count: u32,
+    disk_path: String,
+    seed_iso_path: String,
+    efi_variable_store_path: String,
+    serial_log_path: String,
+    control_socket_path: String,
+}
+
+/// Resolve the agv-avf-runner binary path.
+///
+/// Lookup order:
+///   1. `AGV_AVF_RUNNER` env var (absolute path; intended for dev,
+///      pointing at `swift/avf-runner/.build/release/agv-avf-runner`).
+///   2. Sibling of the running agv binary (production install: a
+///      tarball drops both binaries into the same directory).
+///
+/// Errors with a clear message if neither exists; the user-facing
+/// fix is "run `just build-avf-runner`" or reinstall.
+#[cfg(target_os = "macos")]
+fn locate_avf_runner() -> anyhow::Result<PathBuf> {
+    locate_avf_runner_with(
+        std::env::var("AGV_AVF_RUNNER").ok(),
+        std::env::current_exe().context("locating current agv binary")?,
+    )
+}
+
+/// Pure version of [`locate_avf_runner`] — takes the env override and
+/// the current-exe path as inputs so it's testable without poking
+/// `std::env`.
+#[cfg(target_os = "macos")]
+fn locate_avf_runner_with(
+    env_override: Option<String>,
+    current_exe: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    if let Some(raw) = env_override {
+        let path = PathBuf::from(&raw);
+        if path.is_file() {
+            return Ok(path);
+        }
+        bail!("AGV_AVF_RUNNER points at {raw} but no file exists there");
+    }
+    let parent = current_exe.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "current agv binary has no parent dir: {}",
+            current_exe.display()
+        )
+    })?;
+    let candidate = parent.join("agv-avf-runner");
+    if candidate.is_file() {
+        return Ok(candidate);
+    }
+    bail!(
+        "agv-avf-runner not found next to {} or in $AGV_AVF_RUNNER. \
+         Run `just build-avf-runner` and either set AGV_AVF_RUNNER to the \
+         build output, or install agv-avf-runner alongside agv.",
+        current_exe.display()
+    )
+}
+
+/// Parse a config memory string (e.g. `"8G"`, `"512M"`) into a byte
+/// count for AVF's `memorySize` field. Reuses the same parser the
+/// rest of agv uses for disk-size strings.
+#[cfg(target_os = "macos")]
+fn parse_memory(spec: &str) -> anyhow::Result<u64> {
+    crate::image::parse_disk_size(spec)
+        .with_context(|| format!("parsing memory spec {spec:?}"))
+}
+
+/// SIGTERM the runner's process group. Same primitive
+/// `forward::kill_supervisor` uses for forward supervisors — kills
+/// the runner and any in-flight subprocess (it doesn't have any
+/// today, but defensively it's the right move).
+#[cfg(target_os = "macos")]
+fn avf_kill_runner(pid: u32) {
+    if let Some(p) = crate::forward::pid_from_u32(pid) {
+        // Negative PID targets the process group, which the runner
+        // owns because we spawned with process_group(0).
+        let _ = rustix::process::kill_process(p, rustix::process::Signal::TERM);
+    }
+}
+
+/// Wait for the runner's control socket to appear. Aborts early if
+/// the runner process dies before binding.
+#[cfg(target_os = "macos")]
+async fn wait_for_avf_socket(
+    inst: &Instance,
+    pid: u32,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let socket_path = inst.avf_control_socket_path();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if socket_path.exists() {
+            return Ok(());
+        }
+        if !crate::forward::is_alive(pid) {
+            bail!(
+                "agv-avf-runner exited before binding control socket {}",
+                socket_path.display()
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "agv-avf-runner did not bind control socket {} within {timeout:?}",
+                socket_path.display()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll the runner's `status` op until `state == "running"` or the
+/// timeout fires. Returns Err if the runner exits during the wait.
+#[cfg(target_os = "macos")]
+async fn wait_for_avf_running(inst: &Instance, timeout: Duration) -> anyhow::Result<()> {
+    let socket_path = inst.avf_control_socket_path();
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_state: Option<String> = None;
+    loop {
+        match avf_rpc(&socket_path, "status").await {
+            Ok(resp) => {
+                if resp.state.as_deref() == Some("running") {
+                    return Ok(());
+                }
+                last_state = resp.state;
+            }
+            Err(e) => {
+                // Socket connect failures are expected briefly during
+                // teardown; tolerate a few before surfacing.
+                warn!(error = %format!("{e:#}"), "avf status query failed");
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "agv-avf-runner did not reach `running` within {timeout:?} (last state: {:?})",
+                last_state.unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC client for the AVF runner's unix-socket control protocol.
 // Wire format mirrors swift/avf-runner/Sources/avf-runner/main.swift —
 // line-delimited JSON, one request per connection, one response, close.
@@ -291,10 +576,6 @@ impl VmBackend for LocalAvfBackend {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    dead_code,
-    reason = "`state` will be read by the start path once it polls the runner; keeping the field decoded so the wire shape stays in lockstep with the Swift side"
-)]
 struct AvfRpcResponse {
     ok: bool,
     error: Option<String>,
@@ -473,6 +754,48 @@ mod tests {
             msg.contains("failed to connect") || msg.contains("timed out connecting"),
             "expected connect-failure message, got: {msg}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn locate_avf_runner_honors_env_var() {
+        // Use a known-existing file (the agv test binary itself) as
+        // a placeholder — we're testing path-resolution, not the
+        // returned binary's behavior.
+        let exe = std::env::current_exe().unwrap();
+        let resolved =
+            locate_avf_runner_with(Some(exe.display().to_string()), exe.clone()).unwrap();
+        assert_eq!(resolved, exe);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn locate_avf_runner_rejects_bogus_env_var() {
+        let exe = std::env::current_exe().unwrap();
+        let err = locate_avf_runner_with(
+            Some("/no/such/path/agv-avf-runner".to_string()),
+            exe,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("AGV_AVF_RUNNER points at"),
+            "expected env-var-not-found message, got: {msg}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn locate_avf_runner_finds_sibling_of_current_exe() {
+        // Drop a fake binary next to the current exe and confirm
+        // resolver picks it up when no env override is given.
+        let dir = tempfile::tempdir().unwrap();
+        let fake_exe = dir.path().join("agv");
+        std::fs::write(&fake_exe, b"#!/bin/sh\nexit 0\n").unwrap();
+        let runner = dir.path().join("agv-avf-runner");
+        std::fs::write(&runner, b"#!/bin/sh\nexit 0\n").unwrap();
+        let resolved = locate_avf_runner_with(None, fake_exe).unwrap();
+        assert_eq!(resolved, runner);
     }
 
     /// Build a minimal valid `ResolvedConfig` for tests in this module.
