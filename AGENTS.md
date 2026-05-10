@@ -16,6 +16,12 @@ cargo build --release  # Release build (LTO enabled)
 
 The binary is at `./target/debug/agv` (or `./target/release/agv`).
 
+A `justfile` at the repo root chains the common multi-step workflows so
+they don't need to be remembered. Install [just](https://just.systems/)
+(`brew install just` or `cargo install just`) and run `just --list` to
+see the recipes — `just verify` (clippy + fast tests) is the typical
+pre-commit gate; `just verify-slow` adds the boot tests.
+
 ### Test policy
 
 Tests fall into three categories. Pick the right one when adding a new test:
