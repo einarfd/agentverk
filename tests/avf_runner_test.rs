@@ -224,8 +224,8 @@ fn validate_fails_when_disk_missing() {
 /// Slow boot test: spin up a real AVF VM from the cached Debian raw,
 /// wait for the kernel to log to the serial pipe, then SIGTERM and
 /// confirm graceful exit. Skipped unless the cached raw exists in the
-/// PoC location (`/tmp/qcow2-poc/out/...`); reproduce by running the
-/// PoC converter once.
+/// `PoC` location (`/tmp/qcow2-poc/out/...`); reproduce by running
+/// the qcow2-rs proof-of-concept converter once.
 ///
 /// Marked `#[ignore]` because it boots a real VM (~5–10s), which is
 /// the same cost as our slow QEMU boot tests.

@@ -560,14 +560,26 @@ fn default_backend() -> String {
 /// Validate that `backend` is one of the values agv knows how to
 /// dispatch on. Called from [`load_resolved`] so call sites can rely
 /// on the field being known-good.
+///
+/// `"avf"` is macOS-only — Apple Virtualization is a Darwin
+/// framework, so a config asking for it on Linux is a hard error
+/// rather than something we silently fall back from.
 fn validate_backend(value: &str) -> anyhow::Result<()> {
     match value {
         "qemu" => Ok(()),
-        // "avf" lands when LocalAvfBackend is wired up; until then,
-        // the field is reserved but not yet selectable.
-        other => anyhow::bail!(
-            "unknown backend '{other}' (expected: qemu)"
+        #[cfg(target_os = "macos")]
+        "avf" => Ok(()),
+        #[cfg(not(target_os = "macos"))]
+        "avf" => anyhow::bail!(
+            "backend 'avf' is macOS-only — Apple Virtualization is not available on this platform"
         ),
+        other => {
+            #[cfg(target_os = "macos")]
+            let expected = "qemu, avf";
+            #[cfg(not(target_os = "macos"))]
+            let expected = "qemu";
+            anyhow::bail!("unknown backend '{other}' (expected: {expected})")
+        }
     }
 }
 

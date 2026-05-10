@@ -67,18 +67,22 @@ pub trait VmBackend: Send + Sync {
 /// `127.0.0.1:hostfwd_port` SSH endpoint.
 pub struct LocalQemuBackend;
 
-/// Singleton backend instance.
+/// Singleton backend instances.
 static LOCAL_QEMU: LocalQemuBackend = LocalQemuBackend;
+#[cfg(target_os = "macos")]
+static LOCAL_AVF: LocalAvfBackend = LocalAvfBackend;
 
 /// Pick the backend for a VM by inspecting its resolved config.
 ///
-/// Today only `"qemu"` is implemented; `LocalAvfBackend` will plug in
-/// here when it lands. The config field is validated at load time
-/// ([`crate::config::load_resolved`]) so this function is infallible.
+/// The config field is validated at load time
+/// ([`crate::config::load_resolved`]) — `"qemu"` is always valid;
+/// `"avf"` is valid on macOS only — so this function is infallible.
 #[must_use]
 pub fn for_config(cfg: &ResolvedConfig) -> &'static dyn VmBackend {
     match cfg.backend.as_str() {
         "qemu" => &LOCAL_QEMU,
+        #[cfg(target_os = "macos")]
+        "avf" => &LOCAL_AVF,
         // load_resolved rejects anything else, so this is unreachable
         // in production. Fall back to QEMU defensively rather than
         // panicking — wrong-but-safe beats a crash.
@@ -125,5 +129,120 @@ impl VmBackend for LocalQemuBackend {
     async fn ssh_endpoint(&self, inst: &Instance) -> anyhow::Result<(String, u16)> {
         let port = crate::ssh::ssh_port(inst).await?;
         Ok(("127.0.0.1".to_string(), port))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Apple Virtualization backend (macOS only)
+// ---------------------------------------------------------------------------
+
+/// Backend that runs the VM under Apple Virtualization (`Virtualization`
+/// framework) via the `agv-avf-runner` Swift helper binary.
+///
+/// One runner process per VM, spawned at start time and controlled
+/// through a per-VM unix socket protocol (line-delimited JSON-RPC; see
+/// the runner's `ControlRequest` / `ControlResponse` types for the
+/// wire shape).
+///
+/// Skeleton commit: every method is currently a "not yet implemented"
+/// error. Fills land in subsequent commits as the runner spawn,
+/// disk-format conversion, and JSON-RPC client wire up.
+#[cfg(target_os = "macos")]
+pub struct LocalAvfBackend;
+
+#[cfg(target_os = "macos")]
+#[async_trait]
+impl VmBackend for LocalAvfBackend {
+    async fn start(
+        &self,
+        _inst: &Instance,
+        _cfg: &ResolvedConfig,
+        _machine_type: &str,
+        _loadvm: Option<&str>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("AVF backend is not yet implemented (start)")
+    }
+
+    async fn stop(&self, _inst: &Instance) -> anyhow::Result<()> {
+        anyhow::bail!("AVF backend is not yet implemented (stop)")
+    }
+
+    async fn force_stop(&self, _inst: &Instance) -> anyhow::Result<()> {
+        anyhow::bail!("AVF backend is not yet implemented (force_stop)")
+    }
+
+    async fn suspend(&self, _inst: &Instance) -> anyhow::Result<()> {
+        anyhow::bail!("AVF backend is not yet implemented (suspend)")
+    }
+
+    async fn ssh_endpoint(&self, _inst: &Instance) -> anyhow::Result<(String, u16)> {
+        anyhow::bail!("AVF backend is not yet implemented (ssh_endpoint)")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip a config containing `backend = "qemu"` through
+    /// load_resolved + for_config. Sanity-checks that the dispatch
+    /// path picks up the field correctly on every platform.
+    #[test]
+    fn for_config_dispatches_qemu_on_every_platform() {
+        // Construct ResolvedConfig directly rather than going through
+        // TOML to keep the test focused on the dispatch shape.
+        let cfg = ResolvedConfig {
+            backend: "qemu".to_string(),
+            ..test_resolved_config()
+        };
+        // Dispatch returns *something* — we can't compare trait objects
+        // directly, but the type-check that for_config(...) returns
+        // `&dyn VmBackend` is meaningful in itself.
+        let _: &dyn VmBackend = for_config(&cfg);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn for_config_dispatches_avf_on_macos() {
+        let cfg = ResolvedConfig {
+            backend: "avf".to_string(),
+            ..test_resolved_config()
+        };
+        let _: &dyn VmBackend = for_config(&cfg);
+    }
+
+    /// Build a minimal valid ResolvedConfig for tests in this module.
+    /// Mirrors the template-clone shape from vm/template.rs.
+    fn test_resolved_config() -> ResolvedConfig {
+        ResolvedConfig {
+            base_url: String::new(),
+            base_checksum: String::new(),
+            skip_checksum: true,
+            memory: "1G".to_string(),
+            cpus: 1,
+            disk: "10G".to_string(),
+            user: "agent".to_string(),
+            os_family: "debian".to_string(),
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
+            template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
+            labels: std::collections::BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
+            machine_type: None,
+            backend: "qemu".to_string(),
+        }
     }
 }
