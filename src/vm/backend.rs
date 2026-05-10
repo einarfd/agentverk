@@ -1,22 +1,29 @@
 //! Pluggable VM execution backend.
 //!
-//! The trait isolates the lifecycle calls that differ between hypervisors —
-//! today only QEMU is implemented; Apple Virtualization (AVF) on macOS will
-//! land as a second impl. Everything above the boundary (cloud-init, SSH,
-//! mixins, port forwards, idle watcher) stays backend-agnostic and uses
-//! the trait through `&dyn VmBackend`.
-//!
-//! This file is the foundation commit: trait definition plus a
-//! `LocalQemuBackend` that delegates to the existing `vm::qemu` module.
-//! Lifecycle call sites still use `vm::qemu::*` directly — they'll be
-//! migrated to the backend in follow-up commits so each step is small
-//! and reviewable.
+//! The trait isolates the lifecycle calls that differ between hypervisors:
+//! today QEMU (everywhere) and Apple Virtualization (AVF, macOS only).
+//! Everything above the boundary (cloud-init, SSH, mixins, port forwards,
+//! idle watcher) stays backend-agnostic and uses the trait through
+//! `&dyn VmBackend`.
 
 use async_trait::async_trait;
 
 use crate::config::ResolvedConfig;
 use crate::vm::instance::Instance;
 use crate::vm::qemu;
+
+#[cfg(target_os = "macos")]
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use anyhow::{bail, Context as _};
+#[cfg(target_os = "macos")]
+use serde::Deserialize;
+#[cfg(target_os = "macos")]
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+#[cfg(target_os = "macos")]
+use tokio::net::UnixStream;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 /// Backends own VM lifecycle: boot, stop, suspend/resume, and the SSH
 /// endpoint of the guest.
@@ -163,21 +170,123 @@ impl VmBackend for LocalAvfBackend {
         anyhow::bail!("AVF backend is not yet implemented (start)")
     }
 
-    async fn stop(&self, _inst: &Instance) -> anyhow::Result<()> {
-        anyhow::bail!("AVF backend is not yet implemented (stop)")
+    /// Send `{"op":"stop"}` over the runner's control socket. The
+    /// runner schedules an ACPI shutdown asynchronously and returns
+    /// `ok` immediately; the VM exits via `guest_did_stop` in the
+    /// runner, after which the runner process exits and removes the
+    /// socket file. Callers observe completion by waiting for the
+    /// runner PID to disappear (handled by `vm::stop` in `mod.rs`).
+    async fn stop(&self, inst: &Instance) -> anyhow::Result<()> {
+        avf_rpc(&inst.avf_control_socket_path(), "stop").await?;
+        Ok(())
     }
 
-    async fn force_stop(&self, _inst: &Instance) -> anyhow::Result<()> {
-        anyhow::bail!("AVF backend is not yet implemented (force_stop)")
+    /// Send `{"op":"force_stop"}`. Same fire-and-forget shape as
+    /// `stop`, but the runner calls `vm.stop()` (abrupt) instead of
+    /// `vm.requestStop()` (ACPI).
+    async fn force_stop(&self, inst: &Instance) -> anyhow::Result<()> {
+        avf_rpc(&inst.avf_control_socket_path(), "force_stop").await?;
+        Ok(())
     }
 
     async fn suspend(&self, _inst: &Instance) -> anyhow::Result<()> {
         anyhow::bail!("AVF backend is not yet implemented (suspend)")
     }
 
-    async fn ssh_endpoint(&self, _inst: &Instance) -> anyhow::Result<(String, u16)> {
-        anyhow::bail!("AVF backend is not yet implemented (ssh_endpoint)")
+    /// Query the runner for the guest's NAT IP. Returns
+    /// `(guest_ip, 22)` — AVF's NAT bridge is a real interface on
+    /// the host, so SSH reaches the guest directly without the
+    /// `hostfwd` plumbing QEMU needs.
+    ///
+    /// Returns an error if the runner isn't reachable (VM not
+    /// running) or if DHCP hasn't completed yet (no `guest_ip` in
+    /// the response).
+    async fn ssh_endpoint(&self, inst: &Instance) -> anyhow::Result<(String, u16)> {
+        let resp = avf_rpc(&inst.avf_control_socket_path(), "status").await?;
+        let ip = resp.guest_ip.ok_or_else(|| {
+            anyhow::anyhow!(
+                "AVF runner has no guest IP yet (DHCP may not have completed)"
+            )
+        })?;
+        Ok((ip, 22))
     }
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC client for the AVF runner's unix-socket control protocol.
+// Wire format mirrors swift/avf-runner/Sources/avf-runner/main.swift —
+// line-delimited JSON, one request per connection, one response, close.
+// ---------------------------------------------------------------------------
+
+/// Decoded shape of a `ControlResponse` from the runner. Mirror of the
+/// Swift struct; see runner main.swift.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "`state` will be read by the start path once it polls the runner; keeping the field decoded so the wire shape stays in lockstep with the Swift side"
+)]
+struct AvfRpcResponse {
+    ok: bool,
+    error: Option<String>,
+    state: Option<String>,
+    guest_ip: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+const AVF_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Send a single JSON-RPC command to the agv-avf-runner control
+/// socket and return the parsed response. Returns `Err` if the socket
+/// can't be reached, the request times out, the response isn't valid
+/// JSON, or the response has `ok: false`.
+#[cfg(target_os = "macos")]
+async fn avf_rpc(socket_path: &Path, op: &str) -> anyhow::Result<AvfRpcResponse> {
+    let conn = tokio::time::timeout(AVF_RPC_TIMEOUT, UnixStream::connect(socket_path))
+        .await
+        .with_context(|| {
+            format!(
+                "timed out connecting to AVF runner socket {}",
+                socket_path.display()
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "failed to connect to AVF runner socket {}",
+                socket_path.display()
+            )
+        })?;
+
+    let (read_half, mut write_half) = conn.into_split();
+
+    let request = format!("{{\"op\":\"{op}\"}}\n");
+    tokio::time::timeout(AVF_RPC_TIMEOUT, write_half.write_all(request.as_bytes()))
+        .await
+        .context("timed out sending request to AVF runner")?
+        .context("failed to send request to AVF runner")?;
+    write_half
+        .flush()
+        .await
+        .context("failed to flush AVF runner request")?;
+    drop(write_half);
+
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    tokio::time::timeout(AVF_RPC_TIMEOUT, reader.read_line(&mut line))
+        .await
+        .context("timed out reading response from AVF runner")?
+        .context("failed to read response from AVF runner")?;
+
+    let resp: AvfRpcResponse = serde_json::from_str(line.trim())
+        .with_context(|| format!("AVF runner returned malformed JSON: {line:?}"))?;
+    if !resp.ok {
+        bail!(
+            "AVF runner returned error for op '{op}': {}",
+            resp.error.as_deref().unwrap_or("(no message)")
+        );
+    }
+    Ok(resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -189,8 +298,8 @@ mod tests {
     use super::*;
 
     /// Round-trip a config containing `backend = "qemu"` through
-    /// load_resolved + for_config. Sanity-checks that the dispatch
-    /// path picks up the field correctly on every platform.
+    /// `load_resolved` + `for_config`. Sanity-checks that the
+    /// dispatch path picks up the field correctly on every platform.
     #[test]
     fn for_config_dispatches_qemu_on_every_platform() {
         // Construct ResolvedConfig directly rather than going through
@@ -215,8 +324,91 @@ mod tests {
         let _: &dyn VmBackend = for_config(&cfg);
     }
 
-    /// Build a minimal valid ResolvedConfig for tests in this module.
-    /// Mirrors the template-clone shape from vm/template.rs.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn avf_rpc_round_trip_against_mock_server() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        // Mock server: accept one connection, read a line, send a
+        // canned response, close.
+        let server_socket = socket_path.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.split();
+            let mut reader = tokio::io::BufReader::new(read);
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            // Sanity: incoming line is the JSON-RPC request.
+            assert!(req.contains("\"op\":\"status\""), "got: {req}");
+            write
+                .write_all(
+                    b"{\"ok\":true,\"state\":\"running\",\"guest_ip\":\"192.168.64.5\"}\n",
+                )
+                .await
+                .unwrap();
+            write.shutdown().await.ok();
+            // Hold the listener until response is on the wire.
+            let _ = server_socket;
+        });
+
+        let resp = avf_rpc(&socket_path, "status").await.unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.guest_ip.as_deref(), Some("192.168.64.5"));
+        server.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn avf_rpc_propagates_runner_error() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.split();
+            let mut reader = tokio::io::BufReader::new(read);
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            write
+                .write_all(b"{\"ok\":false,\"error\":\"unknown op 'bogus'\"}\n")
+                .await
+                .unwrap();
+            write.shutdown().await.ok();
+        });
+
+        let err = avf_rpc(&socket_path, "bogus").await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unknown op 'bogus'"),
+            "expected runner error in message, got: {msg}"
+        );
+        server.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn avf_rpc_fails_when_socket_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nonexistent.sock");
+        let err = avf_rpc(&socket_path, "status").await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to connect") || msg.contains("timed out connecting"),
+            "expected connect-failure message, got: {msg}"
+        );
+    }
+
+    /// Build a minimal valid `ResolvedConfig` for tests in this module.
+    /// Mirrors the template-clone shape from `vm/template.rs`.
     fn test_resolved_config() -> ResolvedConfig {
         ResolvedConfig {
             base_url: String::new(),

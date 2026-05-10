@@ -258,6 +258,45 @@ impl Instance {
         self.dir.join("idle_watcher.pid")
     }
 
+    /// AVF-only — control socket the agv-avf-runner binds to accept
+    /// JSON-RPC commands from the parent agv process.
+    #[must_use]
+    pub fn avf_control_socket_path(&self) -> PathBuf {
+        self.dir.join("avf-control.sock")
+    }
+
+    /// AVF-only — pidfile the agv-avf-runner writes at boot. Lets the
+    /// parent supervisor PID-discover the runner without needing a
+    /// long-lived socket connection.
+    #[must_use]
+    pub fn avf_runner_pid_path(&self) -> PathBuf {
+        self.dir.join("avf-runner.pid")
+    }
+
+    /// AVF-only — JSON config the agv binary writes before spawning
+    /// the runner. Path is supplied to `agv-avf-runner --config`.
+    #[must_use]
+    pub fn avf_runner_config_path(&self) -> PathBuf {
+        self.dir.join("avf-runner-config.json")
+    }
+
+    /// AVF-only — raw disk image. Apple Virtualization can't read
+    /// qcow2 directly, so on the AVF backend the per-instance disk
+    /// is a sparse raw file converted from the cached qcow2 base.
+    #[must_use]
+    pub fn avf_disk_path(&self) -> PathBuf {
+        self.dir.join("disk.raw")
+    }
+
+    /// AVF-only — EFI NVRAM file. Distinct from `efi_vars_path()`
+    /// (which is QEMU's qcow2/raw NVRAM); AVF uses its own
+    /// `VZEFIVariableStore` format and lazily creates this on first
+    /// boot.
+    #[must_use]
+    pub fn avf_efi_vars_path(&self) -> PathBuf {
+        self.dir.join("avf-efi-vars.bin")
+    }
+
     /// Path to the auto-allocated host port for a named auto-forward.
     ///
     /// Mixins declare `[auto_forwards.<name>]`; at VM start agv picks a free
