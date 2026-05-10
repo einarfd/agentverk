@@ -419,27 +419,10 @@ async fn create_from_template_inner(
 ) -> anyhow::Result<()> {
     let spinner = status_spinner(verbose, quiet);
 
-    // Create qcow2 overlay backed by the template disk.
-    spinner.set_message(format!(
-        "Creating {disk} overlay on template '{template_name}'..."
-    ));
-    image::create_overlay(template_disk, &inst.disk_path(), disk).await?;
-    step_done(
-        &spinner,
-        &format!("Created {disk} overlay on template '{template_name}'"),
-    );
-
-    // Generate a fresh SSH keypair for this clone.
-    spinner.set_message("Generating SSH keypair...");
-    let pub_key = ssh::generate_keypair(inst).await?;
-    step_done(&spinner, "Generated SSH keypair");
-
-    // Generate cloud-init seed (new hostname + SSH key; no extra files for clones).
-    spinner.set_message("Generating cloud-init seed...");
-    cloud_init::generate_seed(&inst.seed_path(), &pub_key, vm_name, &meta.user).await?;
-    step_done(&spinner, "Generated cloud-init seed");
-
-    // Save a resolved config for this clone so `start` and `inspect` work.
+    // Build the clone's resolved config first so we can dispatch
+    // disk provisioning through the right backend. Template clones
+    // pick the host's default backend today (QEMU); migrating a
+    // clone to AVF goes through the migrate-to-avf flow later.
     let mut clone_config = ResolvedConfig {
         base_url: String::new(),
         base_checksum: String::new(),
@@ -467,6 +450,28 @@ async fn create_from_template_inner(
         backend: "qemu".to_string(),
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
+
+    // Provision the per-instance disk via the chosen backend.
+    spinner.set_message(format!(
+        "Provisioning {disk} disk on template '{template_name}'..."
+    ));
+    crate::vm::backend::for_config(&clone_config)
+        .provision_disk(inst, template_disk, disk)
+        .await?;
+    step_done(
+        &spinner,
+        &format!("Provisioned {disk} disk on template '{template_name}'"),
+    );
+
+    // Generate a fresh SSH keypair for this clone.
+    spinner.set_message("Generating SSH keypair...");
+    let pub_key = ssh::generate_keypair(inst).await?;
+    step_done(&spinner, "Generated SSH keypair");
+
+    // Generate cloud-init seed (new hostname + SSH key; no extra files for clones).
+    spinner.set_message("Generating cloud-init seed...");
+    cloud_init::generate_seed(&inst.seed_path(), &pub_key, vm_name, &meta.user).await?;
+    step_done(&spinner, "Generated cloud-init seed");
 
     // Mark as provisioned — no setup/provision steps to run for template clones.
     inst.mark_provisioned().await?;

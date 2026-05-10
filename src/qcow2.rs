@@ -12,6 +12,7 @@
 //! are entirely zero, which leaves 12-28% more disk allocated than
 //! qemu-img would. Acceptable for a one-time-per-base-image cost.
 
+use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{bail, Context as _};
@@ -19,8 +20,6 @@ use qcow2_rs::dev::Qcow2DevParams;
 use qcow2_rs::helpers::Qcow2IoBuf;
 use qcow2_rs::qcow2_default_params;
 use qcow2_rs::utils::qcow2_setup_dev_tokio;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _, SeekFrom};
 use tracing::{debug, info};
 
 /// Read in chunks this big at a time. 8 MiB balances throughput against
@@ -36,8 +35,30 @@ const CHUNK: usize = 8 * 1024 * 1024;
 ///
 /// Reads the qcow2 in 8 MiB chunks via `qcow2_setup_dev_tokio`. Despite
 /// the `_tokio` suffix, the underlying I/O is a thin async wrapper
-/// around `pread` syscalls — the caller's tokio runtime is fine.
+/// around `pread` syscalls — but the qcow2-rs futures themselves
+/// hold a non-`Send` `RefCell` internally, so the conversion can't
+/// run inside a multi-threaded async-trait future. We sidestep that
+/// by hopping onto `spawn_blocking` with a dedicated current-thread
+/// runtime; the outer future stays `Send` and our `VmBackend::
+/// provision_disk` impl can call this directly.
 pub async fn convert_to_sparse_raw(qcow2_path: &Path, raw_path: &Path) -> anyhow::Result<()> {
+    let qcow2_path = qcow2_path.to_path_buf();
+    let raw_path = raw_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("building current-thread runtime for qcow2 conversion")?;
+        runtime.block_on(convert_inner(&qcow2_path, &raw_path))
+    })
+    .await
+    .context("qcow2 conversion task panicked")?
+}
+
+/// The actual conversion loop — runs on the dedicated current-thread
+/// runtime created by [`convert_to_sparse_raw`]. Uses sync `std::fs`
+/// for the output side because we're already off the main runtime.
+async fn convert_inner(qcow2_path: &Path, raw_path: &Path) -> anyhow::Result<()> {
     info!(
         from = %qcow2_path.display(),
         to = %raw_path.display(),
@@ -55,15 +76,13 @@ pub async fn convert_to_sparse_raw(qcow2_path: &Path, raw_path: &Path) -> anyhow
         })?;
     let total = dev.info.virtual_size();
 
-    let mut out = OpenOptions::new()
+    let mut out = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(raw_path)
-        .await
         .with_context(|| format!("opening output raw file {}", raw_path.display()))?;
     out.set_len(total)
-        .await
         .with_context(|| format!("setting raw file length on {}", raw_path.display()))?;
 
     let mut off: u64 = 0;
@@ -87,11 +106,10 @@ pub async fn convert_to_sparse_raw(qcow2_path: &Path, raw_path: &Path) -> anyhow
 
         let chunk = &buf[..n];
         if chunk.iter().any(|&b| b != 0) {
+            use std::io::{Seek, SeekFrom, Write};
             out.seek(SeekFrom::Start(off))
-                .await
                 .with_context(|| format!("seeking to {off} in {}", raw_path.display()))?;
             out.write_all(chunk)
-                .await
                 .with_context(|| format!("writing at {off} to {}", raw_path.display()))?;
             written += n as u64;
         }
@@ -99,7 +117,6 @@ pub async fn convert_to_sparse_raw(qcow2_path: &Path, raw_path: &Path) -> anyhow
     }
 
     out.flush()
-        .await
         .with_context(|| format!("flushing {}", raw_path.display()))?;
 
     debug!(

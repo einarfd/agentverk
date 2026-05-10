@@ -530,11 +530,14 @@ async fn create_inner(
         step_done(&spinner, &format!("Base image cached ({image_label})"));
     }
 
-    // Create qcow2 overlay disk.
-    spinner.set_message(format!("Creating {} disk overlay...", config.disk));
-    info!(size = %config.disk, "creating overlay disk");
-    image::create_overlay(&base_image, &inst.disk_path(), &config.disk).await?;
-    step_done(&spinner, &format!("Created {} disk overlay", config.disk));
+    // Provision the per-instance disk in whatever format the chosen
+    // backend wants (qcow2 overlay for QEMU, sparse raw for AVF).
+    spinner.set_message(format!("Provisioning {} disk...", config.disk));
+    info!(size = %config.disk, backend = %config.backend, "provisioning disk");
+    backend::for_config(&config)
+        .provision_disk(inst, &base_image, &config.disk)
+        .await?;
+    step_done(&spinner, &format!("Provisioned {} disk", config.disk));
 
     // Generate SSH keypair.
     spinner.set_message("Generating SSH keypair...");

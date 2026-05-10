@@ -34,6 +34,22 @@ use std::time::Duration;
 /// `machine_type` (only QEMU uses it; AVF will ignore the parameter).
 #[async_trait]
 pub trait VmBackend: Send + Sync {
+    /// Materialize the per-instance disk from a base image.
+    ///
+    /// Called once at create time (and from the template clone path).
+    /// Each backend chooses its own on-disk format and target path:
+    /// QEMU produces a qcow2 overlay backed by `base_image` at
+    /// `inst.disk_path()`; AVF converts the qcow2 to a sparse raw at
+    /// `inst.avf_disk_path()` and grows it to `size`. Both are
+    /// idempotent — re-running over an existing target is allowed
+    /// (used by the migrate-to-avf flow).
+    async fn provision_disk(
+        &self,
+        inst: &Instance,
+        base_image: &std::path::Path,
+        size: &str,
+    ) -> anyhow::Result<()>;
+
     /// Boot the VM. If `loadvm` is `Some(name)`, restore from that
     /// snapshot rather than cold-booting.
     async fn start(
@@ -111,6 +127,15 @@ pub fn for_instance(inst: &Instance) -> anyhow::Result<&'static dyn VmBackend> {
 
 #[async_trait]
 impl VmBackend for LocalQemuBackend {
+    async fn provision_disk(
+        &self,
+        inst: &Instance,
+        base_image: &std::path::Path,
+        size: &str,
+    ) -> anyhow::Result<()> {
+        crate::image::create_overlay(base_image, &inst.disk_path(), size).await
+    }
+
     async fn start(
         &self,
         inst: &Instance,
@@ -160,6 +185,49 @@ pub struct LocalAvfBackend;
 #[cfg(target_os = "macos")]
 #[async_trait]
 impl VmBackend for LocalAvfBackend {
+    /// Convert the cached qcow2 base image to a sparse raw under the
+    /// instance directory, then grow it to the user-requested
+    /// `size`. AVF doesn't support qcow2 directly; the raw is what
+    /// VZDiskImageStorageDeviceAttachment opens.
+    ///
+    /// Idempotent — if the raw already exists at the right size we
+    /// no-op.
+    async fn provision_disk(
+        &self,
+        inst: &Instance,
+        base_image: &std::path::Path,
+        size: &str,
+    ) -> anyhow::Result<()> {
+        let dest = inst.avf_disk_path();
+        let target_bytes = crate::image::parse_disk_size(size)?;
+        if let Ok(meta) = tokio::fs::metadata(&dest).await
+            && meta.len() == target_bytes
+        {
+            return Ok(());
+        }
+        crate::qcow2::convert_to_sparse_raw(base_image, &dest)
+            .await
+            .with_context(|| {
+                format!(
+                    "converting {} → {}",
+                    base_image.display(),
+                    dest.display()
+                )
+            })?;
+        // qcow2-rs preserves the qcow2's virtual size (e.g. 3 GiB
+        // for stock cloud images); grow to the user-spec'd size so
+        // the guest's growpart/resize2fs can take advantage of it.
+        let f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&dest)
+            .await
+            .with_context(|| format!("opening {} for resize", dest.display()))?;
+        f.set_len(target_bytes)
+            .await
+            .with_context(|| format!("growing {} to {} bytes", dest.display(), target_bytes))?;
+        Ok(())
+    }
+
     async fn start(
         &self,
         _inst: &Instance,
