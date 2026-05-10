@@ -1,10 +1,11 @@
 // agv-avf-runner — per-VM Apple Virtualization supervisor.
 //
-// This commit: parse a JSON config from `--config <path>` and build +
-// validate a VZVirtualMachineConfiguration from it. No boot, no socket,
-// no signal handling — those land in subsequent commits. The point of
-// this skeleton is to prove the AVF API integration before tying it to
-// the lifecycle on the Rust side.
+// This commit: actually boot the VM and run it until SIGTERM or guest
+// shutdown. Adds `--validate-only` so the integration tests can still
+// exercise the config-builder path without booting. Subsequent commits
+// add the unix-socket JSON-RPC server (so the parent agv process can
+// request stop/suspend/force-stop without sending signals) and a PID
+// file (so the parent can find this supervisor by name).
 
 import Foundation
 import Virtualization
@@ -13,11 +14,6 @@ import Virtualization
 // JSON config sent by the Rust side
 // ---------------------------------------------------------------------------
 
-/// On-disk shape of the agv-avf-runner config file. The Rust side writes
-/// this to `<instance>/avf-config.json` before spawning the runner.
-///
-/// All paths are absolute. Memory is in bytes. CPU count is an Int per
-/// Apple's `VZVirtualMachineConfiguration.cpuCount` type.
 struct RunnerConfig: Codable {
     let name: String
     let memoryBytes: UInt64
@@ -37,6 +33,7 @@ let version = "0.0.0"
 
 let args = CommandLine.arguments
 var configPath: String? = nil
+var validateOnly = false
 
 var i = 1
 while i < args.count {
@@ -55,6 +52,10 @@ while i < args.count {
         configPath = args[i + 1]
         i += 2
         continue
+    case "--validate-only":
+        validateOnly = true
+        i += 1
+        continue
     default:
         die("unrecognized argument '\(arg)'")
     }
@@ -64,15 +65,24 @@ guard let configPath else {
     die("missing required --config <path>")
 }
 
+let config: RunnerConfig
+let vmConfig: VZVirtualMachineConfiguration
 do {
-    let config = try loadConfig(from: configPath)
-    let vmConfig = try buildVMConfiguration(from: config)
+    config = try loadConfig(from: configPath)
+    vmConfig = try buildVMConfiguration(from: config)
     try vmConfig.validate()
-    print("agv-avf-runner: config validates for VM '\(config.name)'")
-    exit(0)
 } catch {
     die("\(error)")
 }
+
+if validateOnly {
+    print("agv-avf-runner: config validates for VM '\(config.name)'")
+    exit(0)
+}
+
+// Boot the VM and block until it stops.
+let runner = VMRunner(configuration: vmConfig, vmName: config.name)
+exit(runner.runUntilStopped())
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,10 +116,8 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
     vm.cpuCount = config.cpuCount
     vm.memorySize = config.memoryBytes
 
-    // Platform: generic ARM virt platform (Linux guest on Apple Silicon).
     vm.platform = VZGenericPlatformConfiguration()
 
-    // Boot: EFI with a writable variable store.
     let bootLoader = VZEFIBootLoader()
     let efiURL = URL(fileURLWithPath: config.efiVariableStorePath)
     let efiStore: VZEFIVariableStore
@@ -121,7 +129,6 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
     bootLoader.variableStore = efiStore
     vm.bootLoader = bootLoader
 
-    // Storage: disk + seed ISO.
     let diskURL = URL(fileURLWithPath: config.diskPath)
     let diskAttachment = try VZDiskImageStorageDeviceAttachment(
         url: diskURL,
@@ -138,15 +145,12 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
 
     vm.storageDevices = [diskDevice, seedDevice]
 
-    // Network: NAT.
     let netDevice = VZVirtioNetworkDeviceConfiguration()
     netDevice.attachment = VZNATNetworkDeviceAttachment()
     vm.networkDevices = [netDevice]
 
-    // Serial: virtio-console → serial.log on the host.
     let serial = VZVirtioConsoleDeviceSerialPortConfiguration()
     let serialURL = URL(fileURLWithPath: config.serialLogPath)
-    // Truncate previous boot's log; matches QEMU's `-serial file:` semantics.
     FileManager.default.createFile(atPath: serialURL.path, contents: nil, attributes: nil)
     let serialHandle = try FileHandle(forWritingTo: serialURL)
     serial.attachment = VZFileHandleSerialPortAttachment(
@@ -155,8 +159,6 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
     )
     vm.serialPorts = [serial]
 
-    // Entropy: virtio-rng. Avoids guest stalls during boot / SSH key
-    // generation (matches our QEMU `-device virtio-rng-pci`).
     vm.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
     return vm
@@ -167,9 +169,11 @@ func printHelp(to handle: FileHandle = FileHandle.standardOutput) {
         "agv-avf-runner — Apple Virtualization supervisor for agv VMs",
         "",
         "Usage:",
-        "  agv-avf-runner --config <path>   Validate a runner config JSON",
-        "  agv-avf-runner --version         Print version",
-        "  agv-avf-runner --help            Print this help",
+        "  agv-avf-runner --config <path>            Boot a VM",
+        "  agv-avf-runner --config <path> --validate-only",
+        "                                            Validate config without booting",
+        "  agv-avf-runner --version                  Print version",
+        "  agv-avf-runner --help                     Print this help",
         "",
         "The runner is normally spawned by the agv Rust binary; manual",
         "invocation is intended for development and config validation.",
@@ -181,4 +185,131 @@ func printHelp(to handle: FileHandle = FileHandle.standardOutput) {
 func die(_ msg: String) -> Never {
     FileHandle.standardError.write(Data("agv-avf-runner: \(msg)\n".utf8))
     exit(2)
+}
+
+// ---------------------------------------------------------------------------
+// VM runner: boot the configured VM and block until it stops.
+// ---------------------------------------------------------------------------
+
+/// Owns the `VZVirtualMachine` for one VM and runs it until either the
+/// guest shuts down on its own or we receive SIGTERM/SIGINT.
+///
+/// VZ requires every method on a `VZVirtualMachine` to be invoked on
+/// the queue passed to its constructor (the "VM queue"). Delegate
+/// callbacks also fire on that queue. Signals dispatch on the global
+/// queue and hop onto the VM queue before touching `vm`.
+final class VMRunner: NSObject, VZVirtualMachineDelegate {
+    private let vmName: String
+    private let queue: DispatchQueue
+    private let vm: VZVirtualMachine
+    private let exitSemaphore = DispatchSemaphore(value: 0)
+    /// Atomic-ish: only ever written from the VM queue or signal-source
+    /// queue; only read after the semaphore wait returns.
+    private var exitCode: Int32 = 0
+    /// Set to `true` once the guest has been observed to stop (via
+    /// `guestDidStop` or `didStopWithError`) so we don't double-signal.
+    private var hasExited = false
+
+    init(configuration: VZVirtualMachineConfiguration, vmName: String) {
+        self.vmName = vmName
+        self.queue = DispatchQueue(label: "agv-avf-runner.vm.\(vmName)")
+        self.vm = VZVirtualMachine(configuration: configuration, queue: self.queue)
+        super.init()
+        queue.sync {
+            self.vm.delegate = self
+        }
+    }
+
+    /// Boot the VM and block until it stops or a signal arrives.
+    /// Returns the process exit code (0 on clean shutdown, non-zero on
+    /// VM error).
+    func runUntilStopped() -> Int32 {
+        // Install signal handlers before start() so we never miss a
+        // signal that arrives during boot.
+        let signalSources = installSignalHandlers()
+        defer { for s in signalSources { s.cancel() } }
+
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.vm.start { [weak self] result in
+                guard let self else { return }
+                if case .failure(let err) = result {
+                    FileHandle.standardError.write(
+                        Data("agv-avf-runner: VM '\(self.vmName)' failed to start: \(err)\n".utf8)
+                    )
+                    self.exitCode = 1
+                    self.signalExitOnce()
+                }
+                // Success path: wait for guestDidStop or a signal.
+            }
+        }
+
+        exitSemaphore.wait()
+        return exitCode
+    }
+
+    /// Suppress the default disposition for SIGTERM/SIGINT and route
+    /// them to dispatch sources that initiate a graceful stop.
+    private func installSignalHandlers() -> [DispatchSourceSignal] {
+        var sources: [DispatchSourceSignal] = []
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN) // dispatch source needs default disposition off
+            let src = DispatchSource.makeSignalSource(
+                signal: sig,
+                queue: DispatchQueue.global()
+            )
+            src.setEventHandler { [weak self] in
+                self?.requestGracefulStop()
+            }
+            src.resume()
+            sources.append(src)
+        }
+        return sources
+    }
+
+    /// Send the guest an ACPI shutdown request. The guest has up to a
+    /// few seconds to react; on success we'll exit through
+    /// `guestDidStop`. If the guest is wedged or already gone, fall
+    /// back to a force stop.
+    private func requestGracefulStop() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.hasExited { return }
+            do {
+                try self.vm.requestStop()
+                // requestStop just sends the request; the actual stop
+                // arrives later via the delegate. Don't signal exit yet.
+            } catch {
+                FileHandle.standardError.write(
+                    Data("agv-avf-runner: requestStop failed for '\(self.vmName)': \(error); forcing stop\n".utf8)
+                )
+                self.vm.stop { _ in
+                    self.signalExitOnce()
+                }
+            }
+        }
+    }
+
+    /// Signal the main thread to wake and exit, exactly once. Safe to
+    /// call from multiple paths (delegate, force-stop fallback, start
+    /// failure).
+    private func signalExitOnce() {
+        if hasExited { return }
+        hasExited = true
+        exitSemaphore.signal()
+    }
+
+    // MARK: - VZVirtualMachineDelegate
+
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        signalExitOnce()
+    }
+
+    func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+        FileHandle.standardError.write(
+            Data("agv-avf-runner: VM '\(vmName)' stopped with error: \(error)\n".utf8)
+        )
+        exitCode = 1
+        signalExitOnce()
+    }
 }

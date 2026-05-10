@@ -171,6 +171,7 @@ fn validate_succeeds_for_well_formed_config() {
     let out = Command::new(&binary)
         .arg("--config")
         .arg(&cfg)
+        .arg("--validate-only")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -204,10 +205,109 @@ fn validate_fails_when_disk_missing() {
     let out = Command::new(&binary)
         .arg("--config")
         .arg(&cfg)
+        .arg("--validate-only")
         .output()
         .unwrap();
     assert!(
         !out.status.success(),
         "validate should fail when disk path doesn't exist"
+    );
+}
+
+/// Slow boot test: spin up a real AVF VM from the cached Debian raw,
+/// wait for the kernel to log to the serial pipe, then SIGTERM and
+/// confirm graceful exit. Skipped unless the cached raw exists in the
+/// PoC location (`/tmp/qcow2-poc/out/...`); reproduce by running the
+/// PoC converter once.
+///
+/// Marked `#[ignore]` because it boots a real VM (~5–10s), which is
+/// the same cost as our slow QEMU boot tests.
+#[test]
+#[ignore = "boots a real Apple Virtualization VM — slow"]
+fn boot_and_sigterm_exits_cleanly() {
+    let Some(binary) = runner_binary() else {
+        eprintln!("agv-avf-runner not built — skipping boot_and_sigterm_exits_cleanly");
+        return;
+    };
+    let cached_raw = PathBuf::from(
+        "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
+    );
+    if !cached_raw.exists() {
+        eprintln!(
+            "{} not present — skipping boot_and_sigterm_exits_cleanly (run the qcow2-rs PoC first to populate it)",
+            cached_raw.display()
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let disk = dir.path().join("disk.raw");
+    std::fs::copy(&cached_raw, &disk).unwrap();
+    let seed = make_seed_iso(dir.path());
+    let cfg = write_config(dir.path(), "avf-boot-test", &disk, &seed);
+
+    let mut child = Command::new(&binary)
+        .arg("--config")
+        .arg(&cfg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Let the VM actually boot before we signal it. AVF is fast — 8s is
+    // plenty to clear UEFI handoff and have the kernel running.
+    std::thread::sleep(std::time::Duration::from_secs(8));
+
+    // We can't assert on serial.log content here: AVF only exposes
+    // virtio-console (`/dev/hvc0`), but the Debian cloud kernel is
+    // built with `console=ttyAMA0` baked into its GRUB config. Under
+    // QEMU that's the PL011 UART (works); under AVF that device
+    // doesn't exist, so the kernel logs go to /dev/null from our
+    // perspective. Wiring `console=hvc0` requires modifying the disk
+    // image's GRUB config at create time or shipping our own
+    // bootloader; tracked for a follow-up commit.
+    //
+    // What we *can* assert: the runner is still alive after 8s. If
+    // VZ.start() had failed, the runner would have exited immediately
+    // with code 1.
+    if let Some(status) = child.try_wait().expect("try_wait failed") {
+        panic!(
+            "agv-avf-runner exited unexpectedly during boot ({status:?}); \
+             VZ.start() likely failed"
+        );
+    }
+
+    // SIGTERM should trigger the runner's requestStop path. The kernel
+    // ACPIs through systemd shutdown, then the VM stops, then the
+    // process exits. Allow a generous window for the guest to react.
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .expect("kill -TERM failed to spawn");
+    assert!(kill.success(), "kill -TERM failed");
+
+    let mut exited = false;
+    let mut exit_status = None;
+    for _ in 0..60 {
+        match child.try_wait() {
+            Ok(Some(s)) => {
+                exited = true;
+                exit_status = Some(s);
+                break;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            Err(e) => panic!("try_wait failed: {e}"),
+        }
+    }
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("agv-avf-runner did not exit within 60s after SIGTERM");
+    }
+    let status = exit_status.unwrap();
+    assert!(
+        status.success(),
+        "agv-avf-runner should exit cleanly after SIGTERM, got {status:?}"
     );
 }
