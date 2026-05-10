@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use serial_test::serial;
+
 /// Locate the release build of the runner relative to the workspace
 /// root. Returns `None` if it hasn't been built yet — tests should skip
 /// in that case.
@@ -35,13 +37,15 @@ fn runner_binary() -> Option<PathBuf> {
 }
 
 /// Generate a tiny seed.iso via macOS's built-in `hdiutil`, matching
-/// what the real lifecycle code does. Returns the iso path inside `dir`.
-fn make_seed_iso(dir: &std::path::Path) -> PathBuf {
+/// what the real lifecycle code does. The hostname is set to
+/// `vm_name` so the lease lookup (which keys on the hostname bootpd
+/// records) can find this VM after DHCP.
+fn make_seed_iso(dir: &std::path::Path, vm_name: &str) -> PathBuf {
     let seed_src = dir.join("seed-src");
     std::fs::create_dir_all(&seed_src).unwrap();
     std::fs::write(
         seed_src.join("meta-data"),
-        "instance-id: avf-test\nlocal-hostname: avf-test\n",
+        format!("instance-id: {vm_name}\nlocal-hostname: {vm_name}\n"),
     )
     .unwrap();
     std::fs::write(seed_src.join("user-data"), "#cloud-config\n").unwrap();
@@ -168,7 +172,7 @@ fn validate_succeeds_for_well_formed_config() {
     };
     let dir = tempfile::tempdir().unwrap();
     let disk = make_empty_raw(dir.path());
-    let seed = make_seed_iso(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-test");
     let cfg = write_config(dir.path(), "avf-test", &disk, &seed);
 
     let out = Command::new(&binary)
@@ -201,7 +205,7 @@ fn validate_fails_when_disk_missing() {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let seed = make_seed_iso(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-test");
     let bogus_disk = dir.path().join("nonexistent.raw");
     let cfg = write_config(dir.path(), "avf-test", &bogus_disk, &seed);
 
@@ -225,8 +229,17 @@ fn validate_fails_when_disk_missing() {
 ///
 /// Marked `#[ignore]` because it boots a real VM (~5–10s), which is
 /// the same cost as our slow QEMU boot tests.
+// All slow boot tests run serially. They share the host's
+// /var/db/dhcpd_leases, and because we boot from copies of the same
+// disk image, every VM sends the same systemd-networkd RFC 4361
+// client identifier (derived from /etc/machine-id) — bootpd treats
+// them as one host and overwrites the single lease entry, so parallel
+// runs interfere with hostname-keyed lease lookups. Production agv
+// will need to regenerate machine-id per VM (TODO: cloud-init
+// runcmd).
 #[test]
 #[ignore = "boots a real Apple Virtualization VM — slow"]
+#[serial]
 fn boot_and_sigterm_exits_cleanly() {
     let Some(binary) = runner_binary() else {
         eprintln!("agv-avf-runner not built — skipping boot_and_sigterm_exits_cleanly");
@@ -246,7 +259,7 @@ fn boot_and_sigterm_exits_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let disk = dir.path().join("disk.raw");
     std::fs::copy(&cached_raw, &disk).unwrap();
-    let seed = make_seed_iso(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-boot-test");
     let cfg = write_config(dir.path(), "avf-boot-test", &disk, &seed);
 
     let mut child = Command::new(&binary)
@@ -324,6 +337,7 @@ fn boot_and_sigterm_exits_cleanly() {
 /// shape Rust clients will use in production.
 #[test]
 #[ignore = "boots a real Apple Virtualization VM — slow"]
+#[serial]
 fn control_socket_status_then_stop() {
     let Some(binary) = runner_binary() else {
         eprintln!("agv-avf-runner not built — skipping control_socket_status_then_stop");
@@ -343,7 +357,7 @@ fn control_socket_status_then_stop() {
     let dir = tempfile::tempdir().unwrap();
     let disk = dir.path().join("disk.raw");
     std::fs::copy(&cached_raw, &disk).unwrap();
-    let seed = make_seed_iso(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-control-test");
     let cfg = write_config(dir.path(), "avf-control-test", &disk, &seed);
     let socket_path = dir.path().join("control.sock");
 
@@ -369,16 +383,45 @@ fn control_socket_status_then_stop() {
     // 8s matches what the SIGTERM test uses, which we know works.
     std::thread::sleep(Duration::from_secs(8));
 
-    // Query status. We don't get a guest IP here yet (discovery is a
-    // future commit), but state must be "running".
-    let status = jsonrpc(&socket_path, r#"{"op":"status"}"#);
+    // Poll status: state must be "running" and guest_ip should
+    // populate within a few seconds once DHCP completes. Try for up
+    // to 15s before giving up. Swift's JSONEncoder omits nil
+    // Optionals from output, so the response either contains
+    // `"guest_ip":"<ip>"` (lease found) or no guest_ip key at all
+    // (still pending) — match the populated form.
+    let mut last_status = String::new();
+    let mut got_ip = false;
+    for _ in 0..30 {
+        last_status = jsonrpc(&socket_path, r#"{"op":"status"}"#);
+        if last_status.contains("\"guest_ip\":\"") {
+            got_ip = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     assert!(
-        status.contains("\"ok\":true"),
-        "status response should be ok=true: {status}"
+        last_status.contains("\"ok\":true"),
+        "status response should be ok=true: {last_status}"
     );
     assert!(
-        status.contains("\"state\":\"running\""),
-        "expected state=running in: {status}"
+        last_status.contains("\"state\":\"running\""),
+        "expected state=running in: {last_status}"
+    );
+    assert!(
+        got_ip,
+        "guest_ip should populate within 15s once DHCP completes; last status: {last_status}"
+    );
+    // Sanity: extract the IP and check it parses and is in a
+    // private RFC 1918 range (Apple's NAT picks subnets like
+    // 192.168.64.0/24 or 192.168.205.0/24).
+    let ip = extract_guest_ip(&last_status)
+        .unwrap_or_else(|| panic!("could not extract guest_ip from: {last_status}"));
+    let parsed: std::net::Ipv4Addr = ip
+        .parse()
+        .unwrap_or_else(|e| panic!("guest_ip {ip:?} doesn't parse: {e}"));
+    assert!(
+        parsed.is_private(),
+        "guest_ip {ip} should be in an RFC1918 range"
     );
 
     // Send stop and confirm the runner accepts it.
@@ -420,6 +463,7 @@ fn control_socket_status_then_stop() {
 
 #[test]
 #[ignore = "boots a real Apple Virtualization VM — slow"]
+#[serial]
 fn control_socket_unknown_op_returns_error() {
     let Some(binary) = runner_binary() else {
         eprintln!("agv-avf-runner not built — skipping control_socket_unknown_op_returns_error");
@@ -439,7 +483,7 @@ fn control_socket_unknown_op_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let disk = dir.path().join("disk.raw");
     std::fs::copy(&cached_raw, &disk).unwrap();
-    let seed = make_seed_iso(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-control-err-test");
     let cfg = write_config(dir.path(), "avf-control-err-test", &disk, &seed);
     let socket_path = dir.path().join("control.sock");
 
@@ -495,6 +539,25 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     false
+}
+
+/// Extract the `guest_ip` value from a JSON status response. Returns
+/// `None` if the field is null or absent. Crude string-find rather
+/// than a JSON parse so the test has no extra deps.
+fn extract_guest_ip(json: &str) -> Option<String> {
+    let needle = "\"guest_ip\":";
+    let start = json.find(needle)? + needle.len();
+    let rest = &json[start..];
+    let rest = rest.trim_start();
+    if rest.starts_with("null") {
+        return None;
+    }
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let after_quote = &rest[1..];
+    let end = after_quote.find('"')?;
+    Some(after_quote[..end].to_string())
 }
 
 /// Send a single JSON-RPC line to the runner's control socket and read

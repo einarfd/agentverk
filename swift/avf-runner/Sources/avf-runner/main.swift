@@ -101,9 +101,12 @@ guard let configPath else {
 
 let config: RunnerConfig
 let vmConfig: VZVirtualMachineConfiguration
+let macAddress: VZMACAddress
 do {
     config = try loadConfig(from: configPath)
-    vmConfig = try buildVMConfiguration(from: config)
+    let built = try buildVMConfiguration(from: config)
+    vmConfig = built.configuration
+    macAddress = built.macAddress
     try vmConfig.validate()
 } catch {
     die("\(error)")
@@ -114,7 +117,11 @@ if validateOnly {
     exit(0)
 }
 
-let runner = VMRunner(configuration: vmConfig, vmName: config.name)
+let runner = VMRunner(
+    configuration: vmConfig,
+    vmName: config.name,
+    macAddress: macAddress
+)
 
 // Bind the control socket before booting so the parent agv process can
 // connect immediately. If this fails, treat it as fatal — there's no
@@ -142,7 +149,15 @@ func loadConfig(from path: String) throws -> RunnerConfig {
     return try decoder.decode(RunnerConfig.self, from: data)
 }
 
-func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineConfiguration {
+/// `buildVMConfiguration`'s return shape: the VZ config plus the MAC
+/// it pins on the virtio-net device, so callers can use the MAC later
+/// to look up the guest's DHCP-leased IP.
+struct BuiltVMConfig {
+    let configuration: VZVirtualMachineConfiguration
+    let macAddress: VZMACAddress
+}
+
+func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     let vm = VZVirtualMachineConfiguration()
     vm.cpuCount = config.cpuCount
     vm.memorySize = config.memoryBytes
@@ -176,7 +191,14 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
 
     vm.storageDevices = [diskDevice, seedDevice]
 
+    // Pin a locally-administered MAC so we can look the guest up in
+    // /var/db/dhcpd_leases later. Without setting one, AVF generates
+    // its own each boot — usable, but we'd have no host-side handle
+    // for lease lookup since the runner can't observe the generated
+    // address through the public API.
+    let mac = VZMACAddress.randomLocallyAdministered()
     let netDevice = VZVirtioNetworkDeviceConfiguration()
+    netDevice.macAddress = mac
     netDevice.attachment = VZNATNetworkDeviceAttachment()
     vm.networkDevices = [netDevice]
 
@@ -192,7 +214,7 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineC
 
     vm.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
-    return vm
+    return BuiltVMConfig(configuration: vm, macAddress: mac)
 }
 
 func printHelp(to handle: FileHandle = FileHandle.standardOutput) {
@@ -224,6 +246,9 @@ func die(_ msg: String) -> Never {
 
 final class VMRunner: NSObject, VZVirtualMachineDelegate {
     let vmName: String
+    /// MAC pinned on the guest's virtio-net device. Used for DHCP
+    /// lease lookup when `status` queries arrive.
+    let macAddress: VZMACAddress
     private let queue: DispatchQueue
     private let vm: VZVirtualMachine
     private let exitSemaphore = DispatchSemaphore(value: 0)
@@ -236,8 +261,9 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     private var _state: VMState = .starting
     private let stateLock = NSLock()
 
-    init(configuration: VZVirtualMachineConfiguration, vmName: String) {
+    init(configuration: VZVirtualMachineConfiguration, vmName: String, macAddress: VZMACAddress) {
         self.vmName = vmName
+        self.macAddress = macAddress
         self.queue = DispatchQueue(label: "agv-avf-runner.vm.\(vmName)")
         self.vm = VZVirtualMachine(configuration: configuration, queue: self.queue)
         super.init()
@@ -490,10 +516,19 @@ final class ControlServer {
             runner.forceStop()
             return ControlResponse(ok: true)
         case "status":
+            // Look up the guest IP fresh on every status — DHCP
+            // leases can take a few seconds after boot, and a stale
+            // cached value would mislead the parent. Hostname-keyed
+            // primarily (set via cloud-init's `local-hostname` to
+            // match the VM name); MAC as fallback.
+            let ip = LeaseLookup.findGuestIp(
+                hostname: runner.vmName,
+                mac: runner.macAddress.string
+            )
             return ControlResponse(
                 ok: true,
                 state: runner.state.rawValue,
-                guestIp: nil
+                guestIp: ip
             )
         default:
             return ControlResponse(ok: false, error: "unknown op '\(req.op)'")
