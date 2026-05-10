@@ -62,11 +62,11 @@ pub async fn session(
     ssh_opts: &[String],
     command: &[String],
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
-    let destination = format!("{user}@localhost");
+    let destination = format!("{user}@{host}");
 
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(&args).args(ssh_opts).arg(&destination);
@@ -100,11 +100,11 @@ pub async fn run_cmd(
     user: &str,
     command: &[String],
 ) -> anyhow::Result<String> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
-    let destination = format!("{user}@localhost");
+    let destination = format!("{user}@{host}");
 
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(&args).arg(&destination);
@@ -158,14 +158,14 @@ pub async fn copy_to(
     local_path: &Path,
     remote_path: &str,
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
     let key_path = instance.ssh_key_path();
 
     let local_str = local_path
         .to_str()
         .context("local path is not valid UTF-8")?;
 
-    let destination = format!("{user}@localhost:{remote_path}");
+    let destination = format!("{user}@{host}:{remote_path}");
 
     let mut args = vec![
         "-i".to_string(),
@@ -220,12 +220,12 @@ pub async fn transfer(
     recursive: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
     let key_path = instance.ssh_key_path();
 
-    // Expand :path → user@localhost:path
-    let scp_source = expand_vm_path(source, user);
-    let scp_dest = expand_vm_path(dest, user);
+    // Expand :path → user@host:path
+    let scp_source = expand_vm_path(source, user, &host);
+    let scp_dest = expand_vm_path(dest, user, &host);
 
     // Determine direction for display.
     let is_upload = !source.starts_with(':');
@@ -285,10 +285,12 @@ pub async fn transfer(
     Ok(())
 }
 
-/// Expand a `:path` prefix into `user@localhost:path` for scp.
-fn expand_vm_path(path: &str, user: &str) -> String {
+/// Expand a `:path` prefix into `user@host:path` for scp. `host` comes from
+/// the backend's `ssh_endpoint` (`127.0.0.1` for QEMU, the guest's NAT IP
+/// for AVF).
+fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
     if let Some(remote) = path.strip_prefix(':') {
-        format!("{user}@localhost:{remote}")
+        format!("{user}@{host}:{remote}")
     } else {
         path.to_string()
     }
@@ -298,11 +300,11 @@ fn expand_vm_path(path: &str, user: &str) -> String {
 ///
 /// Retries up to 60 times with 1-second intervals (60s total timeout).
 pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
-    let destination = format!("{user}@localhost");
+    let destination = format!("{user}@{host}");
     let start = std::time::Instant::now();
 
     info!(vm = %instance.name, "waiting for SSH to become ready");
@@ -460,26 +462,41 @@ mod tests {
 
     #[test]
     fn expand_vm_path_with_colon_prefix() {
-        assert_eq!(expand_vm_path(":~/file.txt", "agent"), "agent@localhost:~/file.txt");
+        assert_eq!(
+            expand_vm_path(":~/file.txt", "agent", "127.0.0.1"),
+            "agent@127.0.0.1:~/file.txt"
+        );
     }
 
     #[test]
     fn expand_vm_path_with_absolute_remote() {
-        assert_eq!(expand_vm_path(":/tmp/file", "agent"), "agent@localhost:/tmp/file");
+        assert_eq!(
+            expand_vm_path(":/tmp/file", "agent", "127.0.0.1"),
+            "agent@127.0.0.1:/tmp/file"
+        );
     }
 
     #[test]
     fn expand_vm_path_local_unchanged() {
-        assert_eq!(expand_vm_path("./local/file.txt", "agent"), "./local/file.txt");
+        assert_eq!(
+            expand_vm_path("./local/file.txt", "agent", "127.0.0.1"),
+            "./local/file.txt"
+        );
     }
 
     #[test]
     fn expand_vm_path_absolute_local_unchanged() {
-        assert_eq!(expand_vm_path("/tmp/file.txt", "agent"), "/tmp/file.txt");
+        assert_eq!(
+            expand_vm_path("/tmp/file.txt", "agent", "127.0.0.1"),
+            "/tmp/file.txt"
+        );
     }
 
     #[test]
-    fn expand_vm_path_custom_user() {
-        assert_eq!(expand_vm_path(":~/data", "myuser"), "myuser@localhost:~/data");
+    fn expand_vm_path_custom_user_and_host() {
+        assert_eq!(
+            expand_vm_path(":~/data", "myuser", "192.168.64.5"),
+            "myuser@192.168.64.5:~/data"
+        );
     }
 }
