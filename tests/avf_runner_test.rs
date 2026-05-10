@@ -383,15 +383,27 @@ fn control_socket_status_then_stop() {
     // 8s matches what the SIGTERM test uses, which we know works.
     std::thread::sleep(Duration::from_secs(8));
 
-    // Poll status: state must be "running" and guest_ip should
-    // populate within a few seconds once DHCP completes. Try for up
-    // to 15s before giving up. Swift's JSONEncoder omits nil
-    // Optionals from output, so the response either contains
-    // `"guest_ip":"<ip>"` (lease found) or no guest_ip key at all
-    // (still pending) — match the populated form.
+    // Poll status until guest_ip populates. Why a 90s ceiling:
+    //   1. systemd-networkd does the first DHCP request before
+    //      cloud-init has applied `local-hostname`, so the initial
+    //      lease entry has a default ("debian") hostname.
+    //   2. cloud-init reaches `cc_update_hostname` only in the init
+    //      stage after networking, then triggers a DHCP renew.
+    //   3. The renew is what writes our expected hostname into
+    //      /var/db/dhcpd_leases, which our lookup keys on.
+    //
+    // Warm boots typically complete the chain in 5-10s; cold boots
+    // (fresh EFI vars, after consecutive test runs that have warmed
+    // the host's caches differently) can take 30-60s. The early-
+    // exit on first hit means warm boots aren't slowed down.
+    //
+    // Swift's JSONEncoder omits nil Optionals from output, so the
+    // response either contains `"guest_ip":"<ip>"` (lease found) or
+    // no guest_ip key at all (still pending) — match the populated
+    // form.
     let mut last_status = String::new();
     let mut got_ip = false;
-    for _ in 0..30 {
+    for _ in 0..180 {
         last_status = jsonrpc(&socket_path, r#"{"op":"status"}"#);
         if last_status.contains("\"guest_ip\":\"") {
             got_ip = true;
@@ -409,7 +421,7 @@ fn control_socket_status_then_stop() {
     );
     assert!(
         got_ip,
-        "guest_ip should populate within 15s once DHCP completes; last status: {last_status}"
+        "guest_ip should populate within 90s once cloud-init completes; last status: {last_status}"
     );
     // Sanity: extract the IP and check it parses and is in a
     // private RFC 1918 range (Apple's NAT picks subnets like
