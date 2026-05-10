@@ -40,6 +40,9 @@ pub mod interactive;
 pub mod locks;
 #[doc(hidden)]
 pub mod manual_steps;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod qcow2;
 #[doc(hidden)]
 pub mod resources;
 #[doc(hidden)]

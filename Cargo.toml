@@ -33,6 +33,12 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# AVF on macOS reads cached cloud images as qcow2 but Apple Virtualization
+# only accepts raw disks, so we need a pure-Rust qcow2 reader. PoC verified
+# against qemu-img for Ubuntu/Debian/Fedora — byte-identical conversion.
+[target.'cfg(target_os = "macos")'.dependencies]
+qcow2-rs = "0.1"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
