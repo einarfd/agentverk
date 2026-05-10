@@ -19,7 +19,6 @@ use crate::{dirs, image, ssh};
 
 use super::cloud_init;
 use super::instance::{Instance, Status};
-use super::qemu;
 use super::provision::{run_first_boot, wait_for_ssh};
 use super::{status_spinner, step_done};
 
@@ -115,7 +114,7 @@ pub async fn create_template(
         // Clear machine-id while SSH is accessible, then stop.
         clear_machine_id_via_ssh(&inst, &config.user, &spinner).await?;
         spinner.set_message("Stopping VM...");
-        qemu::stop(&inst).await?;
+        crate::vm::backend::current().stop(&inst).await?;
         inst.write_status(Status::Stopped).await?;
         step_done(&spinner, "Stopped VM");
         status = Status::Stopped;
@@ -128,7 +127,9 @@ pub async fn create_template(
             "Starting VM for provisioning ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
+        crate::vm::backend::current()
+            .start(&inst, &config, &machine_type, None)
+            .await?;
         inst.write_status(Status::Running).await?;
         step_done(
             &spinner,
@@ -148,7 +149,9 @@ pub async fn create_template(
             "Starting VM to clear machine-id ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
+        crate::vm::backend::current()
+            .start(&inst, &config, &machine_type, None)
+            .await?;
         inst.write_status(Status::Running).await?;
         step_done(
             &spinner,
@@ -166,7 +169,7 @@ pub async fn create_template(
 
     // Stop the VM.
     spinner.set_message("Stopping VM...");
-    qemu::stop(&inst).await?;
+    crate::vm::backend::current().stop(&inst).await?;
     inst.write_status(Status::Stopped).await?;
     step_done(&spinner, "Stopped VM");
 
@@ -479,7 +482,9 @@ async fn create_from_template_inner(
     spinner.set_message(format!(
         "Starting QEMU ({memory} RAM, {cpus} vCPUs)..."
     ));
-    qemu::start(inst, memory, cpus, &machine_type).await?;
+    crate::vm::backend::current()
+        .start(inst, &clone_config, &machine_type, None)
+        .await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,

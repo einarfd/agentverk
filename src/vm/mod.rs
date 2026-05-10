@@ -565,7 +565,9 @@ async fn create_inner(
         config.memory, config.cpus
     ));
     info!(name, memory = %config.memory, cpus = config.cpus, "starting QEMU");
-    qemu::start(inst, &config.memory, config.cpus, &machine_type).await?;
+    backend::current()
+        .start(inst, &config, &machine_type, None)
+        .await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,
@@ -777,7 +779,9 @@ pub async fn start(
             "Starting QEMU ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
+        backend::current()
+            .start(&inst, &config, &machine_type, None)
+            .await?;
         step_done(
             &spinner,
             &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
@@ -976,9 +980,9 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
     if force {
-        qemu::force_stop(&inst).await?;
+        backend::current().force_stop(&inst).await?;
     } else {
-        qemu::stop(&inst).await?;
+        backend::current().stop(&inst).await?;
     }
     inst.write_status(Status::Stopped).await?;
     let _ = ssh_config::remove_entry(name).await;
@@ -1006,7 +1010,7 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
     // in the auto-suspend case and a real cleanup in the manual case.
     idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
-    qemu::suspend(&inst).await?;
+    backend::current().suspend(&inst).await?;
     inst.write_status(Status::Suspended).await?;
     let _ = ssh_config::remove_entry(name).await;
     Ok(())
@@ -1034,14 +1038,9 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
     ));
 
     let machine_type = ensure_machine_type(&inst, &mut config).await?;
-    qemu::start_with_loadvm(
-        &inst,
-        &config.memory,
-        config.cpus,
-        &machine_type,
-        Some("agv-suspend"),
-    )
-    .await?;
+    backend::current()
+        .start(&inst, &config, &machine_type, Some("agv-suspend"))
+        .await?;
     inst.write_status(Status::Running).await?;
     step_done(&spinner, "Resumed VM");
 
@@ -1129,7 +1128,7 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
         );
         idle_watcher::stop(&inst).await;
         forwarding::stop_all_for_instance(&inst).await;
-        let _ = qemu::force_stop(&inst).await;
+        let _ = backend::current().force_stop(&inst).await;
     } else {
         // Even on a stopped/broken VM, sweep any stale supervisors that
         // a previous run might have left in forwards.toml or the watcher

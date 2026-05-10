@@ -67,6 +67,20 @@ pub trait VmBackend: Send + Sync {
 /// `127.0.0.1:hostfwd_port` SSH endpoint.
 pub struct LocalQemuBackend;
 
+/// Singleton backend instance, used by [`current`].
+static LOCAL_QEMU: LocalQemuBackend = LocalQemuBackend;
+
+/// Return the backend the lifecycle code should use for any VM.
+///
+/// Always returns `LocalQemuBackend` today. When AVF lands as a second
+/// impl, this function will branch on platform / per-VM config — every
+/// call site already going through `current()` picks up the new backend
+/// without further change.
+#[must_use]
+pub fn current() -> &'static dyn VmBackend {
+    &LOCAL_QEMU
+}
+
 #[async_trait]
 impl VmBackend for LocalQemuBackend {
     async fn start(
