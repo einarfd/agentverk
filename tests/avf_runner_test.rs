@@ -15,8 +15,11 @@
 
 #![cfg(target_os = "macos")]
 
-use std::path::PathBuf;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Locate the release build of the runner relative to the workspace
 /// root. Returns `None` if it hasn't been built yet — tests should skip
@@ -310,4 +313,205 @@ fn boot_and_sigterm_exits_cleanly() {
         status.success(),
         "agv-avf-runner should exit cleanly after SIGTERM, got {status:?}"
     );
+}
+
+/// Slow boot test: drive the runner via the JSON-RPC control socket.
+/// Boots, queries `status` (asserts state == "running"), then sends
+/// `stop`, asserts the response is `{ok: true}`, and finally waits for
+/// the runner to exit cleanly.
+///
+/// This is the primary acceptance test for the control protocol — the
+/// shape Rust clients will use in production.
+#[test]
+#[ignore = "boots a real Apple Virtualization VM — slow"]
+fn control_socket_status_then_stop() {
+    let Some(binary) = runner_binary() else {
+        eprintln!("agv-avf-runner not built — skipping control_socket_status_then_stop");
+        return;
+    };
+    let cached_raw = PathBuf::from(
+        "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
+    );
+    if !cached_raw.exists() {
+        eprintln!(
+            "{} not present — skipping control_socket_status_then_stop",
+            cached_raw.display()
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let disk = dir.path().join("disk.raw");
+    std::fs::copy(&cached_raw, &disk).unwrap();
+    let seed = make_seed_iso(dir.path());
+    let cfg = write_config(dir.path(), "avf-control-test", &disk, &seed);
+    let socket_path = dir.path().join("control.sock");
+
+    let mut child = Command::new(&binary)
+        .arg("--config")
+        .arg(&cfg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Wait for the runner to bind the socket. It binds *before*
+    // VZ.start, so the socket appears within a few hundred ms.
+    let socket_appeared = wait_for_path(&socket_path, Duration::from_secs(5));
+    if !socket_appeared {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("control socket was never created at {}", socket_path.display());
+    }
+
+    // Give the guest enough time to settle before requesting shutdown.
+    // Debian's ACPI handler isn't fully wired during very early boot;
+    // 8s matches what the SIGTERM test uses, which we know works.
+    std::thread::sleep(Duration::from_secs(8));
+
+    // Query status. We don't get a guest IP here yet (discovery is a
+    // future commit), but state must be "running".
+    let status = jsonrpc(&socket_path, r#"{"op":"status"}"#);
+    assert!(
+        status.contains("\"ok\":true"),
+        "status response should be ok=true: {status}"
+    );
+    assert!(
+        status.contains("\"state\":\"running\""),
+        "expected state=running in: {status}"
+    );
+
+    // Send stop and confirm the runner accepts it.
+    let stop = jsonrpc(&socket_path, r#"{"op":"stop"}"#);
+    assert!(
+        stop.contains("\"ok\":true"),
+        "stop response should be ok=true: {stop}"
+    );
+
+    // The graceful stop fires a guest ACPI shutdown; the runner exits
+    // when guestDidStop fires. Allow up to a minute.
+    let mut exited_status = None;
+    for _ in 0..60 {
+        match child.try_wait().expect("try_wait failed") {
+            Some(s) => {
+                exited_status = Some(s);
+                break;
+            }
+            None => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+    if exited_status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("runner did not exit within 60s of `stop` op");
+    }
+    let status = exited_status.unwrap();
+    assert!(
+        status.success(),
+        "runner should exit cleanly, got {status:?}"
+    );
+
+    // Socket file should be gone after stop().
+    assert!(
+        !socket_path.exists(),
+        "control socket file should be removed on shutdown"
+    );
+}
+
+#[test]
+#[ignore = "boots a real Apple Virtualization VM — slow"]
+fn control_socket_unknown_op_returns_error() {
+    let Some(binary) = runner_binary() else {
+        eprintln!("agv-avf-runner not built — skipping control_socket_unknown_op_returns_error");
+        return;
+    };
+    let cached_raw = PathBuf::from(
+        "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
+    );
+    if !cached_raw.exists() {
+        eprintln!(
+            "{} not present — skipping control_socket_unknown_op_returns_error",
+            cached_raw.display()
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let disk = dir.path().join("disk.raw");
+    std::fs::copy(&cached_raw, &disk).unwrap();
+    let seed = make_seed_iso(dir.path());
+    let cfg = write_config(dir.path(), "avf-control-err-test", &disk, &seed);
+    let socket_path = dir.path().join("control.sock");
+
+    let mut child = Command::new(&binary)
+        .arg("--config")
+        .arg(&cfg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let socket_appeared = wait_for_path(&socket_path, Duration::from_secs(5));
+    if !socket_appeared {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("control socket was never created");
+    }
+    // Same boot-settling wait as the other slow tests.
+    std::thread::sleep(Duration::from_secs(8));
+
+    let resp = jsonrpc(&socket_path, r#"{"op":"bogus"}"#);
+    assert!(
+        resp.contains("\"ok\":false"),
+        "unknown op should return ok=false: {resp}"
+    );
+    assert!(
+        resp.contains("unknown op"),
+        "expected 'unknown op' in error: {resp}"
+    );
+
+    // Cleanup: send stop and wait.
+    let _ = jsonrpc(&socket_path, r#"{"op":"stop"}"#);
+    for _ in 0..60 {
+        match child.try_wait().expect("try_wait") {
+            Some(_) => break,
+            None => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers for the control socket.
+// ---------------------------------------------------------------------------
+
+fn wait_for_path(path: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Send a single JSON-RPC line to the runner's control socket and read
+/// the response line. The runner closes the connection after each
+/// response, so we expect EOF after the newline.
+fn jsonrpc(socket_path: &Path, request: &str) -> String {
+    let mut stream = UnixStream::connect(socket_path)
+        .unwrap_or_else(|e| panic!("connect to {}: {e}", socket_path.display()));
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream
+        .write_all(request.as_bytes())
+        .expect("write request");
+    stream.write_all(b"\n").expect("write newline");
+    stream.flush().ok();
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read response");
+    line.trim_end_matches('\n').to_string()
 }

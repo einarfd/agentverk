@@ -1,14 +1,14 @@
 // agv-avf-runner — per-VM Apple Virtualization supervisor.
 //
-// This commit: actually boot the VM and run it until SIGTERM or guest
-// shutdown. Adds `--validate-only` so the integration tests can still
-// exercise the config-builder path without booting. Subsequent commits
-// add the unix-socket JSON-RPC server (so the parent agv process can
-// request stop/suspend/force-stop without sending signals) and a PID
-// file (so the parent can find this supervisor by name).
+// This commit: control socket + JSON-RPC. The runner now binds a unix
+// socket at the path supplied in the config and accepts line-delimited
+// JSON commands (`stop`, `force_stop`, `status`). The Rust agv parent
+// will use this to drive lifecycle without resorting to signals;
+// signals still work as a fallback.
 
 import Foundation
 import Virtualization
+import Darwin
 
 // ---------------------------------------------------------------------------
 // JSON config sent by the Rust side
@@ -23,6 +23,40 @@ struct RunnerConfig: Codable {
     let efiVariableStorePath: String
     let serialLogPath: String
     let controlSocketPath: String
+}
+
+// ---------------------------------------------------------------------------
+// Control-socket protocol (line-delimited JSON, one request per line)
+// ---------------------------------------------------------------------------
+
+/// Request shape on the control socket.
+///
+/// Only `op` is required today; future commands may add typed argument
+/// payloads (e.g. snapshot names for suspend). Encode as snake_case so
+/// the wire format matches what Rust serde produces by default.
+struct ControlRequest: Codable {
+    let op: String
+}
+
+/// Response shape on the control socket.
+///
+/// `ok` is the only mandatory field. `error` is set when `ok = false`.
+/// For the `status` op, `state` and `guestIp` are populated; for other
+/// ops they're `nil`.
+struct ControlResponse: Codable {
+    let ok: Bool
+    var error: String? = nil
+    var state: String? = nil
+    var guestIp: String? = nil
+}
+
+/// VM state tracked by the runner and surfaced via `status` queries.
+enum VMState: String {
+    case starting
+    case running
+    case stopping
+    case stopped
+    case errored
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +114,21 @@ if validateOnly {
     exit(0)
 }
 
-// Boot the VM and block until it stops.
 let runner = VMRunner(configuration: vmConfig, vmName: config.name)
-exit(runner.runUntilStopped())
+
+// Bind the control socket before booting so the parent agv process can
+// connect immediately. If this fails, treat it as fatal — there's no
+// point booting a VM we can't control.
+let controlServer = ControlServer(path: config.controlSocketPath, runner: runner)
+do {
+    try controlServer.start()
+} catch {
+    die("failed to bind control socket at \(config.controlSocketPath): \(error)")
+}
+
+let exitCode = runner.runUntilStopped()
+controlServer.stop()
+exit(exitCode)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,21 +142,6 @@ func loadConfig(from path: String) throws -> RunnerConfig {
     return try decoder.decode(RunnerConfig.self, from: data)
 }
 
-/// Build a `VZVirtualMachineConfiguration` from the agv runner config.
-///
-/// Storage layout:
-/// - virtio-blk disk0 ← raw disk image (read-write)
-/// - virtio-blk disk1 ← seed.iso (read-only; cloud-init NoCloud finds
-///   it by `cidata` volume label, no CDROM device needed under AVF)
-///
-/// Boot: `VZEFIBootLoader` with a per-instance NVRAM file. AVF lazily
-/// creates the file on first boot and reuses it on subsequent boots.
-///
-/// Network: NAT attached to a virtio-net adapter. The guest gets a
-/// private 192.168.64.x DHCP lease that's reachable from the host on
-/// AVF's bridge interface — no `hostfwd` plumbing needed.
-///
-/// Serial: virtio-console writing to `<instance>/serial.log`.
 func buildVMConfiguration(from config: RunnerConfig) throws -> VZVirtualMachineConfiguration {
     let vm = VZVirtualMachineConfiguration()
     vm.cpuCount = config.cpuCount
@@ -191,24 +222,19 @@ func die(_ msg: String) -> Never {
 // VM runner: boot the configured VM and block until it stops.
 // ---------------------------------------------------------------------------
 
-/// Owns the `VZVirtualMachine` for one VM and runs it until either the
-/// guest shuts down on its own or we receive SIGTERM/SIGINT.
-///
-/// VZ requires every method on a `VZVirtualMachine` to be invoked on
-/// the queue passed to its constructor (the "VM queue"). Delegate
-/// callbacks also fire on that queue. Signals dispatch on the global
-/// queue and hop onto the VM queue before touching `vm`.
 final class VMRunner: NSObject, VZVirtualMachineDelegate {
-    private let vmName: String
+    let vmName: String
     private let queue: DispatchQueue
     private let vm: VZVirtualMachine
     private let exitSemaphore = DispatchSemaphore(value: 0)
-    /// Atomic-ish: only ever written from the VM queue or signal-source
-    /// queue; only read after the semaphore wait returns.
     private var exitCode: Int32 = 0
-    /// Set to `true` once the guest has been observed to stop (via
-    /// `guestDidStop` or `didStopWithError`) so we don't double-signal.
     private var hasExited = false
+
+    /// Coarse-grained VM state tracked for `status` queries. Updated
+    /// from the VM queue and from the start completion handler; read
+    /// from the control queue under `stateLock`.
+    private var _state: VMState = .starting
+    private let stateLock = NSLock()
 
     init(configuration: VZVirtualMachineConfiguration, vmName: String) {
         self.vmName = vmName
@@ -220,12 +246,19 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         }
     }
 
-    /// Boot the VM and block until it stops or a signal arrives.
-    /// Returns the process exit code (0 on clean shutdown, non-zero on
-    /// VM error).
+    var state: VMState {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _state
+    }
+
+    private func setState(_ new: VMState) {
+        stateLock.lock()
+        _state = new
+        stateLock.unlock()
+    }
+
     func runUntilStopped() -> Int32 {
-        // Install signal handlers before start() so we never miss a
-        // signal that arrives during boot.
         let signalSources = installSignalHandlers()
         defer { for s in signalSources { s.cancel() } }
 
@@ -233,14 +266,17 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
             guard let self else { return }
             self.vm.start { [weak self] result in
                 guard let self else { return }
-                if case .failure(let err) = result {
+                switch result {
+                case .success:
+                    self.setState(.running)
+                case .failure(let err):
                     FileHandle.standardError.write(
                         Data("agv-avf-runner: VM '\(self.vmName)' failed to start: \(err)\n".utf8)
                     )
+                    self.setState(.errored)
                     self.exitCode = 1
                     self.signalExitOnce()
                 }
-                // Success path: wait for guestDidStop or a signal.
             }
         }
 
@@ -248,12 +284,10 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         return exitCode
     }
 
-    /// Suppress the default disposition for SIGTERM/SIGINT and route
-    /// them to dispatch sources that initiate a graceful stop.
     private func installSignalHandlers() -> [DispatchSourceSignal] {
         var sources: [DispatchSourceSignal] = []
         for sig in [SIGTERM, SIGINT] {
-            signal(sig, SIG_IGN) // dispatch source needs default disposition off
+            signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(
                 signal: sig,
                 queue: DispatchQueue.global()
@@ -267,18 +301,13 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         return sources
     }
 
-    /// Send the guest an ACPI shutdown request. The guest has up to a
-    /// few seconds to react; on success we'll exit through
-    /// `guestDidStop`. If the guest is wedged or already gone, fall
-    /// back to a force stop.
-    private func requestGracefulStop() {
+    func requestGracefulStop() {
         queue.async { [weak self] in
             guard let self else { return }
             if self.hasExited { return }
+            self.setState(.stopping)
             do {
                 try self.vm.requestStop()
-                // requestStop just sends the request; the actual stop
-                // arrives later via the delegate. Don't signal exit yet.
             } catch {
                 FileHandle.standardError.write(
                     Data("agv-avf-runner: requestStop failed for '\(self.vmName)': \(error); forcing stop\n".utf8)
@@ -290,12 +319,23 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         }
     }
 
-    /// Signal the main thread to wake and exit, exactly once. Safe to
-    /// call from multiple paths (delegate, force-stop fallback, start
-    /// failure).
+    func forceStop() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.hasExited { return }
+            self.setState(.stopping)
+            self.vm.stop { _ in
+                self.signalExitOnce()
+            }
+        }
+    }
+
     private func signalExitOnce() {
         if hasExited { return }
         hasExited = true
+        if state != .errored {
+            setState(.stopped)
+        }
         exitSemaphore.signal()
     }
 
@@ -309,7 +349,188 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         FileHandle.standardError.write(
             Data("agv-avf-runner: VM '\(vmName)' stopped with error: \(error)\n".utf8)
         )
+        setState(.errored)
         exitCode = 1
         signalExitOnce()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Control server: unix-socket JSON-RPC for parent-process control.
+// ---------------------------------------------------------------------------
+
+/// Per-VM JSON-RPC server bound to the unix socket the parent (Rust
+/// agv) uses to drive lifecycle. Each connection is one-shot: read one
+/// line of JSON, write one line back, close.
+///
+/// Why a fresh connection per command rather than a long-lived one:
+/// matches the call sites on the parent side (each `agv stop` /
+/// `agv ssh` reads-modifies-state independently) and keeps the
+/// protocol stateless. The runner stays running across many
+/// connections until the VM exits (signal, `stop` op, or guest
+/// shutdown).
+final class ControlServer {
+    private let path: String
+    private let runner: VMRunner
+    private let queue: DispatchQueue
+    private var fd: Int32 = -1
+    private var listenSource: DispatchSourceRead?
+
+    init(path: String, runner: VMRunner) {
+        self.path = path
+        self.runner = runner
+        self.queue = DispatchQueue(label: "agv-avf-runner.control.\(runner.vmName)")
+    }
+
+    func start() throws {
+        // Clean up a stale socket from a previous unclean exit.
+        unlink(path)
+
+        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw posixError("socket", errno)
+        }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathMaxLen = MemoryLayout.size(ofValue: addr.sun_path) - 1
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count <= pathMaxLen else {
+            Darwin.close(fd)
+            fd = -1
+            throw posixError("socket path too long (\(pathBytes.count) > \(pathMaxLen))", EINVAL)
+        }
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: pathMaxLen + 1) { dst in
+                _ = pathBytes.withUnsafeBufferPointer { src in
+                    memcpy(dst, src.baseAddress, src.count)
+                }
+                dst[pathBytes.count] = 0
+            }
+        }
+
+        let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let bindRet = withUnsafePointer(to: &addr) { addrPtr in
+            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                bind(fd, sockPtr, addrLen)
+            }
+        }
+        guard bindRet == 0 else {
+            let err = errno
+            Darwin.close(fd)
+            fd = -1
+            throw posixError("bind", err)
+        }
+
+        // Tighten permissions: only the owner of the agv data dir
+        // should be able to control the VM.
+        chmod(path, 0o600)
+
+        guard listen(fd, 4) == 0 else {
+            let err = errno
+            Darwin.close(fd)
+            fd = -1
+            throw posixError("listen", err)
+        }
+
+        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        src.setEventHandler { [weak self] in
+            self?.acceptOne()
+        }
+        src.resume()
+        listenSource = src
+    }
+
+    func stop() {
+        listenSource?.cancel()
+        listenSource = nil
+        if fd >= 0 {
+            Darwin.close(fd)
+            fd = -1
+        }
+        unlink(path)
+    }
+
+    private func acceptOne() {
+        var clientAddr = sockaddr_un()
+        var clientAddrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let clientFd = withUnsafeMutablePointer(to: &clientAddr) { addrPtr in
+            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                accept(fd, sockPtr, &clientAddrLen)
+            }
+        }
+        guard clientFd >= 0 else { return }
+        // Handle on the same queue — connections are short-lived; one
+        // command, one response, close. No need for a worker pool.
+        queue.async { [weak self] in
+            self?.handleClient(clientFd)
+        }
+    }
+
+    private func handleClient(_ clientFd: Int32) {
+        defer { Darwin.close(clientFd) }
+        guard let line = readLine(from: clientFd) else { return }
+
+        let response: ControlResponse
+        do {
+            let req = try JSONDecoder().decode(ControlRequest.self, from: Data(line.utf8))
+            response = dispatch(req)
+        } catch {
+            response = ControlResponse(ok: false, error: "invalid request: \(error)")
+        }
+        writeResponse(clientFd, response)
+    }
+
+    private func dispatch(_ req: ControlRequest) -> ControlResponse {
+        switch req.op {
+        case "stop":
+            runner.requestGracefulStop()
+            return ControlResponse(ok: true)
+        case "force_stop":
+            runner.forceStop()
+            return ControlResponse(ok: true)
+        case "status":
+            return ControlResponse(
+                ok: true,
+                state: runner.state.rawValue,
+                guestIp: nil
+            )
+        default:
+            return ControlResponse(ok: false, error: "unknown op '\(req.op)'")
+        }
+    }
+
+    private func readLine(from fd: Int32) -> String? {
+        // 4 KiB ceiling — protocol messages are tiny; anything bigger
+        // is malformed input or an attack.
+        var buf = [UInt8]()
+        buf.reserveCapacity(256)
+        var b: UInt8 = 0
+        while buf.count < 4096 {
+            let n = read(fd, &b, 1)
+            if n != 1 { break }
+            if b == 0x0a { break } // \n
+            buf.append(b)
+        }
+        return String(bytes: buf, encoding: .utf8)
+    }
+
+    private func writeResponse(_ fd: Int32, _ response: ControlResponse) {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        guard var data = (try? encoder.encode(response)) else { return }
+        data.append(0x0a)
+        data.withUnsafeBytes { ptr in
+            _ = write(fd, ptr.baseAddress, ptr.count)
+        }
+    }
+
+    private func posixError(_ op: String, _ code: Int32) -> NSError {
+        let msg = String(cString: strerror(code))
+        return NSError(
+            domain: "agv-avf-runner.control",
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "\(op): \(msg)"]
+        )
     }
 }
