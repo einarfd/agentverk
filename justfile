@@ -17,6 +17,17 @@ build:
 build-release:
     cargo build --release
 
+# Build the Apple Virtualization helper binary (macOS only). No-op on Linux.
+build-avf-runner:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "agv-avf-runner builds only on macOS — skipping"
+        exit 0
+    fi
+    cd swift/avf-runner
+    swift build -c release
+
 # Run the fast test suite (no slow boot tests, no real cloud-image downloads).
 test:
     cargo test

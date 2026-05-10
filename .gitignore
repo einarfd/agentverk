@@ -1,5 +1,8 @@
 # Build output
 /target
+swift/*/.build
+swift/*/.swiftpm
+swift/*/Package.resolved
 
 # Environment / secrets
 .env
