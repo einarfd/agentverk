@@ -114,7 +114,7 @@ pub async fn create_template(
         // Clear machine-id while SSH is accessible, then stop.
         clear_machine_id_via_ssh(&inst, &config.user, &spinner).await?;
         spinner.set_message("Stopping VM...");
-        crate::vm::backend::current().stop(&inst).await?;
+        crate::vm::backend::for_config(&config).stop(&inst).await?;
         inst.write_status(Status::Stopped).await?;
         step_done(&spinner, "Stopped VM");
         status = Status::Stopped;
@@ -127,7 +127,7 @@ pub async fn create_template(
             "Starting VM for provisioning ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        crate::vm::backend::current()
+        crate::vm::backend::for_config(&config)
             .start(&inst, &config, &machine_type, None)
             .await?;
         inst.write_status(Status::Running).await?;
@@ -149,7 +149,7 @@ pub async fn create_template(
             "Starting VM to clear machine-id ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        crate::vm::backend::current()
+        crate::vm::backend::for_config(&config)
             .start(&inst, &config, &machine_type, None)
             .await?;
         inst.write_status(Status::Running).await?;
@@ -169,7 +169,7 @@ pub async fn create_template(
 
     // Stop the VM.
     spinner.set_message("Stopping VM...");
-    crate::vm::backend::current().stop(&inst).await?;
+    crate::vm::backend::for_config(&config).stop(&inst).await?;
     inst.write_status(Status::Stopped).await?;
     step_done(&spinner, "Stopped VM");
 
@@ -464,6 +464,7 @@ async fn create_from_template_inner(
         idle_suspend_minutes: 0,
         idle_load_threshold: 0.2,
         machine_type: None,
+        backend: "qemu".to_string(),
     };
     crate::config::save(&clone_config, &inst.config_path()).await?;
 
@@ -482,7 +483,7 @@ async fn create_from_template_inner(
     spinner.set_message(format!(
         "Starting QEMU ({memory} RAM, {cpus} vCPUs)..."
     ));
-    crate::vm::backend::current()
+    crate::vm::backend::for_config(&clone_config)
         .start(inst, &clone_config, &machine_type, None)
         .await?;
     inst.write_status(Status::Running).await?;

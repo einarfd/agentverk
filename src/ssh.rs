@@ -62,7 +62,9 @@ pub async fn session(
     ssh_opts: &[String],
     command: &[String],
 ) -> anyhow::Result<()> {
-    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
@@ -100,7 +102,9 @@ pub async fn run_cmd(
     user: &str,
     command: &[String],
 ) -> anyhow::Result<String> {
-    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
@@ -158,7 +162,9 @@ pub async fn copy_to(
     local_path: &Path,
     remote_path: &str,
 ) -> anyhow::Result<()> {
-    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
 
     let local_str = local_path
@@ -220,7 +226,9 @@ pub async fn transfer(
     recursive: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
 
     // Expand :path → user@host:path
@@ -300,7 +308,9 @@ fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
 ///
 /// Retries up to 60 times with 1-second intervals (60s total timeout).
 pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<()> {
-    let (host, port) = crate::vm::backend::current().ssh_endpoint(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 

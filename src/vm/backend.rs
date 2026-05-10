@@ -67,18 +67,35 @@ pub trait VmBackend: Send + Sync {
 /// `127.0.0.1:hostfwd_port` SSH endpoint.
 pub struct LocalQemuBackend;
 
-/// Singleton backend instance, used by [`current`].
+/// Singleton backend instance.
 static LOCAL_QEMU: LocalQemuBackend = LocalQemuBackend;
 
-/// Return the backend the lifecycle code should use for any VM.
+/// Pick the backend for a VM by inspecting its resolved config.
 ///
-/// Always returns `LocalQemuBackend` today. When AVF lands as a second
-/// impl, this function will branch on platform / per-VM config — every
-/// call site already going through `current()` picks up the new backend
-/// without further change.
+/// Today only `"qemu"` is implemented; `LocalAvfBackend` will plug in
+/// here when it lands. The config field is validated at load time
+/// ([`crate::config::load_resolved`]) so this function is infallible.
 #[must_use]
-pub fn current() -> &'static dyn VmBackend {
-    &LOCAL_QEMU
+pub fn for_config(cfg: &ResolvedConfig) -> &'static dyn VmBackend {
+    match cfg.backend.as_str() {
+        "qemu" => &LOCAL_QEMU,
+        // load_resolved rejects anything else, so this is unreachable
+        // in production. Fall back to QEMU defensively rather than
+        // panicking — wrong-but-safe beats a crash.
+        _ => &LOCAL_QEMU,
+    }
+}
+
+/// Convenience wrapper for call sites that have an [`Instance`] but
+/// not its loaded config (e.g. SSH ops, the forward supervisor).
+/// Reads `<instance>/config.toml` synchronously to determine which
+/// backend the VM uses.
+///
+/// The disk read is cheap relative to the work the caller is about to
+/// do (spawn ssh, scp, etc.); no caching today.
+pub fn for_instance(inst: &Instance) -> anyhow::Result<&'static dyn VmBackend> {
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+    Ok(for_config(&cfg))
 }
 
 #[async_trait]

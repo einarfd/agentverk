@@ -265,6 +265,17 @@ pub struct VmConfig {
     /// device topology and breaking `savevm`/`loadvm`. Set explicitly only
     /// when overriding (e.g. forcing an older version).
     pub machine_type: Option<String>,
+
+    /// Hypervisor backend for this VM. `"qemu"` (default) runs the VM
+    /// under a local QEMU process; `"avf"` (macOS only, requires Apple
+    /// Silicon) runs it under Apple Virtualization. Unset means
+    /// `"qemu"`.
+    ///
+    /// Per-VM rather than per-host because each VM's snapshot format,
+    /// disk layout, and SSH endpoint are tied to the backend that
+    /// created it — switching is not a free operation. `agv migrate-
+    /// to-avf <name>` (planned) will handle the conversion.
+    pub backend: Option<String>,
 }
 
 /// A file or directory to copy into the VM.
@@ -524,12 +535,40 @@ pub struct ResolvedConfig {
     /// existed deserialize as `None` and get auto-pinned on next start.
     #[serde(default)]
     pub machine_type: Option<String>,
+
+    /// Hypervisor backend (`"qemu"` or `"avf"`). See
+    /// [`VmConfig::backend`] for rationale. Defaults to `"qemu"` —
+    /// instance configs saved before this field existed deserialize
+    /// as such, preserving today's behavior. Validated by
+    /// [`load_resolved`] so call sites can treat the value as known-
+    /// good.
+    #[serde(default = "default_backend")]
+    pub backend: String,
 }
 
 /// Default for [`ResolvedConfig::idle_load_threshold`]. Pulled into a
 /// function so serde can reference it from `#[serde(default = "...")]`.
 fn default_idle_load_threshold() -> f32 {
     0.2
+}
+
+/// Default for [`ResolvedConfig::backend`].
+fn default_backend() -> String {
+    "qemu".to_string()
+}
+
+/// Validate that `backend` is one of the values agv knows how to
+/// dispatch on. Called from [`load_resolved`] so call sites can rely
+/// on the field being known-good.
+fn validate_backend(value: &str) -> anyhow::Result<()> {
+    match value {
+        "qemu" => Ok(()),
+        // "avf" lands when LocalAvfBackend is wired up; until then,
+        // the field is reserved but not yet selectable.
+        other => anyhow::bail!(
+            "unknown backend '{other}' (expected: qemu)"
+        ),
+    }
 }
 
 /// Notes contributed by a single mixin, tagged with the mixin's name.
@@ -777,6 +816,10 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
                 .and_then(|v| v.idle_load_threshold)
                 .unwrap_or_else(default_idle_load_threshold),
             machine_type: vm.as_ref().and_then(|v| v.machine_type.clone()),
+            backend: vm
+                .as_ref()
+                .and_then(|v| v.backend.clone())
+                .unwrap_or_else(default_backend),
         };
 
         // Apply includes before the config's own steps.
@@ -1100,6 +1143,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         machine_type: vm
             .and_then(|v| v.machine_type.clone())
             .or(parent.machine_type),
+        backend: vm
+            .and_then(|v| v.backend.clone())
+            .unwrap_or(parent.backend),
     }
 }
 
@@ -1117,11 +1163,16 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
 }
 
 /// Load a resolved config from an instance's saved config file.
+///
+/// Validates the `backend` field as part of the load so call sites
+/// can treat the value as known-good without re-checking.
 pub fn load_resolved(path: &Path) -> anyhow::Result<ResolvedConfig> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
     let config: ResolvedConfig = toml::from_str(&contents)
         .with_context(|| format!("failed to parse config file {}", path.display()))?;
+    validate_backend(&config.backend)
+        .with_context(|| format!("invalid backend in {}", path.display()))?;
     Ok(config)
 }
 
@@ -1768,6 +1819,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
         let child = Config {
             base: None,
@@ -1832,6 +1884,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         let child = Config {
@@ -1900,6 +1953,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         let child = Config {
@@ -2115,6 +2169,7 @@ cpus = 4
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         save(&config, &path).await.unwrap();

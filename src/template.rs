@@ -359,6 +359,7 @@ EMPTY=
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         expand_config(&mut config, &vars).unwrap();

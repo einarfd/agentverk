@@ -42,7 +42,10 @@ pub async fn run(vm: &str, spec: ForwardSpec) -> anyhow::Result<()> {
         // restarted while we're running, the host/port may change (QEMU
         // hostfwd port reallocates on every boot; AVF NAT IP can also
         // change across restarts).
-        let Ok((host, port)) = crate::vm::backend::current().ssh_endpoint(&instance).await else {
+        let Ok((host, port)) = (match crate::vm::backend::for_instance(&instance) {
+            Ok(b) => b.ssh_endpoint(&instance).await,
+            Err(e) => Err(e),
+        }) else {
             tokio::select! {
                 () = tokio::time::sleep(RESPAWN_DELAY) => continue,
                 _ = term.recv() => return Ok(()),
