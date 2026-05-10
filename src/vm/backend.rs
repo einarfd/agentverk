@@ -367,22 +367,74 @@ impl VmBackend for LocalAvfBackend {
         Ok(())
     }
 
-    /// Send `{"op":"stop"}` over the runner's control socket. The
-    /// runner schedules an ACPI shutdown asynchronously and returns
-    /// `ok` immediately; the VM exits via `guest_did_stop` in the
-    /// runner, after which the runner process exits and removes the
-    /// socket file. Callers observe completion by waiting for the
-    /// runner PID to disappear (handled by `vm::stop` in `mod.rs`).
+    /// Send `{"op":"stop"}` over the runner's control socket, then
+    /// wait for the runner process to exit. The runner schedules an
+    /// ACPI shutdown asynchronously and returns `ok` immediately —
+    /// but `stop` is contractually synchronous (the QEMU backend
+    /// blocks until QEMU exits), so we mirror that here. Without
+    /// the wait, the next `agv start` would race a still-alive
+    /// runner pointing at the stale `avf-runner.pid` file.
+    ///
+    /// ACPI shutdown on a quiet Linux guest is a few seconds; we
+    /// allow 30s so a busy guest with active fsync work has time to
+    /// finish. If the runner overruns, fall back to SIGTERMing its
+    /// process group and waiting again. PID file is removed on
+    /// successful exit so a future start has a clean slate.
     async fn stop(&self, inst: &Instance) -> anyhow::Result<()> {
+        let pid = read_avf_runner_pid(inst).await;
+        // Fire the RPC even if we don't have a PID — the runner may
+        // be alive without us having recorded the PID (e.g. user
+        // hand-restored a state dir). Loss of PID just means we
+        // can't fall back to SIGTERM.
         avf_rpc(&inst.avf_control_socket_path(), "stop").await?;
+
+        if let Some(pid) = pid {
+            match wait_for_pid_exit(pid, Duration::from_secs(30)).await {
+                Ok(()) => {}
+                Err(_) => {
+                    warn!(
+                        pid,
+                        "agv-avf-runner didn't exit within 30s after stop RPC; sending SIGTERM"
+                    );
+                    avf_kill_runner(pid);
+                    wait_for_pid_exit(pid, Duration::from_secs(10))
+                        .await
+                        .context("agv-avf-runner did not exit after SIGTERM")?;
+                }
+            }
+        }
+        let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
         Ok(())
     }
 
-    /// Send `{"op":"force_stop"}`. Same fire-and-forget shape as
-    /// `stop`, but the runner calls `vm.stop()` (abrupt) instead of
-    /// `vm.requestStop()` (ACPI).
+    /// Send `{"op":"force_stop"}` (abrupt VM stop via `vm.stop()`)
+    /// and wait for the runner to exit. Falls back to SIGTERM if
+    /// the runner is unresponsive on the control socket. Short
+    /// timeout — a forced stop should be near-instant.
     async fn force_stop(&self, inst: &Instance) -> anyhow::Result<()> {
-        avf_rpc(&inst.avf_control_socket_path(), "force_stop").await?;
+        let pid = read_avf_runner_pid(inst).await;
+        // RPC may fail (socket gone, runner wedged) — that's fine,
+        // we'll SIGTERM via the recorded PID below.
+        let rpc_result = avf_rpc(&inst.avf_control_socket_path(), "force_stop").await;
+
+        if let Some(pid) = pid {
+            if rpc_result.is_ok() {
+                // Give the runner a brief window to tear down via the
+                // RPC path before resorting to a signal.
+                if wait_for_pid_exit(pid, Duration::from_secs(5)).await.is_ok() {
+                    let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
+                    return Ok(());
+                }
+            }
+            avf_kill_runner(pid);
+            wait_for_pid_exit(pid, Duration::from_secs(10))
+                .await
+                .context("agv-avf-runner did not exit after SIGTERM")?;
+        } else if let Err(e) = rpc_result {
+            // No PID and the RPC failed — nothing left to do.
+            return Err(e).context("force_stop: RPC failed and no PID file to fall back on");
+        }
+        let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
         Ok(())
     }
 
@@ -489,6 +541,34 @@ fn locate_avf_runner_with(
 fn parse_memory(spec: &str) -> anyhow::Result<u64> {
     crate::image::parse_disk_size(spec)
         .with_context(|| format!("parsing memory spec {spec:?}"))
+}
+
+/// Read the recorded runner PID, if any. Returns `None` when the
+/// file is missing or unparseable — callers treat that as "no
+/// runner to clean up" rather than an error, because this is the
+/// expected state for a VM that's already stopped.
+#[cfg(target_os = "macos")]
+async fn read_avf_runner_pid(inst: &Instance) -> Option<u32> {
+    let path = inst.avf_runner_pid_path();
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    content.trim().parse::<u32>().ok()
+}
+
+/// Poll until the PID disappears or the timeout fires. Returns
+/// `Err` only on timeout — caller decides whether to escalate to
+/// SIGTERM.
+#[cfg(target_os = "macos")]
+async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !crate::forward::is_alive(pid) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("PID {pid} still alive after {timeout:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// SIGTERM the runner's process group. Same primitive
@@ -796,6 +876,81 @@ mod tests {
         std::fs::write(&runner, b"#!/bin/sh\nexit 0\n").unwrap();
         let resolved = locate_avf_runner_with(None, fake_exe).unwrap();
         assert_eq!(resolved, runner);
+    }
+
+    /// `wait_for_pid_exit` returns Ok the moment a target process
+    /// exits. Spawn a `sleep` child, observe its PID is alive, then
+    /// kill it and confirm the helper sees the exit.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn wait_for_pid_exit_returns_once_pid_dies() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawning sleep");
+        let pid = child.id();
+        // Brief sanity: the child is alive right now.
+        assert!(crate::forward::is_alive(pid));
+        // Kick off the watcher *first*, then kill — so the watcher
+        // observes a live-then-dead transition (not a pid that was
+        // already gone).
+        let waiter = tokio::spawn(async move {
+            wait_for_pid_exit(pid, Duration::from_secs(5)).await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        child.kill().expect("kill sleep");
+        child.wait().expect("reap sleep");
+        let result = waiter.await.unwrap();
+        assert!(result.is_ok(), "expected Ok after pid exit, got {result:?}");
+    }
+
+    /// `wait_for_pid_exit` reports timeout when the target keeps
+    /// running. Uses a 200ms ceiling against a long-lived `sleep`
+    /// so the test is quick.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn wait_for_pid_exit_times_out_when_pid_lives() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawning sleep");
+        let pid = child.id();
+        let result = wait_for_pid_exit(pid, Duration::from_millis(200)).await;
+        let err = result.expect_err("expected timeout error");
+        assert!(
+            format!("{err:#}").contains("still alive"),
+            "expected timeout message, got: {err:#}"
+        );
+        child.kill().expect("kill sleep");
+        child.wait().expect("reap sleep");
+    }
+
+    /// `read_avf_runner_pid` is forgiving — missing or malformed
+    /// content returns None rather than erroring. Callers rely on
+    /// that to skip cleanup when no runner exists.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn read_avf_runner_pid_handles_missing_and_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = Instance {
+            name: "tmp".to_string(),
+            dir: dir.path().to_path_buf(),
+        };
+
+        // No file → None.
+        assert!(read_avf_runner_pid(&inst).await.is_none());
+
+        // Malformed content → None.
+        tokio::fs::write(inst.avf_runner_pid_path(), b"not-a-number")
+            .await
+            .unwrap();
+        assert!(read_avf_runner_pid(&inst).await.is_none());
+
+        // Well-formed content → Some.
+        tokio::fs::write(inst.avf_runner_pid_path(), b"42\n")
+            .await
+            .unwrap();
+        assert_eq!(read_avf_runner_pid(&inst).await, Some(42));
     }
 
     /// Build a minimal valid `ResolvedConfig` for tests in this module.
