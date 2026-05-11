@@ -214,38 +214,9 @@ fn ensure_runner_alongside_test_binary(source: &std::path::Path) {
 ///   8. assert snapshot file is gone (runner removes after successful
 ///      resume)
 ///   9. backend.stop(inst) — clean shutdown
-/// KNOWN FAILING: resume fails with AVF `Code=12 "permission denied"`.
-/// Persisting MAC and `VZGenericMachineIdentifier` across runner
-/// spawns both happen (sidecar files at `<inst>/avf-mac` and
-/// `<inst>/avf-machine-id`), but `restoreMachineStateFrom` still
-/// refuses. Manually reproducible — not a test-harness flake.
-///
-/// What we've ruled out:
-///   - Test ordering / harness state.
-///   - Stale DHCP leases (unique-name fix).
-///   - Random MAC mismatch (now persisted via sidecar).
-///   - Random `VZGenericMachineIdentifier` mismatch (now persisted).
-///   - Serial-log truncation between save and restore.
-///   - File permissions / xattrs on the snapshot.
-///
-/// Most plausible remaining causes: an EFI variable store state
-/// AVF compares against (the file is byte-identical between save
-/// and restore, but AVF may compare an internal hash); or some
-/// other piece of `VZVirtualMachineConfiguration` that auto-
-/// generates per-instance and that we don't persist (entropy
-/// device? `VZNATNetworkDeviceAttachment` identity?). The next
-/// debugging move is comparing Apple's `RestoringVirtualMachine`
-/// sample app against our configuration; Apple's "permission
-/// denied" is a generic configuration-mismatch error, not a
-/// filesystem permission.
-///
-/// Test marked `#[ignore]` (slow) and `should_panic` so CI stays
-/// green. The `cold_boot_then_suspend_writes_snapshot` test
-/// exercises the same code path up to suspend — that part works.
 #[tokio::test]
 #[ignore = "boots a real Apple Virtualization VM via the Rust backend API — slow"]
 #[serial]
-#[should_panic(expected = "permission denied")]
 async fn cold_boot_suspend_resume_round_trip() {
     let Some(runner) = runner_binary() else {
         eprintln!("agv-avf-runner not built — skipping cold_boot_suspend_resume_round_trip");
