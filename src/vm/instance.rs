@@ -297,6 +297,15 @@ impl Instance {
         self.dir.join("avf-efi-vars.bin")
     }
 
+    /// AVF-only — machine state snapshot file. Written by
+    /// `saveMachineStateTo` on `agv suspend`; read by
+    /// `restoreMachineStateFrom` on `agv resume`. Distinct from
+    /// QEMU's snapshot which lives inside the qcow2 disk.
+    #[must_use]
+    pub fn avf_snapshot_path(&self) -> PathBuf {
+        self.dir.join("avf-snapshot.bin")
+    }
+
     /// Path to the auto-allocated host port for a named auto-forward.
     ///
     /// Mixins declare `[auto_forwards.<name>]`; at VM start agv picks a free

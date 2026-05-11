@@ -237,22 +237,25 @@ impl VmBackend for LocalAvfBackend {
     /// Boot the VM under Apple Virtualization.
     ///
     /// Sequence:
-    ///   1. Refuse `loadvm` (suspend/resume snapshots aren't wired up
-    ///      yet for AVF).
-    ///   2. Serialize the runner's JSON config to
-    ///      `<instance>/avf-runner-config.json`.
-    ///   3. Locate the agv-avf-runner binary (env override → sibling
+    ///   1. Serialize the runner's JSON config to
+    ///      `<instance>/avf-runner-config.json`. If `loadvm` is set
+    ///      (i.e. the user ran `agv resume`), include
+    ///      `restore_on_boot: true` so the runner restores the
+    ///      machine state from `<instance>/avf-snapshot.bin`.
+    ///   2. Locate the agv-avf-runner binary (env override → sibling
     ///      of current agv binary).
-    ///   4. Spawn the runner detached, in its own process group, with
+    ///   3. Spawn the runner detached, in its own process group, with
     ///      stderr captured to `<instance>/avf-runner.log` for
     ///      post-mortem debugging.
-    ///   5. Persist the runner's PID for stop/destroy cleanup.
-    ///   6. Poll the runner's control socket until state goes from
+    ///   4. Persist the runner's PID for stop/destroy cleanup.
+    ///   5. Poll the runner's control socket until state goes from
     ///      `starting` to `running`. If the runner dies during boot
     ///      or doesn't reach `running` in time, kill its process
     ///      group and surface an error.
     ///
     /// `machine_type` is ignored — AVF picks its own platform config.
+    /// `loadvm`'s value is also ignored beyond `is_some()` — AVF
+    /// has one snapshot per VM, not named snapshots like QEMU.
     async fn start(
         &self,
         inst: &Instance,
@@ -260,9 +263,11 @@ impl VmBackend for LocalAvfBackend {
         _machine_type: &str,
         loadvm: Option<&str>,
     ) -> anyhow::Result<()> {
-        if loadvm.is_some() {
+        let restore_on_boot = loadvm.is_some();
+        if restore_on_boot && !inst.avf_snapshot_path().exists() {
             bail!(
-                "AVF backend doesn't support snapshot resume (loadvm) yet"
+                "cannot resume: AVF snapshot file {} is missing",
+                inst.avf_snapshot_path().display()
             );
         }
 
@@ -276,6 +281,8 @@ impl VmBackend for LocalAvfBackend {
             efi_variable_store_path: inst.avf_efi_vars_path().display().to_string(),
             serial_log_path: inst.serial_log_path().display().to_string(),
             control_socket_path: inst.avf_control_socket_path().display().to_string(),
+            snapshot_path: inst.avf_snapshot_path().display().to_string(),
+            restore_on_boot,
         };
         let cfg_path = inst.avf_runner_config_path();
         let cfg_json = serde_json::to_vec_pretty(&runner_cfg)
@@ -438,8 +445,45 @@ impl VmBackend for LocalAvfBackend {
         Ok(())
     }
 
-    async fn suspend(&self, _inst: &Instance) -> anyhow::Result<()> {
-        anyhow::bail!("AVF backend is not yet implemented (suspend)")
+    /// Send `{"op":"suspend"}`, wait for the runner to pause the VM,
+    /// write its machine state to `<instance>/avf-snapshot.bin`, and
+    /// exit cleanly. `agv resume` (i.e. start with `loadvm = Some`)
+    /// reads that file back.
+    ///
+    /// The wait window is wider than `stop`'s: saving full machine
+    /// state means writing ~RAM-size bytes to disk. A 4 GiB VM on
+    /// internal SSD is roughly 4 s; we allow 60 s so a slow disk or
+    /// a large VM still completes. If the runner overruns we don't
+    /// SIGTERM — that could corrupt the partial snapshot. Surface
+    /// the timeout to the caller instead so they can investigate.
+    async fn suspend(&self, inst: &Instance) -> anyhow::Result<()> {
+        let pid = read_avf_runner_pid(inst).await;
+        avf_rpc(&inst.avf_control_socket_path(), "suspend").await?;
+
+        let Some(pid) = pid else {
+            // No PID file but the RPC succeeded — weird state but
+            // we accept it. The runner will exit on its own.
+            return Ok(());
+        };
+        wait_for_pid_exit(pid, Duration::from_secs(60))
+            .await
+            .context(
+                "agv-avf-runner did not exit within 60s after suspend RPC \
+                 — snapshot write may still be in progress, do not SIGTERM",
+            )?;
+        // Sanity-check the snapshot landed. Without it, the next
+        // `agv resume` would fail with a clearer error than a
+        // missing-file open mid-restore.
+        let snap = inst.avf_snapshot_path();
+        anyhow::ensure!(
+            snap.exists(),
+            "agv-avf-runner exited but snapshot file {} was not created — \
+             check {} for runner errors",
+            snap.display(),
+            inst.dir.join("avf-runner.log").display(),
+        );
+        let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
+        Ok(())
     }
 
     /// Query the runner for the guest's NAT IP. Returns
@@ -481,6 +525,14 @@ struct AvfRunnerConfig {
     efi_variable_store_path: String,
     serial_log_path: String,
     control_socket_path: String,
+    /// Where the runner writes the machine state on suspend, and
+    /// where it reads it from on resume. Same file in both directions.
+    snapshot_path: String,
+    /// True for `agv resume`: runner calls `restoreMachineStateFrom`
+    /// + `vm.resume` instead of `vm.start`. False for a cold boot.
+    /// The Swift side decodes a missing key as false, but we
+    /// always serialize the bool explicitly.
+    restore_on_boot: bool,
 }
 
 /// Resolve the agv-avf-runner binary path.

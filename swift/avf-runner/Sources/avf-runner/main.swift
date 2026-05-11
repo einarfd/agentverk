@@ -23,6 +23,15 @@ struct RunnerConfig: Codable {
     let efiVariableStorePath: String
     let serialLogPath: String
     let controlSocketPath: String
+    /// Where suspend writes the VM's machine state, and where the
+    /// runner reads it on resume. Always populated — even VMs that
+    /// never suspend declare a slot so the wire shape stays uniform.
+    let snapshotPath: String
+    /// True when this boot should restore from `snapshotPath`
+    /// rather than start fresh. Set by the Rust side when the user
+    /// runs `agv resume`. Defaults to false so a missing key
+    /// (older config) means cold boot.
+    let restoreOnBoot: Bool?
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +63,8 @@ struct ControlResponse: Codable {
 enum VMState: String {
     case starting
     case running
+    case suspending
+    case suspended
     case stopping
     case stopped
     case errored
@@ -120,7 +131,9 @@ if validateOnly {
 let runner = VMRunner(
     configuration: vmConfig,
     vmName: config.name,
-    macAddress: macAddress
+    macAddress: macAddress,
+    snapshotPath: config.snapshotPath,
+    restoreOnBoot: config.restoreOnBoot ?? false
 )
 
 // Bind the control socket before booting so the parent agv process can
@@ -249,6 +262,11 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     /// MAC pinned on the guest's virtio-net device. Used for DHCP
     /// lease lookup when `status` queries arrive.
     let macAddress: VZMACAddress
+    /// Where to write the machine state on suspend, and where to
+    /// read it from on restore. Identical path; the `restoreOnBoot`
+    /// flag picks the direction at startup.
+    let snapshotPath: String
+    let restoreOnBoot: Bool
     private let queue: DispatchQueue
     private let vm: VZVirtualMachine
     private let exitSemaphore = DispatchSemaphore(value: 0)
@@ -261,9 +279,17 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     private var _state: VMState = .starting
     private let stateLock = NSLock()
 
-    init(configuration: VZVirtualMachineConfiguration, vmName: String, macAddress: VZMACAddress) {
+    init(
+        configuration: VZVirtualMachineConfiguration,
+        vmName: String,
+        macAddress: VZMACAddress,
+        snapshotPath: String,
+        restoreOnBoot: Bool
+    ) {
         self.vmName = vmName
         self.macAddress = macAddress
+        self.snapshotPath = snapshotPath
+        self.restoreOnBoot = restoreOnBoot
         self.queue = DispatchQueue(label: "agv-avf-runner.vm.\(vmName)")
         self.vm = VZVirtualMachine(configuration: configuration, queue: self.queue)
         super.init()
@@ -288,16 +314,69 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         let signalSources = installSignalHandlers()
         defer { for s in signalSources { s.cancel() } }
 
-        queue.async { [weak self] in
+        if restoreOnBoot {
+            queue.async { [weak self] in
+                self?.restoreAndResume()
+            }
+        } else {
+            queue.async { [weak self] in
+                guard let self else { return }
+                self.vm.start { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.setState(.running)
+                    case .failure(let err):
+                        FileHandle.standardError.write(
+                            Data("agv-avf-runner: VM '\(self.vmName)' failed to start: \(err)\n".utf8)
+                        )
+                        self.setState(.errored)
+                        self.exitCode = 1
+                        self.signalExitOnce()
+                    }
+                }
+            }
+        }
+
+        exitSemaphore.wait()
+        return exitCode
+    }
+
+    /// Restore the VM state from `snapshotPath` and resume execution.
+    /// Called instead of `vm.start(...)` when `restoreOnBoot` is true
+    /// (the Rust side sets this on `agv resume`).
+    ///
+    /// On any failure (corrupt snapshot, version mismatch, missing
+    /// file) we surface the error to stderr and exit with code 1 —
+    /// the parent treats that as a failed resume and the user can
+    /// fall back to a cold start. We do NOT silently fall back to
+    /// `vm.start` because that would lose the in-RAM guest state
+    /// the user expected to recover.
+    private func restoreAndResume() {
+        let url = URL(fileURLWithPath: snapshotPath)
+        vm.restoreMachineStateFrom(url: url) { [weak self] error in
             guard let self else { return }
-            self.vm.start { [weak self] result in
+            if let error {
+                FileHandle.standardError.write(
+                    Data("agv-avf-runner: restoreMachineStateFrom failed for '\(self.vmName)': \(error)\n".utf8)
+                )
+                self.setState(.errored)
+                self.exitCode = 1
+                self.signalExitOnce()
+                return
+            }
+            self.vm.resume { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success:
                     self.setState(.running)
+                    // Snapshot has served its purpose. Remove so the
+                    // file isn't mistakenly reused next boot and to
+                    // free disk (snapshot ≈ RAM size).
+                    try? FileManager.default.removeItem(atPath: self.snapshotPath)
                 case .failure(let err):
                     FileHandle.standardError.write(
-                        Data("agv-avf-runner: VM '\(self.vmName)' failed to start: \(err)\n".utf8)
+                        Data("agv-avf-runner: vm.resume failed for '\(self.vmName)': \(err)\n".utf8)
                     )
                     self.setState(.errored)
                     self.exitCode = 1
@@ -305,9 +384,54 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
                 }
             }
         }
+    }
 
-        exitSemaphore.wait()
-        return exitCode
+    /// Pause the VM, write its full state to `snapshotPath`, then
+    /// exit cleanly. The Rust side observes our exit (PID gone +
+    /// socket removed) to know the suspend is complete.
+    ///
+    /// Failure modes:
+    /// - `pause` fails → leave VM running, surface error to stderr.
+    ///   No exit; the user can retry or fall back to `agv stop`.
+    /// - `saveMachineStateTo` fails → resume the VM so we don't
+    ///   leave it wedged in pause, surface the error. The on-disk
+    ///   snapshot is removed if a partial write occurred (the
+    ///   library may or may not clean up; defensive).
+    func requestSuspend() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.hasExited { return }
+            self.setState(.suspending)
+            self.vm.pause { [weak self] result in
+                guard let self else { return }
+                if case .failure(let err) = result {
+                    FileHandle.standardError.write(
+                        Data("agv-avf-runner: pause failed for '\(self.vmName)': \(err)\n".utf8)
+                    )
+                    // Revert to running state — VM is still alive.
+                    self.setState(.running)
+                    return
+                }
+                let url = URL(fileURLWithPath: self.snapshotPath)
+                self.vm.saveMachineStateTo(url: url) { [weak self] err in
+                    guard let self else { return }
+                    if let err {
+                        FileHandle.standardError.write(
+                            Data("agv-avf-runner: saveMachineStateTo failed for '\(self.vmName)': \(err)\n".utf8)
+                        )
+                        // Best-effort cleanup of a potentially partial file.
+                        try? FileManager.default.removeItem(atPath: self.snapshotPath)
+                        // Resume so we don't leave the VM paused.
+                        self.vm.resume { _ in
+                            self.setState(.running)
+                        }
+                        return
+                    }
+                    self.setState(.suspended)
+                    self.signalExitOnce()
+                }
+            }
+        }
     }
 
     private func installSignalHandlers() -> [DispatchSourceSignal] {
@@ -359,7 +483,12 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     private func signalExitOnce() {
         if hasExited { return }
         hasExited = true
-        if state != .errored {
+        // Preserve `.errored` and `.suspended` — both convey
+        // important information to the parent (errored = failure,
+        // suspended = state-on-disk waiting for resume). Otherwise
+        // we record the stop.
+        let current = state
+        if current != .errored && current != .suspended {
             setState(.stopped)
         }
         exitSemaphore.signal()
@@ -514,6 +643,9 @@ final class ControlServer {
             return ControlResponse(ok: true)
         case "force_stop":
             runner.forceStop()
+            return ControlResponse(ok: true)
+        case "suspend":
+            runner.requestSuspend()
             return ControlResponse(ok: true)
         case "status":
             // Look up the guest IP fresh on every status — DHCP

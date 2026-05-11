@@ -17,10 +17,13 @@ import PackageDescription
 
 let package = Package(
     name: "agv-avf-runner",
-    // AVF (`Virtualization` framework) is macOS 11+; we target macOS 13
-    // (Ventura) so we can use the modern API surface (Linux guest support,
-    // virtiofs, snapshots) without per-version conditionals.
-    platforms: [.macOS(.v13)],
+    // AVF (`Virtualization` framework) is macOS 11+; we target macOS 14
+    // (Sonoma) because we use `saveMachineStateTo` /
+    // `restoreMachineStateFrom` for suspend/resume — both 14.0+. The
+    // older surface (start, pause, resume) is 11+, but pinning the
+    // whole package to 14 keeps the code free of per-API
+    // `@available` shims.
+    platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
             name: "agv-avf-runner",
