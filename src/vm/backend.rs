@@ -283,6 +283,8 @@ impl VmBackend for LocalAvfBackend {
             control_socket_path: inst.avf_control_socket_path().display().to_string(),
             snapshot_path: inst.avf_snapshot_path().display().to_string(),
             restore_on_boot,
+            mac_address_path: inst.avf_mac_path().display().to_string(),
+            machine_identifier_path: inst.avf_machine_id_path().display().to_string(),
         };
         let cfg_path = inst.avf_runner_config_path();
         let cfg_json = serde_json::to_vec_pretty(&runner_cfg)
@@ -533,6 +535,13 @@ struct AvfRunnerConfig {
     /// The Swift side decodes a missing key as false, but we
     /// always serialize the bool explicitly.
     restore_on_boot: bool,
+    /// Sidecar file persisting the VM's MAC address across runner
+    /// spawns. Required so `restoreMachineStateFrom` accepts the
+    /// new VM config on resume.
+    mac_address_path: String,
+    /// Sidecar file persisting the VM's `VZGenericMachineIdentifier`
+    /// across runner spawns. Same reason as `mac_address_path`.
+    machine_identifier_path: String,
 }
 
 /// Resolve the agv-avf-runner binary path.
@@ -606,14 +615,49 @@ async fn read_avf_runner_pid(inst: &Instance) -> Option<u32> {
     content.trim().parse::<u32>().ok()
 }
 
+/// True iff the PID corresponds to a process that is still
+/// executing (not a zombie). Tries `waitpid(WNOHANG)` first to
+/// reap and detect exited children we're the parent of; falls
+/// back to `is_alive` (signal 0) for non-child PIDs. See
+/// [`wait_for_pid_exit`] for context.
+#[cfg(target_os = "macos")]
+fn pid_is_running(pid: u32) -> bool {
+    use rustix::process::{WaitOptions, waitpid};
+    let Some(p) = crate::forward::pid_from_u32(pid) else {
+        return false;
+    };
+    match waitpid(Some(p), WaitOptions::NOHANG) {
+        // The kernel had an exited child for this PID, and we
+        // reaped it. Definitely not running.
+        Ok(Some(_status)) => false,
+        // Either the child is still running, or this PID is not
+        // our child (ECHILD surfaces as Err here on macOS).
+        // Either way, fall through to signal-0 to disambiguate.
+        Ok(None) | Err(_) => crate::forward::is_alive(pid),
+    }
+}
+
 /// Poll until the PID disappears or the timeout fires. Returns
 /// `Err` only on timeout — caller decides whether to escalate to
 /// SIGTERM.
+///
+/// `is_alive` (signal 0) reports zombies as "alive" — on macOS a
+/// zombie process still satisfies `kill(pid, 0)`. The runner is
+/// spawned via `Command::spawn` + `mem::forget` (the same
+/// detached-process pattern forward supervisors use), so its
+/// reaper is whatever process becomes its parent. In production
+/// that's `init` (the agv binary exits shortly after sending
+/// suspend), but inside a long-lived test binary the runner
+/// stays a zombie of the test process until reaped — and is_alive
+/// would report it alive forever. We complement is_alive with a
+/// best-effort `waitpid(WNOHANG)` to reap if we happen to be the
+/// parent. Both checks return cheaply for non-children (rustix
+/// surfaces `ECHILD`), so it's safe to call in either context.
 #[cfg(target_os = "macos")]
 async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if !crate::forward::is_alive(pid) {
+        if !pid_is_running(pid) {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {

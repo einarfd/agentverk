@@ -99,7 +99,9 @@ fn write_config(
   "serial_log_path": "{serial}",
   "control_socket_path": "{ctl}",
   "snapshot_path": "{snap}",
-  "restore_on_boot": false
+  "restore_on_boot": false,
+  "mac_address_path": "{mac}",
+  "machine_identifier_path": "{mid}"
 }}
 "#,
         name = name,
@@ -109,6 +111,8 @@ fn write_config(
         serial = dir.join("serial.log").display(),
         ctl = dir.join("control.sock").display(),
         snap = dir.join("avf-snapshot.bin").display(),
+        mac = dir.join("avf-mac").display(),
+        mid = dir.join("avf-machine-id").display(),
     );
     let path = dir.join("config.json");
     std::fs::write(&path, cfg).unwrap();

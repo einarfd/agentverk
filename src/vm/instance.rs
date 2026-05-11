@@ -306,6 +306,26 @@ impl Instance {
         self.dir.join("avf-snapshot.bin")
     }
 
+    /// AVF-only — sidecar file storing this VM's MAC address.
+    /// The runner writes it on first boot and reads it back on
+    /// subsequent boots; persistence is mandatory for resume
+    /// (saveMachineStateTo records the MAC in the snapshot, and
+    /// restoreMachineStateFrom requires an identical MAC in the
+    /// new VM configuration).
+    #[must_use]
+    pub fn avf_mac_path(&self) -> PathBuf {
+        self.dir.join("avf-mac")
+    }
+
+    /// AVF-only — sidecar file storing this VM's
+    /// `VZGenericMachineIdentifier`. Same persistence rationale as
+    /// the MAC: restore from a saved state requires an identical
+    /// machine identifier on the new VM configuration.
+    #[must_use]
+    pub fn avf_machine_id_path(&self) -> PathBuf {
+        self.dir.join("avf-machine-id")
+    }
+
     /// Path to the auto-allocated host port for a named auto-forward.
     ///
     /// Mixins declare `[auto_forwards.<name>]`; at VM start agv picks a free
