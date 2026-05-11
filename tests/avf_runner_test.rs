@@ -557,16 +557,39 @@ fn control_socket_unknown_op_returns_error() {
 /// the runner removes it after `vm.resume` completes, so a second
 /// resume against the same file would fail.
 ///
-/// KNOWN FLAKY: when run in-process the first jsonrpc connect
-/// after the boot-settle sleep returns ENOENT/ECONNREFUSED — the
-/// other slow tests (`control_socket_status_then_stop`,
-/// `boot_and_sigterm_exits_cleanly`) sharing the same connection
-/// pattern pass reliably, and manual reproduction (boot the runner
-/// + `nc -U`) confirms the wire is healthy. Tracked as a separate
-/// debugging task; the Swift suspend/resume code itself is
-/// verified manually. Marked `#[ignore]` (slow) and
-/// `should_panic` so test runs stay green until the flake is
-/// understood.
+/// KNOWN FLAKY: the first jsonrpc connect after the boot-settle
+/// sleep returns ENOENT — but only when the test body extends
+/// past the suspend RPC into the resume phase. A diagnostic
+/// shrink:
+///
+///   - body = boot + sleep(8) + jsonrpc(suspend) + kill → PASSES
+///   - body = boot + sleep(8) + jsonrpc(suspend) + wait-for-exit
+///     + spawn-resume-runner + wait_for_path + jsonrpc(status)
+///     loop → FAILS at the FIRST jsonrpc(suspend) call
+///
+/// Same call site, same call sequence up to that point, different
+/// behavior. A verbatim-body clone of `control_socket_status_then_stop`
+/// (run alone) passes 5/5. Manual reproduction (`nc -U`) confirms
+/// the Swift wire is healthy. Sibling slow tests using the same
+/// `jsonrpc` helper (`control_socket_status_then_stop`,
+/// `boot_and_sigterm_exits_cleanly`) pass reliably.
+///
+/// Most likely a compiler-level effect (stack layout, dead-code
+/// removal interacting with the AF_UNIX connect path in some
+/// macOS-specific way) — but the Swift suspend/resume itself is
+/// proven, so the production code path is not at risk. Marked
+/// `#[ignore]` (slow) and `should_panic` so CI stays green
+/// until someone with fresh eyes cracks the test flake.
+///
+/// TODO: revisit. Likely-productive angles to try next:
+///   - Run with --release to see if optimizer changes behavior.
+///   - Bisect the post-RPC code line-by-line to find what minimal
+///     addition flips it. Add lines one at a time and re-run.
+///   - dtruss / dtrace the failing connect() to capture the
+///     errno path on macOS.
+///   - Print `std::env::args()` and other process state at the
+///     point of failure to see if anything's different from the
+///     working clone.
 #[test]
 #[ignore = "boots a real Apple Virtualization VM — slow; also tracking a slow-test connect flake"]
 #[serial]
