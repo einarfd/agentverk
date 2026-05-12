@@ -307,19 +307,37 @@ fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
 /// Wait for SSH to become available on a VM, polling until ready.
 ///
 /// Retries up to 60 times with 1-second intervals (60s total timeout).
+///
+/// The backend's `ssh_endpoint` is re-resolved each iteration so the
+/// AVF backend can return "no guest IP yet" early in the boot — its
+/// IP arrives via guest DHCP, not when the VM process starts. The
+/// QEMU backend's endpoint is stable (a host-side port forward), so
+/// the re-resolve is a cheap read of one file per iteration.
 pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<()> {
-    let (host, port) = crate::vm::backend::for_instance(instance)?
-        .ssh_endpoint(instance)
-        .await?;
+    let backend = crate::vm::backend::for_instance(instance)?;
     let key_path = instance.ssh_key_path();
-    let args = base_ssh_args(&key_path, port);
-
-    let destination = format!("{user}@{host}");
     let start = std::time::Instant::now();
 
     info!(vm = %instance.name, "waiting for SSH to become ready");
 
     for attempt in 1..=60 {
+        let endpoint = backend.ssh_endpoint(instance).await;
+        let (host, port) = match endpoint {
+            Ok(hp) => hp,
+            Err(e) => {
+                debug!(
+                    vm = %instance.name,
+                    attempt,
+                    error = %format!("{e:#}"),
+                    "endpoint not ready yet, retrying in 1s"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let args = base_ssh_args(&key_path, port);
+        let destination = format!("{user}@{host}");
+
         let output = tokio::process::Command::new("ssh")
             .args(&args)
             .arg(&destination)

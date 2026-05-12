@@ -62,6 +62,11 @@ pub struct VmStateReport {
     pub cpus: u32,
     /// Configured disk size (e.g. `"40G"`).
     pub disk: String,
+    /// Backend the VM runs on: `"qemu"` (default, all platforms) or
+    /// `"avf"` (Apple Virtualization, macOS-only). Set at create
+    /// time; consumers can use it to render the right SSH endpoint
+    /// (`ssh_port` is null on AVF; SSH goes through the guest IP).
+    pub backend: String,
     /// Mixins applied at create time, in the order they were merged.
     pub mixins_applied: Vec<String>,
     /// Per-mixin manual setup steps the human invoker still needs to do.
@@ -170,6 +175,7 @@ pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmSt
         memory: cfg.memory,
         cpus: cfg.cpus,
         disk: cfg.disk,
+        backend: cfg.backend,
         mixins_applied: cfg.mixins_applied,
         manual_steps: cfg.mixin_manual_steps,
         config_manual_steps: cfg.config_manual_steps,
@@ -1249,6 +1255,7 @@ mod tests {
             memory: "8G".to_string(),
             cpus: 4,
             disk: "40G".to_string(),
+            backend: "qemu".to_string(),
             mixins_applied: vec!["devtools".to_string(), "claude".to_string()],
             manual_steps: vec![MixinManualSteps {
                 name: "claude".to_string(),
@@ -1286,6 +1293,7 @@ mod tests {
         // Sorted alphabetically so a removal lands on the same line as the
         // assertion that fails — easier to spot in a diff.
         let expected: &[&str] = &[
+            "backend",
             "config_manual_steps",
             "cpus",
             "created",

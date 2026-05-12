@@ -428,10 +428,14 @@ impl Instance {
         let status = self.read_status().await?;
         if status == Status::Running && !self.is_process_alive().await {
             self.write_status(Status::Stopped).await?;
-            // Clean up stale runtime files.
+            // Clean up stale runtime files for whichever backend
+            // was managing this VM. The other backend's files won't
+            // exist; removing is a no-op there.
             let _ = tokio::fs::remove_file(self.pid_path()).await;
             let _ = tokio::fs::remove_file(self.qmp_socket_path()).await;
             let _ = tokio::fs::remove_file(self.ssh_port_path()).await;
+            let _ = tokio::fs::remove_file(self.avf_runner_pid_path()).await;
+            let _ = tokio::fs::remove_file(self.avf_control_socket_path()).await;
             // Kill any forward supervisors before removing forwards.toml,
             // otherwise they keep retrying against a VM that is gone.
             crate::forward::kill_all_and_clear(&self.forwards_path()).await;
@@ -443,16 +447,28 @@ impl Instance {
         Ok(status)
     }
 
-    /// Check whether the QEMU process (from the PID file) is still alive.
+    /// Check whether the VM's host-side process is still alive.
+    /// QEMU writes its PID to `<inst>/pid`; the AVF runner writes
+    /// to `<inst>/avf-runner.pid`. The two are mutually exclusive
+    /// per VM (a VM is one backend or the other), so checking
+    /// both and returning true if either is alive correctly
+    /// covers both backends without `reconcile_status` having to
+    /// inspect the config.
     pub async fn is_process_alive(&self) -> bool {
-        let Ok(raw) = tokio::fs::read_to_string(self.pid_path()).await else {
-            return false;
-        };
-        let Ok(pid) = raw.trim().parse::<u32>() else {
-            return false;
-        };
-        crate::forward::pid_from_u32(pid)
-            .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
+        for path in [self.pid_path(), self.avf_runner_pid_path()] {
+            let Ok(raw) = tokio::fs::read_to_string(&path).await else {
+                continue;
+            };
+            let Ok(pid) = raw.trim().parse::<u32>() else {
+                continue;
+            };
+            if crate::forward::pid_from_u32(pid)
+                .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
+            {
+                return true;
+            }
+        }
+        false
     }
 }
 

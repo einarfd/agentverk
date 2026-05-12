@@ -161,40 +161,32 @@ fn unique_name(prefix: &str) -> String {
 /// runner without setting an env var. The resolver's fallback path
 /// is "sibling of `std::env::current_exe()`" — and in a Cargo test
 /// `current_exe()` is the per-test binary under `target/.../deps/`.
-/// So we copy the Swift runner to `agv-avf-runner` alongside the
+/// So we symlink the Swift runner to `agv-avf-runner` alongside the
 /// test binary, and the production resolver picks it up.
 ///
-/// This avoids the `unsafe { set_var }` route — the crate is
-/// `unsafe_code = "forbid"` so that's not available even in tests.
+/// Symlink, not copy: macOS's AppleSystemPolicy provenance sandbox
+/// rejects the code signature when a signed Mach-O is copied to a
+/// new path (`load code signature error 2`); the runner gets
+/// SIGKILL'd before producing any output. A symlink avoids that by
+/// keeping the kernel pointed at the originally-signed bytes.
 ///
-/// Idempotent: only copies if the target doesn't exist or is older
-/// than the source. Tests run in parallel against this same path
-/// under `#[serial]`, so the first one wins and subsequent ones
-/// no-op.
+/// This also avoids the `unsafe { set_var }` route — the crate is
+/// `unsafe_code = "forbid"` so that's not available even in tests.
 fn ensure_runner_alongside_test_binary(source: &std::path::Path) {
     let dest = std::env::current_exe()
         .expect("current_exe")
         .parent()
         .expect("test binary has a parent dir")
         .join("agv-avf-runner");
-
-    let needs_copy = match (std::fs::metadata(&dest), std::fs::metadata(source)) {
-        (Ok(d), Ok(s)) => match (d.modified(), s.modified()) {
-            (Ok(dm), Ok(sm)) => sm > dm,
-            _ => false,
-        },
-        _ => true,
-    };
-
-    if needs_copy {
-        std::fs::copy(source, &dest).expect("copy runner alongside test binary");
-        // Preserve executable bit — std::fs::copy preserves perms on
-        // macOS via fcopyfile, but be defensive.
-        use std::os::unix::fs::PermissionsExt as _;
-        let mut perms = std::fs::metadata(&dest).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&dest, perms).ok();
+    // Idempotent: if the symlink already points at the right place, no-op.
+    if let Ok(cur) = std::fs::read_link(&dest) {
+        if cur == source {
+            return;
+        }
     }
+    let _ = std::fs::remove_file(&dest);
+    std::os::unix::fs::symlink(source, &dest)
+        .expect("symlink runner alongside test binary");
 }
 
 /// End-to-end: cold boot → suspend → resume through the Rust API the
