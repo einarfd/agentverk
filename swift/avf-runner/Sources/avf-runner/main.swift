@@ -254,7 +254,14 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     )
     vm.serialPorts = [serial]
 
-    vm.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+    // Intentionally NO entropy device: VZVirtioEntropyDeviceConfiguration
+    // is incompatible with `saveMachineStateTo` / `restoreMachineStateFrom`
+    // — leaving it in causes resume to fail with
+    // `VZErrorDomain Code=12 "permission denied"`. Documented by UTM
+    // and several other AVF wrappers. Linux pulls entropy from many
+    // other sources (interrupts, virtio activity, RDRAND on Apple
+    // Silicon's emulation layer), so removing virtio-rng is benign
+    // for our agent VMs.
 
     return BuiltVMConfig(configuration: vm, macAddress: mac)
 }
