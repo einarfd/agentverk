@@ -135,6 +135,25 @@ pub struct DestroyReport {
     pub destroyed: bool,
 }
 
+/// JSON shape returned by `agv backend migrate-to-avf --json`.
+///
+/// Stable over the 0.x minor series — additions OK, removals/renames
+/// need a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrateToAvfReport {
+    pub name: String,
+    /// Path to the new sparse raw disk under the instance dir.
+    pub raw_disk_path: String,
+    /// Size of the raw disk in bytes (the qcow2's virtual size, post-grow).
+    pub raw_disk_size_bytes: u64,
+    /// Path to the original qcow2. Whether it still exists depends on
+    /// `qcow2_disk_kept`.
+    pub qcow2_disk_path: String,
+    /// `true` when the qcow2 was preserved for one-step rollback;
+    /// `false` when `--delete-qcow2` was passed.
+    pub qcow2_disk_kept: bool,
+}
+
 /// Build a `VmStateReport` for an existing instance.
 ///
 /// `created` distinguishes "I just created this VM" (true) from
@@ -1125,6 +1144,151 @@ pub async fn rename(old: &str, new: &str) -> anyhow::Result<()> {
 
     info!(old, new, "VM renamed");
     Ok(())
+}
+
+/// Migrate a stopped VM from the QEMU backend to Apple Virtualization.
+///
+/// Pipeline:
+///   1. VM must be stopped (suspended/running rejected — the snapshot
+///      state captured by QEMU's savevm has a different format and
+///      can't be carried across; users should resume + stop first).
+///   2. Current backend must be `"qemu"`; flipping an already-AVF VM
+///      is rejected as a no-op error to surface user mistakes.
+///   3. Convert `disk.qcow2` → `disk.raw` via the same qcow2-rs
+///      converter the AVF cold-boot uses. Output sparseness is
+///      slightly less aggressive than `qemu-img convert` (see
+///      `src/qcow2.rs`) — acceptable for a one-time migration.
+///   4. Rewrite `<inst>/config.toml` with `backend = "avf"`.
+///   5. Optionally delete the source qcow2.
+///
+/// The MAC and machine-id sidecars get created on first AVF boot by
+/// the runner — no need to pre-generate them. The AVF EFI variable
+/// store is also created on first boot, so we leave the QEMU
+/// `efi-vars.fd` in place rather than convert (incompatible
+/// formats; the AVF backend reads its own
+/// `avf-efi-vars.bin` and ignores `efi-vars.fd`).
+///
+/// macOS-only. The function returns an error on Linux because the
+/// `avf` backend can't be selected there.
+pub async fn migrate_to_avf(
+    name: &str,
+    delete_qcow2: bool,
+) -> anyhow::Result<MigrateToAvfReport> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, delete_qcow2);
+        anyhow::bail!(
+            "`agv backend migrate-to-avf` is macOS-only — Apple Virtualization is not available on this platform"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let inst = Instance::open(name)?;
+        let status = inst.reconcile_status().await?;
+        anyhow::ensure!(
+            status == Status::Stopped,
+            Error::VmBadState {
+                name: name.to_string(),
+                status: status.to_string(),
+                expected: "stopped".to_string(),
+            }
+        );
+
+        let mut cfg = crate::config::load_resolved(&inst.config_path())?;
+        anyhow::ensure!(
+            cfg.backend != "avf",
+            "VM '{name}' is already on the AVF backend — nothing to migrate"
+        );
+
+        let qcow2 = inst.disk_path();
+        let raw = inst.avf_disk_path();
+        anyhow::ensure!(
+            qcow2.exists(),
+            "source disk {} doesn't exist — VM may be corrupted",
+            qcow2.display()
+        );
+        anyhow::ensure!(
+            !raw.exists(),
+            "destination raw disk {} already exists — refusing to overwrite",
+            raw.display()
+        );
+
+        info!(vm = name, "converting qcow2 → sparse raw");
+        crate::qcow2::convert_to_sparse_raw(&qcow2, &raw)
+            .await
+            .with_context(|| {
+                format!(
+                    "converting {} → {}",
+                    qcow2.display(),
+                    raw.display()
+                )
+            })?;
+
+        let raw_size = tokio::fs::metadata(&raw)
+            .await
+            .with_context(|| format!("stat {}", raw.display()))?
+            .len();
+
+        // Regenerate the cloud-init seed with a fresh instance-id.
+        // Without this, the QEMU-era cloud-init networking config
+        // sticks to the disk and the guest never brings up its NIC
+        // on the AVF NAT (different virtual hardware, no DHCP
+        // request → runner's status RPC never reports a guest_ip
+        // → `agv ssh` can't reach the migrated VM). Bumping the
+        // instance-id is the cloud-init-native way to say "treat
+        // this boot as a new instance and re-run init."
+        let pub_key_path = inst.ssh_pub_key_path();
+        let pub_key = tokio::fs::read_to_string(&pub_key_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "reading {} (needed to regenerate the cloud-init seed)",
+                    pub_key_path.display()
+                )
+            })?;
+        let migration_instance_id = format!("{}-avf-migrated", inst.name);
+        cloud_init::generate_seed_with_instance_id(
+            &inst.seed_path(),
+            pub_key.trim(),
+            &inst.name,
+            &migration_instance_id,
+            &cfg.user,
+        )
+        .await
+        .context("regenerating cloud-init seed for AVF migration")?;
+
+        // Flip the config to backend=avf. Reuse the existing
+        // config persistence path so the on-disk TOML is rewritten
+        // through the same code that handles any other field.
+        cfg.backend = "avf".to_string();
+        crate::config::save(&cfg, &inst.config_path())
+            .await
+            .with_context(|| format!("writing {}", inst.config_path().display()))?;
+
+        let kept = if delete_qcow2 {
+            tokio::fs::remove_file(&qcow2)
+                .await
+                .with_context(|| format!("removing {}", qcow2.display()))?;
+            false
+        } else {
+            true
+        };
+
+        info!(
+            vm = name,
+            kept_qcow2 = kept,
+            raw_size_bytes = raw_size,
+            "AVF migration complete"
+        );
+
+        Ok(MigrateToAvfReport {
+            name: name.to_string(),
+            raw_disk_path: raw.display().to_string(),
+            raw_disk_size_bytes: raw_size,
+            qcow2_disk_path: qcow2.display().to_string(),
+            qcow2_disk_kept: kept,
+        })
+    }
 }
 
 pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {

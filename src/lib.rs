@@ -56,7 +56,9 @@ pub mod template;
 #[doc(hidden)]
 pub mod vm;
 
-use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs};
+use cli::{
+    BackendCommand, CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs,
+};
 use specs::SpecSource;
 use images::ImageType;
 
@@ -1108,6 +1110,36 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init(args) => {
             init::run(args.template.as_deref(), &args.output, args.force)
         }
+        Command::Backend(args) => match args.command {
+            BackendCommand::MigrateToAvf(a) => {
+                let report = vm::migrate_to_avf(&a.name, a.delete_qcow2).await?;
+                if a.json {
+                    let json = serde_json::to_string_pretty(&report)
+                        .map_err(|e| anyhow::anyhow!("serializing migration report: {e}"))?;
+                    println!("{json}");
+                } else {
+                    println!(
+                        "  ✓ VM '{}' migrated to AVF backend.",
+                        a.name
+                    );
+                    println!("    disk:      {}", report.raw_disk_path);
+                    println!("    size:     {} bytes", report.raw_disk_size_bytes);
+                    if report.qcow2_disk_kept {
+                        println!(
+                            "    qcow2:    kept at {} — delete once AVF boot is verified",
+                            report.qcow2_disk_path,
+                        );
+                    } else {
+                        println!("    qcow2:    deleted ({})", report.qcow2_disk_path);
+                    }
+                    println!(
+                        "\n  Next: agv start {} to boot under Apple Virtualization.",
+                        a.name
+                    );
+                }
+                Ok(())
+            }
+        },
     }
 }
 
