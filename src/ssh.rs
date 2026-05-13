@@ -320,11 +320,23 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
 
     info!(vm = %instance.name, "waiting for SSH to become ready");
 
+    // Track the most recent observation so the timeout error can
+    // distinguish "guest never got an IP" from "guest had an IP but
+    // SSH kept refusing" — two very different problems with two
+    // very different fixes.
+    let mut last_endpoint: Option<(String, u16)> = None;
+    let mut last_endpoint_error: Option<String> = None;
+    let mut last_ssh_failure: Option<String> = None;
+
     for attempt in 1..=60 {
         let endpoint = backend.ssh_endpoint(instance).await;
         let (host, port) = match endpoint {
-            Ok(hp) => hp,
+            Ok(hp) => {
+                last_endpoint = Some(hp.clone());
+                hp
+            }
             Err(e) => {
+                last_endpoint_error = Some(format!("{e:#}"));
                 debug!(
                     vm = %instance.name,
                     attempt,
@@ -352,14 +364,27 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
             _ => {}
         }
 
-        if output.is_ok_and(|o| o.status.success()) {
-            let elapsed = start.elapsed();
-            info!(
-                vm = %instance.name,
-                elapsed_secs = elapsed.as_secs(),
-                "SSH ready after {attempt} attempt(s)"
-            );
-            return Ok(());
+        match output {
+            Ok(o) if o.status.success() => {
+                let elapsed = start.elapsed();
+                info!(
+                    vm = %instance.name,
+                    elapsed_secs = elapsed.as_secs(),
+                    "SSH ready after {attempt} attempt(s)"
+                );
+                return Ok(());
+            }
+            Ok(o) => {
+                // Capture stderr for the diagnostic; ssh emits
+                // useful clues here ("Connection refused", "Host
+                // key verification failed", "Permission denied",
+                // etc.).
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                last_ssh_failure = Some(stderr.trim().to_string());
+            }
+            Err(e) => {
+                last_ssh_failure = Some(format!("spawn error: {e}"));
+            }
         }
 
         debug!(
@@ -370,8 +395,33 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
+    let diagnostic = match (last_endpoint, last_ssh_failure, last_endpoint_error) {
+        (Some((host, port)), Some(err), _) => format!(
+            "  Last endpoint:  {host}:{port}\n  Last SSH error: {err}\n  \
+             VM is reachable on the network; sshd may still be coming up, the \
+             SSH key may have drifted, or the guest user may not be ready yet."
+        ),
+        (Some((host, port)), None, _) => format!(
+            "  Last endpoint:  {host}:{port}\n  No SSH error captured — the \
+             VM accepted no connection attempts. Check that sshd is running \
+             in the guest."
+        ),
+        (None, _, Some(err)) => format!(
+            "  No endpoint ever resolved.\n  Last error:     {err}\n  \
+             For AVF: the guest never got a DHCP lease the runner could \
+             see. Typical causes are stale cloud-init network state from a \
+             pre-migration QEMU boot (try `agv backend migrate-to-avf` \
+             again, which regenerates the seed with a fresh instance-id so \
+             cloud-init re-runs networking) or sshd never coming up at all."
+        ),
+        (None, _, None) => {
+            "  No endpoint ever resolved; no underlying error captured.".to_string()
+        }
+    };
+
     Err(Error::SshTimeout {
         name: instance.name.clone(),
+        diagnostic,
     }
     .into())
 }
