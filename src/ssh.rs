@@ -306,7 +306,14 @@ fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
 
 /// Wait for SSH to become available on a VM, polling until ready.
 ///
-/// Retries up to 60 times with 1-second intervals (60s total timeout).
+/// Retries up to 180 times with 1-second intervals (180s total).
+/// The window covers first-boot cloud-init runs on slow setups —
+/// AVF specifically needs more time than QEMU because its retry
+/// loop only effectively starts once the guest has DHCP (the
+/// runner can't report an `ssh_endpoint` before then). With a
+/// 60-second budget, a fresh AVF first boot could time out
+/// mid-cloud-init with sshd up but the agent user not yet
+/// created, giving a misleading "publickey" rejection.
 ///
 /// The backend's `ssh_endpoint` is re-resolved each iteration so the
 /// AVF backend can return "no guest IP yet" early in the boot — its
@@ -328,7 +335,7 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
     let mut last_endpoint_error: Option<String> = None;
     let mut last_ssh_failure: Option<String> = None;
 
-    for attempt in 1..=60 {
+    for attempt in 1..=180 {
         let endpoint = backend.ssh_endpoint(instance).await;
         let (host, port) = match endpoint {
             Ok(hp) => {
@@ -396,11 +403,21 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
     }
 
     let diagnostic = match (last_endpoint, last_ssh_failure, last_endpoint_error) {
-        (Some((host, port)), Some(err), _) => format!(
-            "  Last endpoint:  {host}:{port}\n  Last SSH error: {err}\n  \
-             VM is reachable on the network; sshd may still be coming up, the \
-             SSH key may have drifted, or the guest user may not be ready yet."
-        ),
+        (Some((host, port)), Some(err), _) => {
+            let publickey_hint = if err.contains("Permission denied (publickey)") {
+                "\n  This usually means cloud-init hadn't finished creating \
+                 the guest user / installing the SSH key by the timeout. Try \
+                 `agv start --retry <name>`."
+            } else {
+                ""
+            };
+            format!(
+                "  Last endpoint:  {host}:{port}\n  Last SSH error: {err}\n  \
+                 VM is reachable on the network; sshd may still be coming \
+                 up, the SSH key may have drifted, or the guest user may \
+                 not be ready yet.{publickey_hint}"
+            )
+        }
         (Some((host, port)), None, _) => format!(
             "  Last endpoint:  {host}:{port}\n  No SSH error captured — the \
              VM accepted no connection attempts. Check that sshd is running \
