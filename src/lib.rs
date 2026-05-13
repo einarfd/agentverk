@@ -633,6 +633,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             struct Row {
                 name: String,
                 status: String,
+                backend: String,
                 memory: String,
                 cpus: String,
                 disk: String,
@@ -709,11 +710,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 // Best-effort: show "?" if config can't be read, but leave
                 // a debug trace so `agv -v ls` surfaces the parse/IO error
                 // instead of silently hiding it behind "?".
-                let (memory, cpus, disk_max, labels_str) =
+                let (memory, cpus, disk_max, backend, labels_str) =
                     match config::load_resolved(&inst.config_path()) {
                         Ok(c) => {
                             let labels_str = format_labels_inline(&c.labels);
-                            (c.memory, c.cpus.to_string(), c.disk, labels_str)
+                            (c.memory, c.cpus.to_string(), c.disk, c.backend, labels_str)
                         }
                         Err(e) => {
                             tracing::debug!(
@@ -721,18 +722,35 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                 error = %format!("{e:#}"),
                                 "failed to read instance config for ls row"
                             );
-                            ("?".to_string(), "?".to_string(), "?".to_string(), String::new())
+                            (
+                                "?".to_string(),
+                                "?".to_string(),
+                                "?".to_string(),
+                                "?".to_string(),
+                                String::new(),
+                            )
                         }
                     };
-                // Actual on-disk size of the qcow2 file. qcow2 grows as the
-                // guest writes, so this is much more useful than the maximum.
-                let disk_used = tokio::fs::metadata(inst.disk_path())
+                // Actual on-disk size. QEMU keeps it in disk.qcow2;
+                // AVF in the sparse disk.raw. qcow2 grows as the
+                // guest writes; raw shows allocated blocks via
+                // st_blocks (Rust's metadata.len() returns the
+                // apparent size, which for a sparse raw is the
+                // virtual size and not very informative — close
+                // enough for ls).
+                let disk_path = if backend == "avf" {
+                    inst.avf_disk_path()
+                } else {
+                    inst.disk_path()
+                };
+                let disk_used = tokio::fs::metadata(&disk_path)
                     .await
                     .map_or_else(|_| "?".to_string(), |m| format_size(m.len()));
                 let disk = format!("{disk_used}/{disk_max}");
                 rows.push(Row {
                     name: inst.name.clone(),
                     status,
+                    backend,
                     memory,
                     cpus,
                     disk,
@@ -745,16 +763,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let mem_w = rows.iter().map(|r| r.memory.len()).max().unwrap_or(0);
             let cpus_w = rows.iter().map(|r| r.cpus.len()).max().unwrap_or(0);
             let disk_w = rows.iter().map(|r| r.disk.len()).max().unwrap_or(0);
+            // Show the backend column only when there's something
+            // interesting to surface — at least one non-qemu VM
+            // (today: AVF on macOS). Keeps the output uncluttered
+            // for the all-QEMU case, which is most users.
+            let show_backend = rows.iter().any(|r| r.backend != "qemu");
+            let backend_w = if show_backend {
+                rows.iter().map(|r| r.backend.len()).max().unwrap_or(0)
+            } else {
+                0
+            };
             for r in &rows {
+                let backend_col = if show_backend {
+                    format!("  {:<backend_w$}", r.backend)
+                } else {
+                    String::new()
+                };
                 if args.labels {
                     println!(
-                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk  {labels}",
+                        "  {:<name_w$}  {:<status_w$}{backend_col}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk  {labels}",
                         r.name, r.status, r.memory, r.cpus, r.disk,
                         labels = r.labels,
                     );
                 } else {
                     println!(
-                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
+                        "  {:<name_w$}  {:<status_w$}{backend_col}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
                         r.name, r.status, r.memory, r.cpus, r.disk,
                     );
                 }
