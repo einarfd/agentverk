@@ -115,21 +115,17 @@ async fn destroy(data_dir: &Path, name: &str) {
         .await;
 }
 
-/// AVF lifecycle smoke test through `agv create --backend avf`:
+/// Full AVF lifecycle end-to-end through `agv create --backend avf`:
 /// downloads Debian 12, converts qcow2→raw, boots under AVF,
-/// SSHes in, suspends, then destroys. Resume is covered by
-/// `cold_boot_suspend_resume_round_trip` in `tests/avf_backend_test.rs`
-/// against the same in-process backend API — we exclude it here
-/// because AVF's `restoreMachineStateFrom` is load-sensitive
-/// (Code=12 "permission denied" under high host load) and we'd
-/// rather scope this end-to-end test to what's reliably passing.
+/// SSHes in, suspends, resumes, asserts SSH still works on the
+/// restored VM, then destroys.
 ///
 /// Reuses `AGV_DATA_DIR/cache/images/` if the Debian raw is already
 /// cached from a prior run, so subsequent runs skip the download.
 #[tokio::test]
 #[ignore = "boots a real AVF VM end-to-end through the agv CLI — slow, ~60s"]
 #[serial]
-async fn agv_create_start_suspend_destroy() {
+async fn agv_create_start_suspend_resume_destroy() {
     let Some(runner) = runner_binary() else {
         eprintln!(
             "agv-avf-runner not built — skipping agv_create_start_suspend_resume_destroy (run: just build-avf-runner)"
@@ -288,6 +284,52 @@ backend = "avf"
     assert!(
         inst_dir.join("avf-snapshot.bin").exists(),
         "snapshot file should land at <inst>/avf-snapshot.bin",
+    );
+
+    // --- resume ---
+    let resume_output = agv(data_dir.path())
+        .args(["resume", name])
+        .output()
+        .await
+        .unwrap();
+    if !resume_output.status.success() {
+        let runner_log = std::fs::read_to_string(inst_dir.join("avf-runner.log"))
+            .unwrap_or_default();
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv resume failed: {}\n--- runner log ---\n{runner_log}\nstdout: {}",
+            String::from_utf8_lossy(&resume_output.stderr),
+            String::from_utf8_lossy(&resume_output.stdout),
+        );
+    }
+    let resumed = inspect(data_dir.path(), name).await;
+    assert_eq!(
+        resumed["status"], "running",
+        "VM status should be 'running' after agv resume"
+    );
+    assert!(
+        !inst_dir.join("avf-snapshot.bin").exists(),
+        "snapshot file should be cleaned up after successful resume",
+    );
+
+    // SSH must still work on the resumed VM — the whole point of
+    // resume is that the guest comes back from where it left off.
+    let ssh_after_resume = agv(data_dir.path())
+        .args(["ssh", name, "--", "whoami"])
+        .output()
+        .await
+        .unwrap();
+    if !ssh_after_resume.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv ssh after resume failed: {}",
+            String::from_utf8_lossy(&ssh_after_resume.stderr),
+        );
+    }
+    let who2 = String::from_utf8_lossy(&ssh_after_resume.stdout);
+    assert!(
+        who2.trim() == "agent",
+        "SSH after resume should run as 'agent', got: {who2:?}"
     );
 
     destroy(data_dir.path(), name).await;
