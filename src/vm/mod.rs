@@ -772,26 +772,28 @@ pub async fn start(
         );
     }
 
-    // Handle --retry: VM must be broken with non-complete provision state.
+    // Handle --retry: VM must be broken. Provisioning can be in any
+    // state — `--retry` either resumes provisioning (if incomplete)
+    // or just re-attempts the boot/SSH wait (if complete). The
+    // latter is the right escape hatch when a VM ends up broken
+    // for reasons unrelated to provisioning — e.g. an AVF cold
+    // boot after migration where wait_for_ssh timed out but the
+    // disk is fully provisioned from its QEMU life.
     if retry {
         if status != Status::Broken {
             anyhow::bail!(
                 "--retry requires VM '{name}' to be in broken state (currently {status})"
             );
         }
-        let state = inst.read_provision_state().await;
-        if state.is_complete() {
-            anyhow::bail!(
-                "VM '{name}' has no failed provisioning to retry — provisioning already completed"
-            );
-        }
     } else {
-        // Normal start: VM must be stopped, OR broken with QEMU still running
-        // (in which case we tell the user to use --retry).
+        // Normal start: VM must be stopped, OR broken with the VM process
+        // still running (in which case we tell the user to use --retry).
         if status == Status::Broken {
             anyhow::bail!(
-                "VM '{name}' is broken. Use 'agv start --retry {name}' to resume \
-                 provisioning, or 'agv destroy {name}' to start over."
+                "VM '{name}' is broken. Use 'agv start --retry {name}' to \
+                 retry (resumes provisioning if incomplete, or retries the \
+                 boot if it is complete), or 'agv destroy {name}' to start \
+                 over."
             );
         }
         anyhow::ensure!(
