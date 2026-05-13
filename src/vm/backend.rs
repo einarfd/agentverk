@@ -343,15 +343,16 @@ impl VmBackend for LocalAvfBackend {
         // Wait for the runner to bind its control socket. If it fails
         // before that (bad config, validate() error, missing
         // entitlement) the process exits and we surface the runner's
-        // log file in the error.
+        // log content inline so the user doesn't have to go digging
+        // through the instance dir to find out what went wrong.
         match wait_for_avf_socket(inst, pid, Duration::from_secs(10)).await {
             Ok(()) => {}
             Err(e) => {
                 avf_kill_runner(pid);
                 let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
-                return Err(e.context(format!(
-                    "agv-avf-runner failed to start; see {} for details",
-                    log_path.display()
+                return Err(e.context(runner_failure_message(
+                    "agv-avf-runner failed to start",
+                    &log_path,
                 )));
             }
         }
@@ -365,9 +366,9 @@ impl VmBackend for LocalAvfBackend {
             Err(e) => {
                 avf_kill_runner(pid);
                 let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
-                return Err(e.context(format!(
-                    "agv-avf-runner did not reach running state; see {} for details",
-                    log_path.display()
+                return Err(e.context(runner_failure_message(
+                    "agv-avf-runner did not reach running state",
+                    &log_path,
                 )));
             }
         }
@@ -555,7 +556,7 @@ struct AvfRunnerConfig {
 /// Errors with a clear message if neither exists; the user-facing
 /// fix is "run `just build-avf-runner`" or reinstall.
 #[cfg(target_os = "macos")]
-fn locate_avf_runner() -> anyhow::Result<PathBuf> {
+pub fn locate_avf_runner() -> anyhow::Result<PathBuf> {
     locate_avf_runner_with(
         std::env::var("AGV_AVF_RUNNER").ok(),
         std::env::current_exe().context("locating current agv binary")?,
@@ -602,6 +603,49 @@ fn locate_avf_runner_with(
 fn parse_memory(spec: &str) -> anyhow::Result<u64> {
     crate::image::parse_disk_size(spec)
         .with_context(|| format!("parsing memory spec {spec:?}"))
+}
+
+/// Format a runner-failure message that includes the log content
+/// inline if present. The runner is detached and its stderr/stdout
+/// go to `<inst>/avf-runner.log`; tail of that file is what the
+/// user actually needs to debug a startup failure (codesign
+/// rejection, validate() errors, etc.). Read synchronously — we're
+/// already on the error path and the log is small (a few KB at
+/// most). On empty/missing log, fall back to just the file path so
+/// the user can investigate manually (typical when the runner was
+/// SIGKILL'd by AppleSystemPolicy before producing any output).
+#[cfg(target_os = "macos")]
+fn runner_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
+    let log = std::fs::read_to_string(log_path).unwrap_or_default();
+    let log_trimmed = log.trim();
+    if log_trimmed.is_empty() {
+        format!(
+            "{prefix} — runner produced no output. \
+             Check {} (empty here, but worth a look in case the kernel \
+             SIGKILL'd the runner for a codesign/provenance issue: \
+             `log show --predicate 'eventMessage CONTAINS \"agv-avf-runner\"' --last 5m`)",
+            log_path.display(),
+        )
+    } else {
+        // Cap at ~2 KiB so we don't dump megabytes if something
+        // went terribly wrong. The relevant Swift error is always
+        // a single line near the end.
+        let tail = if log_trimmed.len() > 2048 {
+            let start = log_trimmed.len() - 2048;
+            // Don't cut a UTF-8 sequence mid-byte.
+            let safe_start = log_trimmed
+                .char_indices()
+                .find(|(i, _)| *i >= start)
+                .map_or(log_trimmed.len(), |(i, _)| i);
+            format!("...{}", &log_trimmed[safe_start..])
+        } else {
+            log_trimmed.to_string()
+        };
+        format!(
+            "{prefix} (see {} for full log):\n  {tail}",
+            log_path.display(),
+        )
+    }
 }
 
 /// Read the recorded runner PID, if any. Returns `None` when the

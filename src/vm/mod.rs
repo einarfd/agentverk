@@ -291,6 +291,17 @@ async fn update_ssh_config(inst: &Instance, user: &str) {
 }
 
 /// Print a completed-step line above the spinner, keeping previous output visible.
+/// Human label for a backend, for user-facing spinner / log messages.
+/// Matches the value of `backend = "..."` in `agv.toml`.
+fn backend_label(cfg: &ResolvedConfig) -> &'static str {
+    match cfg.backend.as_str() {
+        "avf" => "Apple Virtualization",
+        // Default + qemu both render as "QEMU"; an unknown value
+        // shouldn't get this far (config validation catches it).
+        _ => "QEMU",
+    }
+}
+
 pub(super) fn step_done(spinner: &ProgressBar, msg: &str) {
     spinner.println(format!("  ✓ {msg}"));
 }
@@ -587,19 +598,20 @@ async fn create_inner(
     // start; no-op once the value is recorded in the instance config).
     let machine_type = ensure_machine_type(inst, &mut config).await?;
 
-    // Start QEMU.
+    // Start the VM under the configured backend.
+    let label = backend_label(&config);
     spinner.set_message(format!(
-        "Starting QEMU ({} RAM, {} vCPUs)...",
+        "Starting {label} ({} RAM, {} vCPUs)...",
         config.memory, config.cpus
     ));
-    info!(name, memory = %config.memory, cpus = config.cpus, "starting QEMU");
+    info!(name, memory = %config.memory, cpus = config.cpus, backend = %config.backend, "starting VM");
     backend::for_config(&config)
         .start(inst, &config, &machine_type, None)
         .await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,
-        &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
+        &format!("Started {label} ({} RAM, {} vCPUs)", config.memory, config.cpus),
     );
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
@@ -797,14 +809,15 @@ pub async fn start(
     let spinner = status_spinner(verbose, quiet);
 
     // Start QEMU only if it's not already running (a broken VM may still
-    // have QEMU alive — the user wants to retry, not restart from scratch).
-    let qemu_already_running = retry && inst.is_process_alive().await;
-    if qemu_already_running {
-        step_done(&spinner, "QEMU already running — retrying provisioning");
+    // have the VM process alive — the user wants to retry, not restart from scratch).
+    let label = backend_label(&config);
+    let already_running = retry && inst.is_process_alive().await;
+    if already_running {
+        step_done(&spinner, &format!("{label} already running — retrying provisioning"));
     } else {
         let machine_type = ensure_machine_type(&inst, &mut config).await?;
         spinner.set_message(format!(
-            "Starting QEMU ({} RAM, {} vCPUs)...",
+            "Starting {label} ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
         backend::for_config(&config)
@@ -812,7 +825,7 @@ pub async fn start(
             .await?;
         step_done(
             &spinner,
-            &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
+            &format!("Started {label} ({} RAM, {} vCPUs)", config.memory, config.cpus),
         );
     }
     inst.write_status(Status::Running).await?;
@@ -869,11 +882,15 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
         "Hardware", config.memory, config.cpus, config.disk
     );
     println!("  {:<w$}  {}", "User", config.user);
+    println!("  {:<w$}  {}", "Backend", backend_label(&config));
 
     // SSH connection info — meaningful when running, or broken-but-SSH-came-up.
+    // Only QEMU writes an ssh_port file (host-side port forward);
+    // AVF VMs reach the guest via its NAT IP, surfaced as the
+    // backend's `ssh_endpoint` rather than a fixed port.
     let ssh_might_work = status == Status::Running
         || (status == Status::Broken && provision_state.phase != Phase::SshWait);
-    if ssh_might_work {
+    if ssh_might_work && config.backend != "avf" {
         let port_raw = tokio::fs::read_to_string(inst.ssh_port_path())
             .await
             .unwrap_or_default();
@@ -1045,7 +1062,8 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resume a suspended VM by starting QEMU with the saved snapshot.
+/// Resume a suspended VM by restarting the VM process with the
+/// saved snapshot.
 pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
@@ -1200,6 +1218,26 @@ pub async fn migrate_to_avf(
             "VM '{name}' is already on the AVF backend — nothing to migrate"
         );
 
+        // Fail-fast: confirm the AVF runner binary is locatable
+        // BEFORE we do anything destructive. Without this, a user
+        // who hasn't installed agv-avf-runner alongside agv (e.g.
+        // a dev `cargo install` without the runner) would get
+        // through conversion + config flip and only see the
+        // problem on `agv start`, by which point rollback means
+        // re-running the converter or manually flipping the
+        // config back.
+        let _runner = backend::locate_avf_runner().with_context(|| {
+            format!(
+                "cannot migrate '{name}' to AVF — the agv-avf-runner binary isn't \
+                 findable. Run `just build-avf-runner` and either set \
+                 AGV_AVF_RUNNER, or install agv-avf-runner alongside agv \
+                 (`{}`)",
+                std::env::current_exe()
+                    .map(|p| p.parent().map(|p| p.display().to_string()).unwrap_or_default())
+                    .unwrap_or_default(),
+            )
+        })?;
+
         let qcow2 = inst.disk_path();
         let raw = inst.avf_disk_path();
         anyhow::ensure!(
@@ -1214,15 +1252,23 @@ pub async fn migrate_to_avf(
         );
 
         info!(vm = name, "converting qcow2 → sparse raw");
-        crate::qcow2::convert_to_sparse_raw(&qcow2, &raw)
-            .await
-            .with_context(|| {
-                format!(
-                    "converting {} → {}",
-                    qcow2.display(),
-                    raw.display()
-                )
-            })?;
+        // Long-running step on multi-GiB disks (typically 5–30s for
+        // a 10G image). Render a spinner so the user knows the
+        // command isn't hung — the underlying converter doesn't
+        // expose progress so we can only show "still working."
+        let spinner = status_spinner(false, false);
+        spinner.set_message(format!(
+            "Converting disk image (qcow2 → raw) — {}",
+            qcow2.display()
+        ));
+        let result = crate::qcow2::convert_to_sparse_raw(&qcow2, &raw).await;
+        if let Err(e) = result {
+            spinner.finish_and_clear();
+            return Err(e).with_context(|| {
+                format!("converting {} → {}", qcow2.display(), raw.display())
+            });
+        }
+        step_done(&spinner, "Converted disk image to sparse raw");
 
         let raw_size = tokio::fs::metadata(&raw)
             .await
