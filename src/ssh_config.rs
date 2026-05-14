@@ -31,11 +31,21 @@ fn user_ssh_config_path() -> anyhow::Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Format a Host entry for a VM.
-fn format_host_entry(name: &str, port: u16, user: &str, key_path: &Path) -> String {
+///
+/// `host` is the value SSH should connect to — for QEMU VMs that's
+/// `"localhost"` (the port forward is on the host's loopback); for AVF
+/// VMs it's the guest's DHCP-assigned IP on the AVF bridge.
+fn format_host_entry(
+    name: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    key_path: &Path,
+) -> String {
     let key_str = key_path.display();
     format!(
         "Host {name}\n\
-         \x20   HostName localhost\n\
+         \x20   HostName {host}\n\
          \x20   Port {port}\n\
          \x20   User {user}\n\
          \x20   IdentityFile \"{key_str}\"\n\
@@ -61,10 +71,19 @@ fn lock_path() -> anyhow::Result<PathBuf> {
 
 /// Add or update a Host entry for a VM in the managed SSH config.
 ///
+/// `host` is the SSH connection target — `"localhost"` for QEMU VMs
+/// (port-forwarded loopback) or the guest's DHCP IP for AVF VMs.
+///
 /// Holds an exclusive cross-process file lock for the read-modify-write
 /// so two concurrent `agv start` calls (different VMs) can't clobber
 /// each other's Host entries.
-pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> anyhow::Result<()> {
+pub async fn add_entry(
+    name: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    key_path: &Path,
+) -> anyhow::Result<()> {
     let _guard = crate::locks::acquire_exclusive(lock_path()?).await?;
     let config_path = managed_config_path()?;
     let mut content = read_or_empty(&config_path).await;
@@ -72,7 +91,7 @@ pub async fn add_entry(name: &str, port: u16, user: &str, key_path: &Path) -> an
     // Remove existing entry for this name, if any.
     content = remove_host_block(&content, name);
 
-    let entry = format_host_entry(name, port, user, key_path);
+    let entry = format_host_entry(name, host, port, user, key_path);
 
     content.push_str(&entry);
 
@@ -301,6 +320,7 @@ Host foo
     fn host_entry_quotes_identity_file() {
         let entry = format_host_entry(
             "myvm",
+            "localhost",
             2222,
             "agent",
             Path::new("/path/with spaces/id_ed25519"),
@@ -312,14 +332,36 @@ Host foo
     }
 
     #[test]
-    fn host_entry_contains_all_fields() {
-        let entry = format_host_entry("myvm", 2222, "agent", Path::new("/key"));
+    fn host_entry_contains_all_fields_qemu() {
+        let entry = format_host_entry("myvm", "localhost", 2222, "agent", Path::new("/key"));
         assert!(entry.contains("Host myvm"));
         assert!(entry.contains("HostName localhost"));
         assert!(entry.contains("Port 2222"));
         assert!(entry.contains("User agent"));
         assert!(entry.contains("IdentityFile \"/key\""));
         assert!(entry.contains("StrictHostKeyChecking no"));
+    }
+
+    /// AVF backend: HostName must be the guest's NAT IP (port 22),
+    /// not the QEMU `localhost`+`hostport` shape. A stale entry from
+    /// before the AVF backend existed would render this as
+    /// `HostName localhost / Port 22` and `ssh <name>` would try to
+    /// connect to the host's own port 22 — exactly the wrong target.
+    #[test]
+    fn host_entry_uses_guest_ip_for_avf() {
+        let entry = format_host_entry(
+            "avf-vm",
+            "192.168.205.42",
+            22,
+            "agent",
+            Path::new("/key"),
+        );
+        assert!(entry.contains("HostName 192.168.205.42"));
+        assert!(entry.contains("Port 22"));
+        assert!(
+            !entry.contains("HostName localhost"),
+            "AVF entry must not write `HostName localhost`: {entry}"
+        );
     }
 
     #[test]

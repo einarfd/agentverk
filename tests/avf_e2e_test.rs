@@ -263,6 +263,28 @@ backend = "avf"
         "SSH should run as 'agent', got: {who:?}"
     );
 
+    // --- managed ssh_config entry must use guest IP, not localhost ---
+    // Regression: `update_ssh_config` previously read `ssh_port_path()`
+    // (QEMU-only) and silently skipped AVF VMs, so a fresh `ssh <name>`
+    // from the host's shell would either fail with "no such host" or
+    // try to connect to whatever was on the host's own port 22.
+    let managed = std::fs::read_to_string(data_dir.path().join("ssh_config"))
+        .expect("managed ssh_config should exist after a successful start");
+    assert!(
+        managed.contains(&format!("Host {name}")),
+        "managed ssh_config should have a Host block for {name}; got:\n{managed}"
+    );
+    assert!(
+        !managed.contains("HostName localhost"),
+        "AVF entry must not write `HostName localhost` (that's the QEMU-port-forward shape); got:\n{managed}"
+    );
+    // AVF VMs always SSH to port 22 on the guest — the QEMU `-hostfwd`
+    // port allocation doesn't apply.
+    assert!(
+        managed.contains("Port 22"),
+        "managed ssh_config for an AVF VM should target the guest's port 22; got:\n{managed}"
+    );
+
     // --- suspend ---
     let suspend_output = agv(data_dir.path())
         .args(["suspend", name])

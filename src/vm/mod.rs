@@ -276,16 +276,30 @@ pub(super) fn status_spinner(verbose: bool, quiet: bool) -> ProgressBar {
 
 /// Update the managed SSH config with this VM's connection details.
 ///
+/// Resolves the SSH endpoint through the backend trait so the entry is
+/// correct for both QEMU (loopback + hostport) and AVF (guest NAT IP +
+/// port 22). Called after `wait_for_ssh` succeeds, so the AVF runner
+/// has a DHCP-assigned guest IP to report.
+///
 /// Best-effort — failures are logged but do not abort the operation.
 async fn update_ssh_config(inst: &Instance, user: &str) {
-    let port = match tokio::fs::read_to_string(inst.ssh_port_path()).await {
-        Ok(raw) => match raw.trim().parse::<u16>() {
-            Ok(p) => p,
-            Err(_) => return,
-        },
-        Err(_) => return,
+    let backend = match backend::for_instance(inst) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(vm = %inst.name, error = %format!("{e:#}"), "could not resolve backend for SSH config update");
+            return;
+        }
     };
-    if let Err(e) = ssh_config::add_entry(&inst.name, port, user, &inst.ssh_key_path()).await {
+    let (host, port) = match backend.ssh_endpoint(inst).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(vm = %inst.name, error = %format!("{e:#}"), "could not resolve SSH endpoint for managed SSH config");
+            return;
+        }
+    };
+    if let Err(e) =
+        ssh_config::add_entry(&inst.name, &host, port, user, &inst.ssh_key_path()).await
+    {
         warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to update managed SSH config");
     }
 }
