@@ -1348,17 +1348,21 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
             force,
             "VM '{name}' is running — stop it first, or pass --force to destroy it anyway"
         );
-        idle_watcher::stop(&inst).await;
-        forwarding::stop_all_for_instance(&inst).await;
+    }
+
+    idle_watcher::stop(&inst).await;
+    forwarding::stop_all_for_instance(&inst).await;
+
+    // A "broken" VM deliberately keeps its host process alive so the user
+    // can SSH in to debug, and for AVF the runner is `mem::forget`'d so it
+    // survives the parent that spawned it. Either way: if anything's still
+    // running, kill it before we nuke the instance dir, otherwise we
+    // orphan the process (especially painful for AVF — the runner holds
+    // the VZ VM open and there's no pid file left to find it from).
+    if inst.is_process_alive().await {
         if let Ok(backend) = backend::for_instance(&inst) {
             let _ = backend.force_stop(&inst).await;
         }
-    } else {
-        // Even on a stopped/broken VM, sweep any stale supervisors that
-        // a previous run might have left in forwards.toml or the watcher
-        // pid file.
-        idle_watcher::stop(&inst).await;
-        forwarding::stop_all_for_instance(&inst).await;
     }
 
     let _ = ssh_config::remove_entry(name).await;
