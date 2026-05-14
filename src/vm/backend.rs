@@ -211,18 +211,36 @@ impl VmBackend for LocalAvfBackend {
         {
             return Ok(());
         }
-        crate::qcow2::convert_to_sparse_raw(base_image, &dest)
+
+        // Cache the qcow2 → raw conversion in the image cache so
+        // subsequent AVF VMs from the same base skip the multi-
+        // second decode. The cached raw lives at
+        // `<base>.qcow2.raw`; `clone_to` (cp -c, i.e. clonefile(2))
+        // gives us a per-instance disk that shares APFS extents
+        // with the cache copy-on-write — zero bytes copied,
+        // independent file handles, and either side can be deleted
+        // without affecting the other.
+        let cached_raw = crate::raw_cache::ensure_cached_raw(base_image)
+            .await
+            .with_context(|| {
+                format!("populating raw cache for {}", base_image.display())
+            })?;
+        crate::raw_cache::clone_to(&cached_raw, &dest)
             .await
             .with_context(|| {
                 format!(
-                    "converting {} → {}",
-                    base_image.display(),
+                    "cloning {} → {}",
+                    cached_raw.display(),
                     dest.display()
                 )
             })?;
-        // qcow2-rs preserves the qcow2's virtual size (e.g. 3 GiB
-        // for stock cloud images); grow to the user-spec'd size so
-        // the guest's growpart/resize2fs can take advantage of it.
+
+        // The cached raw matches the qcow2's virtual size (e.g. 3
+        // GiB for stock cloud images); grow the clone to the
+        // user-spec'd size so the guest's growpart/resize2fs can
+        // take advantage of it. The extension is sparse — no bytes
+        // written, and the COW relationship with the cache is
+        // unaffected.
         let f = tokio::fs::OpenOptions::new()
             .write(true)
             .open(&dest)

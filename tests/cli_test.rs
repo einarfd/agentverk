@@ -288,6 +288,85 @@ fn destroy_with_label_against_no_matches_succeeds() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// `agv cache clean` must keep both halves of an AVF base's cache
+/// pair: the qcow2 source AND the `<qcow2>.raw` it converts to.
+/// Pruning the raw out from under a referenced base would force the
+/// next AVF create to redo a multi-second conversion — exactly what
+/// the cache is there to avoid.
+///
+/// Conversely, orphan raws (no qcow2 still referenced) must get
+/// swept, otherwise an old base whose VMs have all been destroyed
+/// keeps its derivative around forever.
+///
+/// Doesn't need to actually convert anything — just plants the
+/// expected filenames and asserts the prune logic treats the pair
+/// correctly.
+#[test]
+fn cache_clean_keeps_raw_alongside_referenced_qcow2() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Stand up a fake instance whose config.toml references a base
+    // URL. `referenced_cache_files` reads this to decide what to keep.
+    let inst_dir = tmp.path().join("instances").join("_test-vm");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    let cfg = r#"
+base_url = "https://example.invalid/base.qcow2"
+base_checksum = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+skip_checksum = true
+memory = "1G"
+cpus = 1
+disk = "10G"
+user = "agent"
+os_family = "debian"
+files = []
+forwards = []
+backend = "avf"
+"#;
+    std::fs::write(inst_dir.join("config.toml"), cfg).unwrap();
+    std::fs::write(inst_dir.join("status"), "stopped").unwrap();
+
+    // Plant fixture cache files: the referenced pair + an orphan
+    // pair (no instance references it).
+    let cache = tmp.path().join("cache").join("images");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("base.qcow2"), b"qcow2-bytes").unwrap();
+    std::fs::write(cache.join("base.qcow2.raw"), b"raw-bytes").unwrap();
+    std::fs::write(cache.join("orphan.qcow2"), b"orphan-qcow2").unwrap();
+    std::fs::write(cache.join("orphan.qcow2.raw"), b"orphan-raw").unwrap();
+
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["cache", "clean"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cache clean failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Referenced pair survives.
+    assert!(
+        cache.join("base.qcow2").exists(),
+        "referenced qcow2 must be kept",
+    );
+    assert!(
+        cache.join("base.qcow2.raw").exists(),
+        "the .raw sibling of a referenced qcow2 must also be kept — \
+         otherwise the next AVF create has to redo the conversion",
+    );
+
+    // Orphan pair gets pruned.
+    assert!(
+        !cache.join("orphan.qcow2").exists(),
+        "orphan qcow2 should be pruned",
+    );
+    assert!(
+        !cache.join("orphan.qcow2.raw").exists(),
+        "orphan raw should be pruned",
+    );
+}
+
 /// `agv backend cleanup --help` must parse — regression guard so a
 /// future refactor that drops the subcommand gets caught by clap's
 /// exit-2 usage error instead of slipping through.

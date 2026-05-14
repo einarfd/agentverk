@@ -43,6 +43,9 @@ pub mod manual_steps;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub mod qcow2;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod raw_cache;
 #[doc(hidden)]
 pub mod resources;
 #[doc(hidden)]
