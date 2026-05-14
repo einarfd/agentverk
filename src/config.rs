@@ -553,8 +553,33 @@ fn default_idle_load_threshold() -> f32 {
 }
 
 /// Default for [`ResolvedConfig::backend`].
+///
+/// macOS on Apple Silicon defaults to `"avf"` — Apple Virtualization
+/// is purpose-built for this host shape, boots faster than QEMU, has
+/// better passthrough, and is what most macOS users want by default.
+/// Everywhere else (Linux, Intel macOS, anything we haven't shipped
+/// an AVF runner for) the default stays `"qemu"`.
+///
+/// Intel macOS could in principle use AVF too, but the cloud images
+/// we ship are arm64 and we don't currently bundle the runner for
+/// x86_64 Mac builds — defaulting them to AVF would just produce a
+/// boot failure. They land on QEMU and `--backend avf` still
+/// validates if anyone has bootstrapped it themselves.
+///
+/// Existing instances are unaffected: their saved
+/// `<inst>/config.toml` records whichever backend they were created
+/// under, and `agv start` reads from there. The default only
+/// influences new VMs created without `--backend` or a TOML
+/// `backend = "..."` entry.
 fn default_backend() -> String {
-    "qemu".to_string()
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "avf".to_string()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        "qemu".to_string()
+    }
 }
 
 /// Validate that `backend` is one of the values agv knows how to
@@ -1376,6 +1401,26 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host-wide backend default flips by platform:
+    ///   * macOS Apple Silicon → `"avf"`
+    ///   * everything else      → `"qemu"`
+    ///
+    /// Pin both sides so a future refactor of `default_backend` can't
+    /// silently flip non-aarch64 macOS (which doesn't have an AVF
+    /// runner build and would fail to boot) or roll back the
+    /// macOS-aarch64 case to `"qemu"` (regressing user-facing perf).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn default_backend_is_avf_on_macos_apple_silicon() {
+        assert_eq!(default_backend(), "avf");
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn default_backend_is_qemu_off_macos_apple_silicon() {
+        assert_eq!(default_backend(), "qemu");
+    }
 
     #[test]
     fn parse_labels_basic_kv_pairs() {

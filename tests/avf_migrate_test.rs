@@ -151,7 +151,11 @@ async fn migrate_qemu_vm_to_avf_backend() {
     let name = format!("avf-mig-{suffix}");
     let name = name.as_str();
 
-    // Cold-boot on the QEMU backend (the default — no `backend = ...`).
+    // Cold-boot on the QEMU backend. Pinned explicitly because the
+    // host-wide default flipped to `"avf"` on macOS Apple Silicon
+    // (see `config::default_backend`) — this test specifically wants
+    // a QEMU VM to migrate FROM, so omitting the field would now
+    // give us an AVF VM and break the migration premise.
     let qemu_config = r#"
 [base]
 from = "debian-12"
@@ -160,6 +164,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "3G"
+backend = "qemu"
 "#;
     let toml_path = write_config(host_tmp.path(), qemu_config).await;
 

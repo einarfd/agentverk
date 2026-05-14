@@ -217,11 +217,18 @@ async fn create_without_start() {
 
     let name = "_test-create-nostrt";
 
+    // Pinned `--backend qemu`: this test asserts the QEMU file
+    // layout (`disk.qcow2`, no `pid` / `ssh_port`). The default
+    // backend on macOS Apple Silicon flipped to `"avf"`, which
+    // produces `disk.raw` and `avf-runner.pid` instead; without
+    // the pin, the qcow2 assertion below would fail on those hosts.
     let output = agv(data_dir.path())
         .args([
             "create",
             "--json",
             "--no-checksum",
+            "--backend",
+            "qemu",
             "--config",
             toml_path.to_str().unwrap(),
             name,
@@ -443,10 +450,17 @@ async fn backend_cleanup_removes_residual_qcow2_after_flip() {
     let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
 
     let name = "_test-cleanup-flip";
+    // Pinned `--backend qemu` so the test still creates a QEMU
+    // instance under hosts where the default flipped to `"avf"`
+    // (macOS Apple Silicon). The whole point of this test is "QEMU
+    // VM gets migrated to AVF, residue gets cleaned" — needs the
+    // starting state to be QEMU regardless of host default.
     let create_output = agv(data_dir.path())
         .args([
             "create",
             "--no-checksum",
+            "--backend",
+            "qemu",
             "--config",
             toml_path.to_str().unwrap(),
             name,
@@ -575,10 +589,22 @@ async fn destroy_kills_live_process_for_broken_vm() {
 
     let name = "_test-destroy-broken";
 
+    // Pinned `--backend qemu`: this test writes a fake QEMU pid
+    // file at `<inst>/pid` and relies on destroy's force_stop path
+    // matching that location. On the AVF backend the runner pid
+    // lives at `<inst>/avf-runner.pid` instead, and the AVF
+    // `force_stop` would look there — so the planted QEMU pid
+    // wouldn't get killed and the assertion at the bottom would
+    // fire even on a healthy host. The fix under test (destroy
+    // killing a live process on a broken VM regardless of recorded
+    // status) is backend-agnostic; we pick QEMU here purely to
+    // keep the file layout matching the planted state.
     let output = agv(data_dir.path())
         .args([
             "create",
             "--no-checksum",
+            "--backend",
+            "qemu",
             "--config",
             toml_path.to_str().unwrap(),
             name,
