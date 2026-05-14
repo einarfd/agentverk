@@ -112,6 +112,26 @@ idle_load_threshold  = 0.2  # optional; default 0.2
 A long-running tmux agent will keep the VM up via the load signal even if no SSH
 session is currently attached. Resume with `agv resume <name>`.
 
+### `backend`
+
+Hypervisor this VM runs under.
+
+```toml
+[vm]
+backend = "avf"   # "qemu" (default off Apple Silicon) or "avf"
+```
+
+CLI equivalent: `agv create --backend avf <name>`.
+
+| Value | Description |
+|---|---|
+| `qemu` | QEMU process. Cross-platform (macOS, Linux x86_64, Linux aarch64). Default everywhere except macOS on Apple Silicon. |
+| `avf` | Apple Virtualization (`Virtualization.framework`). macOS-only, Apple Silicon only. Default on that host shape. Faster cold boot, suspend, and resume; uses raw disk images (sparse, APFS clone-on-write) rather than qcow2 overlays. |
+
+Use `agv backend migrate-to-avf <name>` to convert an existing QEMU VM to AVF in place; the qcow2 disk is converted to sparse raw and the backend field is flipped. Run `agv backend cleanup <name>` afterwards to reclaim the original qcow2 once you've confirmed the AVF boot is healthy.
+
+Switching backend is a disk-format conversion, so it's not exposed as `agv config set --backend` — use the explicit migrate command instead.
+
 ### `machine_type`
 
 Pin the QEMU `-machine` value for this VM (e.g. `pc-q35-9.2`, `virt-9.2`). Unset by

@@ -126,6 +126,55 @@ because the VM no longer exists — no instance dir to read state from.
 | `name` | string | The VM that was destroyed |
 | `destroyed` | bool | Always `true` (any failure surfaces as a non-zero exit before this is emitted) |
 
+### `MigrateToAvfReport`
+
+Returned by `agv backend migrate-to-avf --json`. Reports the post-migration disk state.
+
+```json
+{
+  "name": "myvm",
+  "raw_disk_path": "/Users/me/.local/share/agv/instances/myvm/disk.raw",
+  "raw_disk_size_bytes": 42949672960,
+  "qcow2_disk_path": "/Users/me/.local/share/agv/instances/myvm/disk.qcow2",
+  "qcow2_disk_kept": true
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | The migrated VM |
+| `raw_disk_path` | string | Absolute path to the new sparse raw disk under the instance directory |
+| `raw_disk_size_bytes` | u64 | Size of the raw disk in bytes (the original qcow2's virtual size, post-grow) |
+| `qcow2_disk_path` | string | Absolute path to the original qcow2 |
+| `qcow2_disk_kept` | bool | `true` when the qcow2 was preserved for rollback (the default); `false` when `--delete-qcow2` was passed |
+
+### `BackendCleanupReport`
+
+Returned by `agv backend cleanup --json`. Lists the previous-backend files agv would remove (or did remove) from a VM's instance directory.
+
+```json
+{
+  "name": "myvm",
+  "backend": "avf",
+  "removed": [
+    {
+      "path": "/Users/me/.local/share/agv/instances/myvm/disk.qcow2",
+      "bytes": 1342177280
+    }
+  ],
+  "bytes_freed": 1342177280,
+  "dry_run": false
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | The VM whose previous-backend files were swept |
+| `backend` | string | Current backend (the one whose files are kept) — `"qemu"` or `"avf"` |
+| `removed` | array of `{path, bytes}` | Files removed (or `dry_run`: files that *would* be removed). Empty when there was nothing to clean. |
+| `bytes_freed` | u64 | Total bytes across `removed`. `0` when `removed` is empty. |
+| `dry_run` | bool | `true` when `--dry-run` was passed; `removed` then describes what would be deleted and the files are still on disk |
+
 ### `ResourceReport`
 
 Returned by `agv resources --json`. Two top-level objects: host capacity

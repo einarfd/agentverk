@@ -1,8 +1,15 @@
 # agv
 
-Create and manage QEMU VMs for AI agents.
+Create and manage microVMs for AI agents.
 
 `agv` gives each AI agent its own isolated Linux VM with SSH access, provisioned from a simple TOML config file. Supports macOS (Apple Silicon) and Linux (x86_64, aarch64).
+
+**Two backends, picked per VM:**
+
+- `qemu` — QEMU process. Cross-platform. Default everywhere except macOS on Apple Silicon.
+- `avf` — Apple Virtualization (`Virtualization.framework`). macOS Apple Silicon only. Default on that host shape. Faster cold boot, suspend, and resume.
+
+Override per VM with `--backend avf` / `--backend qemu` on `agv create`, or `backend = "..."` in the TOML config. See `docs/config.md` for the full reference.
 
 ## Installation
 
@@ -36,7 +43,7 @@ cargo install --path .
 
 **Runtime dependencies:**
 
-- QEMU
+- QEMU (required — `qemu-img` is used to build disk overlays, and the `qemu` backend uses `qemu-system-*` to boot)
   - macOS: `brew install qemu`
   - Ubuntu/Debian: `sudo apt install qemu-system`
   - Fedora: `sudo dnf install qemu-system-x86` (or `qemu-system-aarch64`)
@@ -46,6 +53,9 @@ cargo install --path .
 - OpenSSH (for SSH access to VMs)
   - macOS: included with the OS
   - Linux: usually pre-installed; `sudo apt install openssh-client` if missing
+- `agv-avf-runner` (macOS Apple Silicon only — required for the AVF backend)
+  - Bundled with release tarballs (installs alongside the `agv` binary).
+  - From source: `just build-avf-runner` in the agv repo, then move the resulting `.build/release/agv-avf-runner` next to your installed `agv` binary (or set `AGV_AVF_RUNNER=/path/to/agv-avf-runner`).
 
 Run `agv doctor` at any time to check which dependencies are present and get install instructions.
 
