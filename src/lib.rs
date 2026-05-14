@@ -1162,6 +1162,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                             "    qcow2:    kept at {} — delete once AVF boot is verified",
                             report.qcow2_disk_path,
                         );
+                        println!(
+                            "    cleanup:  agv backend cleanup {} (after verifying)",
+                            a.name,
+                        );
                     } else {
                         println!("    qcow2:    deleted ({})", report.qcow2_disk_path);
                     }
@@ -1169,6 +1173,32 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         "\n  Next: agv start {} to boot under Apple Virtualization.",
                         a.name
                     );
+                }
+                Ok(())
+            }
+            BackendCommand::Cleanup(a) => {
+                let report = vm::backend_cleanup(&a.name, a.dry_run).await?;
+                if a.json {
+                    let json = serde_json::to_string_pretty(&report)
+                        .map_err(|e| anyhow::anyhow!("serializing cleanup report: {e}"))?;
+                    println!("{json}");
+                } else if report.removed.is_empty() {
+                    println!(
+                        "  VM '{}' has no residue from a previous backend — nothing to remove.",
+                        a.name,
+                    );
+                } else {
+                    let verb = if a.dry_run { "Would remove" } else { "Removed" };
+                    println!("  ✓ {verb} {} file(s) for VM '{}':", report.removed.len(), a.name);
+                    for f in &report.removed {
+                        println!("    - {} ({} bytes)", f.path, f.bytes);
+                    }
+                    println!("    total: {} bytes", report.bytes_freed);
+                    if a.dry_run {
+                        println!(
+                            "\n  Re-run without --dry-run to delete (or `rm` the paths above directly)."
+                        );
+                    }
                 }
                 Ok(())
             }

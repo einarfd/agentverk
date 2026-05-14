@@ -154,6 +154,31 @@ pub struct MigrateToAvfReport {
     pub qcow2_disk_kept: bool,
 }
 
+/// JSON shape returned by `agv backend cleanup --json`. Lists the
+/// previous-backend files agv would remove (or did remove) from a
+/// VM's instance directory.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendCleanupReport {
+    pub name: String,
+    /// Current backend (the one whose files are kept).
+    pub backend: String,
+    /// Files removed, in deletion order. Absolute paths under the
+    /// instance directory. Empty when there was nothing to clean.
+    pub removed: Vec<RemovedFile>,
+    /// Total bytes freed across `removed`.
+    pub bytes_freed: u64,
+    /// `true` when `--dry-run` was passed — `removed` then describes
+    /// what *would* be deleted; the files are still on disk.
+    pub dry_run: bool,
+}
+
+/// One entry in `BackendCleanupReport::removed`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemovedFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
 /// Build a `VmStateReport` for an existing instance.
 ///
 /// `created` distinguishes "I just created this VM" (true) from
@@ -1351,6 +1376,118 @@ pub async fn migrate_to_avf(
             qcow2_disk_kept: kept,
         })
     }
+}
+
+/// Files that belong exclusively to the QEMU backend. When the VM
+/// has flipped to `backend = "avf"`, anything still on disk under
+/// these names is residue from before the flip and can be removed.
+///
+/// `pid` / `qmp.sock` are runtime-only (cleaned up at stop) and
+/// rarely present, but listing them here makes the cleanup
+/// idempotent if a previous run crashed before the runtime sweep
+/// finished.
+fn qemu_residue_files(inst: &Instance) -> Vec<std::path::PathBuf> {
+    vec![
+        inst.disk_path(),
+        inst.efi_vars_path(),
+        inst.pid_path(),
+        inst.qmp_socket_path(),
+        inst.ssh_port_path(),
+    ]
+}
+
+/// Files that belong exclusively to the AVF backend. The mirror
+/// of [`qemu_residue_files`] — removed when the VM has been
+/// flipped back to `backend = "qemu"` (a flow that doesn't exist
+/// today as a built-in, but the cleanup is symmetric for
+/// completeness and matches the doc on `agv backend cleanup`).
+fn avf_residue_files(inst: &Instance) -> Vec<std::path::PathBuf> {
+    vec![
+        inst.avf_disk_path(),
+        inst.avf_runner_pid_path(),
+        inst.avf_runner_config_path(),
+        inst.avf_control_socket_path(),
+        inst.avf_efi_vars_path(),
+        inst.avf_snapshot_path(),
+        inst.avf_mac_path(),
+        inst.avf_machine_id_path(),
+        // The runner log is informational, but it's per-backend
+        // and grows on every boot — sweep it too.
+        inst.dir.join("avf-runner.log"),
+    ]
+}
+
+/// Sweep residual files from the previous backend.
+///
+/// Refuses to do anything if the host VM process is alive — the
+/// running backend might be writing to one of these files. Otherwise
+/// stats each file in the opposite backend's residue list, sums the
+/// sizes for the report, and (unless `dry_run`) removes them.
+///
+/// Bidirectional even though only `migrate-to-avf` exists today:
+/// keeps the command symmetric if the reverse migration ever lands,
+/// and means a hand-edited `backend = "qemu"` flip still gets the
+/// expected sweep.
+pub async fn backend_cleanup(name: &str, dry_run: bool) -> anyhow::Result<BackendCleanupReport> {
+    let inst = Instance::open(name)?;
+    let status = inst.reconcile_status().await?;
+    anyhow::ensure!(
+        status != Status::Running,
+        Error::VmBadState {
+            name: name.to_string(),
+            status: status.to_string(),
+            expected: "stopped, suspended, or broken (not running)".to_string(),
+        }
+    );
+    // Belt and braces — `reconcile_status` flips a stale `running`
+    // to `stopped`, but a `broken` VM deliberately keeps its host
+    // process alive for debugging. Refuse there too: deleting
+    // disk.raw out from under a live AVF runner would be bad.
+    anyhow::ensure!(
+        !inst.is_process_alive().await,
+        "VM '{name}' has a live host process — stop or destroy it before running cleanup"
+    );
+
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+    let targets = match cfg.backend.as_str() {
+        "avf" => qemu_residue_files(&inst),
+        // Everything else (qemu or any unrecognised value that
+        // config validation hasn't already rejected) — sweep the
+        // AVF side.
+        _ => avf_residue_files(&inst),
+    };
+
+    let mut removed = Vec::new();
+    let mut bytes_freed: u64 = 0;
+    for path in targets {
+        // Stat first — missing files are the common case and
+        // shouldn't appear in the report.
+        let Ok(meta) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        let bytes = meta.len();
+        if !dry_run {
+            // For symlinks / regular files / FIFOs use remove_file;
+            // a socket file like avf-control.sock counts as a
+            // "file" for remove_file purposes.
+            tokio::fs::remove_file(&path).await.with_context(|| {
+                format!("removing {}", path.display())
+            })?;
+        }
+        bytes_freed += bytes;
+        removed.push(RemovedFile {
+            path: path.display().to_string(),
+            bytes,
+        });
+    }
+
+    Ok(BackendCleanupReport {
+        name: name.to_string(),
+        backend: cfg.backend,
+        removed,
+        bytes_freed,
+        dry_run,
+    })
 }
 
 pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {

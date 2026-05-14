@@ -419,6 +419,126 @@ async fn create_backend_flag_persists_to_saved_config() {
     );
 }
 
+/// `agv backend cleanup` must remove residual QEMU files (`disk.qcow2`,
+/// etc.) when the VM has been flipped to `backend = "avf"`. The
+/// common use case: after `migrate-to-avf` without `--delete-qcow2`
+/// and a successful AVF boot, reclaim the qcow2's disk space.
+///
+/// Doesn't actually run the migrate flow (that's the slow `tests/avf_
+/// migrate_test.rs::migrate_qemu_vm_to_avf_backend` test). Just lays
+/// down a normal QEMU instance, flips `backend = "avf"` in the saved
+/// config to simulate a successful migration, and asserts cleanup
+/// then removes the qcow2 while leaving the rest of the instance dir
+/// intact.
+#[tokio::test]
+async fn backend_cleanup_removes_residual_qcow2_after_flip() {
+    if !qemu_img_available() || !iso_tool_available() {
+        eprintln!("required tools missing — skipping backend_cleanup_removes_residual_qcow2_after_flip");
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let image_url = make_fake_base_image(data_dir.path()).await;
+    let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
+
+    let name = "_test-cleanup-flip";
+    let create_output = agv(data_dir.path())
+        .args([
+            "create",
+            "--no-checksum",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        create_output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+
+    let inst_dir = data_dir.path().join("instances").join(name);
+    let qcow2 = inst_dir.join("disk.qcow2");
+    let config_path = inst_dir.join("config.toml");
+    assert!(qcow2.exists(), "create should produce disk.qcow2 under QEMU defaults");
+
+    // Simulate a successful migrate-to-avf without --delete-qcow2:
+    // backend flag flipped, disk.qcow2 still on disk.
+    let cfg = tokio::fs::read_to_string(&config_path).await.unwrap();
+    let cfg = cfg.replace("backend = \"qemu\"", "backend = \"avf\"");
+    let cfg = if cfg.contains("backend = \"avf\"") {
+        cfg
+    } else {
+        // The default config has no backend line; append one.
+        format!("{cfg}\nbackend = \"avf\"\n")
+    };
+    tokio::fs::write(&config_path, cfg).await.unwrap();
+
+    // --- dry-run leaves the file intact ---
+    let dry = agv(data_dir.path())
+        .args(["backend", "cleanup", "--dry-run", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        dry.status.success(),
+        "cleanup --dry-run failed: {}",
+        String::from_utf8_lossy(&dry.stderr),
+    );
+    let dry_report = parse_json("backend cleanup --dry-run", &dry.stdout);
+    assert_eq!(dry_report["dry_run"], serde_json::Value::Bool(true));
+    assert_eq!(dry_report["backend"], "avf");
+    assert!(
+        dry_report["removed"].as_array().is_some_and(|a| a.iter()
+            .any(|f| f["path"].as_str().is_some_and(|p| p.ends_with("disk.qcow2")))),
+        "dry-run report should list disk.qcow2 in `removed`: {dry_report}"
+    );
+    assert!(qcow2.exists(), "dry-run must NOT delete the file");
+
+    // --- real run removes it ---
+    let real = agv(data_dir.path())
+        .args(["backend", "cleanup", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        real.status.success(),
+        "cleanup failed: {}",
+        String::from_utf8_lossy(&real.stderr),
+    );
+    let real_report = parse_json("backend cleanup", &real.stdout);
+    assert_eq!(real_report["dry_run"], serde_json::Value::Bool(false));
+    assert!(real_report["bytes_freed"].as_u64().is_some_and(|b| b > 0));
+    assert!(!qcow2.exists(), "real run must delete disk.qcow2");
+
+    // Non-residue files must stay put — config, seed, ssh keys, the
+    // status file — otherwise we've nuked too much.
+    for f in ["config.toml", "seed.iso", "id_ed25519", "id_ed25519.pub", "status"] {
+        assert!(
+            inst_dir.join(f).exists(),
+            "{f} must NOT be touched by cleanup",
+        );
+    }
+
+    // --- idempotent: a second cleanup reports zero removed ---
+    let again = agv(data_dir.path())
+        .args(["backend", "cleanup", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(again.status.success());
+    let again_report = parse_json("backend cleanup #2", &again.stdout);
+    assert_eq!(
+        again_report["removed"].as_array().map(Vec::len),
+        Some(0),
+        "second cleanup should be a no-op"
+    );
+    assert_eq!(again_report["bytes_freed"], 0);
+}
+
 /// Regression: `destroy` must reliably kill the host VM process even
 /// when the VM is recorded as `broken`. The bug it guards against:
 /// `mark_broken_with_error` deliberately leaves the VM process alive

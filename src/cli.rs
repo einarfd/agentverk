@@ -525,6 +525,20 @@ pub enum BackendCommand {
     ///
     /// macOS-only — the AVF backend is unavailable on Linux.
     MigrateToAvf(BackendMigrateToAvfArgs),
+
+    /// Remove residual files from the VM's previous backend.
+    ///
+    /// After `agv backend migrate-to-avf <name>` without
+    /// `--delete-qcow2`, the original `disk.qcow2` is kept so you can
+    /// roll back. Once you've verified the AVF boot is healthy, this
+    /// reclaims the disk space.
+    ///
+    /// Removes only files belonging to the OTHER backend than the
+    /// one in `config.toml` (so `disk.qcow2` on an AVF VM,
+    /// `disk.raw` + `avf-*` sidecars on a QEMU VM). VM must be
+    /// stopped — refuses to delete anything while the host process
+    /// is alive.
+    Cleanup(BackendCleanupArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -540,6 +554,22 @@ pub struct BackendMigrateToAvfArgs {
     /// used portion of the disk.
     #[arg(long)]
     pub delete_qcow2: bool,
+
+    /// Output the result as a JSON object.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackendCleanupArgs {
+    /// Name of the VM whose previous-backend files should be removed.
+    /// VM must be stopped.
+    pub name: String,
+
+    /// Show what would be removed and the total bytes that would be
+    /// freed, but don't delete anything.
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Output the result as a JSON object.
     #[arg(long)]

@@ -288,6 +288,27 @@ fn destroy_with_label_against_no_matches_succeeds() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// `agv backend cleanup --help` must parse — regression guard so a
+/// future refactor that drops the subcommand gets caught by clap's
+/// exit-2 usage error instead of slipping through.
+#[test]
+fn backend_cleanup_help_succeeds() {
+    let output = agv()
+        .args(["backend", "cleanup", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "agv backend cleanup --help should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Help text must surface the safe-by-default semantics — users
+    // grep for these terms to confirm what gets deleted.
+    assert!(stdout.contains("--dry-run"), "help should mention --dry-run; got:\n{stdout}");
+    assert!(stdout.contains("--json"), "help should mention --json; got:\n{stdout}");
+}
+
 /// `--backend` validation happens during config build, before any
 /// real I/O — so even with a nonexistent image URL, an invalid backend
 /// value should be the visible failure mode and stderr should name
