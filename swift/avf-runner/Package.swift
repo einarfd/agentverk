@@ -25,9 +25,23 @@ let package = Package(
     // `@available` shims.
     platforms: [.macOS(.v14)],
     targets: [
+        // Pure-logic helpers split into a library target so we can
+        // unit-test them without main.swift's top-level boot code
+        // running on import. Keep this target free of Virtualization
+        // framework references — those belong with the runner exe.
+        .target(
+            name: "AvfRunnerCore",
+            path: "Sources/AvfRunnerCore"
+        ),
         .executableTarget(
             name: "agv-avf-runner",
+            dependencies: ["AvfRunnerCore"],
             path: "Sources/avf-runner"
+        ),
+        .testTarget(
+            name: "AvfRunnerCoreTests",
+            dependencies: ["AvfRunnerCore"],
+            path: "Tests/AvfRunnerCoreTests"
         )
     ]
 )

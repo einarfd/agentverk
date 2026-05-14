@@ -27,16 +27,16 @@
 
 import Foundation
 
-enum LeaseLookup {
+public enum LeaseLookup {
     /// Path bootpd writes to. Constant on macOS.
-    static let defaultPath = "/var/db/dhcpd_leases"
+    public static let defaultPath = "/var/db/dhcpd_leases"
 
     /// Find the most recent IP leased to a guest with the given DHCP
     /// hostname. Optional `mac` is used as a secondary match when the
     /// hostname doesn't appear in the leases file. Returns nil if
     /// nothing matches yet — callers should treat nil as "not yet
     /// known" and poll briefly after VM start.
-    static func findGuestIp(
+    public static func findGuestIp(
         hostname: String,
         mac: String? = nil,
         leaseFilePath: String = defaultPath
@@ -53,18 +53,19 @@ enum LeaseLookup {
         return nil
     }
 
-    /// Pure parser — match the most recent lease whose `name` field
-    /// equals `hostname` (case-sensitive; bootpd preserves case).
-    static func parse(_ contents: String, byHostname hostname: String) -> String? {
+    /// Pure parser — match the freshest lease (highest `lease=`
+    /// timestamp) whose `name` field equals `hostname` (case-sensitive;
+    /// bootpd preserves case).
+    public static func parse(_ contents: String, byHostname hostname: String) -> String? {
         return iterateLeases(contents) { fields in
             fields["name"] == hostname ? fields["ip_address"] : nil
         }
     }
 
-    /// Pure parser — match the most recent lease whose `hw_address`
-    /// field, with the ARP-type prefix stripped, equals `mac`
-    /// case-insensitively.
-    static func parse(_ contents: String, byMac mac: String) -> String? {
+    /// Pure parser — match the freshest lease (highest `lease=`
+    /// timestamp) whose `hw_address` field, with the ARP-type prefix
+    /// stripped, equals `mac` case-insensitively.
+    public static func parse(_ contents: String, byMac mac: String) -> String? {
         let target = mac.lowercased()
         return iterateLeases(contents) { fields in
             guard let raw = fields["hw_address"] else { return nil }
@@ -78,16 +79,33 @@ enum LeaseLookup {
         }
     }
 
+    /// Parse the `lease=` field as a hex Unix timestamp. bootpd writes
+    /// it as `0x6a05ad86` (no decimal form observed). Returns 0 for
+    /// missing/unparseable values so they sort below any real lease —
+    /// a real lease is always better than no timestamp at all.
+    private static func leaseTimestamp(_ fields: [String: String]) -> UInt64 {
+        guard let raw = fields["lease"] else { return 0 }
+        let trimmed = raw.hasPrefix("0x") ? String(raw.dropFirst(2)) : raw
+        return UInt64(trimmed, radix: 16) ?? 0
+    }
+
     /// Walk every `{ ... }` block in the leases file, yielding each
-    /// block's parsed key→value map to `extract`. Returns the value
-    /// from the last block where `extract` returned non-nil — bootpd
-    /// appends fresh leases after stale ones, so the last hit is the
-    /// freshest.
+    /// block's parsed key→value map to `extract`. Returns the IP from
+    /// the block with the highest `lease=` timestamp where `extract`
+    /// returned non-nil.
+    ///
+    /// bootpd does NOT append fresh leases after stale ones — entries
+    /// are written sorted by IP (descending in practice), so simply
+    /// taking the last hit in file order returns whichever match
+    /// happens to have the lowest IP, not the freshest. Compare
+    /// `lease=` timestamps to pick the right one when a hostname has
+    /// been used across multiple VM incarnations.
     private static func iterateLeases(
         _ contents: String,
         extract: ([String: String]) -> String?
     ) -> String? {
         var best: String? = nil
+        var bestTs: UInt64 = 0
         var current: [String: String] = [:]
         var inBlock = false
         for rawLine in contents.components(separatedBy: .newlines) {
@@ -99,7 +117,11 @@ enum LeaseLookup {
             }
             if line == "}" {
                 if inBlock, let hit = extract(current) {
-                    best = hit
+                    let ts = leaseTimestamp(current)
+                    if best == nil || ts > bestTs {
+                        best = hit
+                        bestTs = ts
+                    }
                 }
                 inBlock = false
                 continue

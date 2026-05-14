@@ -6,6 +6,7 @@
 // will use this to drive lifecycle without resorting to signals;
 // signals still work as a fallback.
 
+import AvfRunnerCore
 import Foundation
 import Virtualization
 import Darwin

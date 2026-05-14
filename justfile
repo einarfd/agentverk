@@ -32,6 +32,30 @@ build-avf-runner:
     codesign --sign - --entitlements entitlements.plist --force \
         .build/release/agv-avf-runner
 
+# Run the Swift unit tests for the AVF runner's pure-logic helpers
+# (LeaseLookup, …). macOS only; no-op on Linux. Uses Swift Testing
+# (`import Testing`) — works on Command Line Tools alone, no full
+# Xcode required, but Xcode users get the same result.
+#
+# Why the explicit -F / -rpath flags: Command Line Tools ships the
+# Testing framework under /Library/Developer/CommandLineTools/.../
+# Frameworks but doesn't put it on the default search paths the way
+# Xcode does. The flags are no-ops under full Xcode (the path simply
+# won't exist, swift ignores missing -F paths).
+test-avf-runner:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "agv-avf-runner tests run only on macOS — skipping"
+        exit 0
+    fi
+    cd swift/avf-runner
+    framework_dir=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+    swift test \
+        -Xswiftc -F -Xswiftc "$framework_dir" \
+        -Xlinker -F -Xlinker "$framework_dir" \
+        -Xlinker -rpath -Xlinker "$framework_dir"
+
 # Run the fast test suite (no slow boot tests, no real cloud-image downloads).
 test:
     cargo test
@@ -44,8 +68,8 @@ test-slow:
 clippy:
     cargo clippy --all-targets --all-features
 
-# Run clippy + the fast test suite. Pre-commit gate.
-verify: clippy test
+# Run clippy + the fast test suite + Swift unit tests. Pre-commit gate.
+verify: clippy test test-avf-runner
 
-# Run clippy + the full test suite (including slow boot tests).
-verify-slow: clippy test-slow
+# Run clippy + the full test suite (including slow boot tests) + Swift unit tests.
+verify-slow: clippy test-slow test-avf-runner
