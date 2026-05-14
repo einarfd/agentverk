@@ -208,9 +208,27 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     vm.bootLoader = bootLoader
 
     let diskURL = URL(fileURLWithPath: config.diskPath)
+    // Explicit `.cached` + `.full` instead of the 2-arg initializer's
+    // `.automatic` default. `.automatic` lets the host page cache
+    // reorder/coalesce writes in ways the guest's ext4 journal
+    // doesn't tolerate — we and several other AVF projects (Lima,
+    // Tart, UTM) hit "EXT4-fs error: bad entry in directory" /
+    // "Detected aborted journal" the first time the guest does
+    // sustained small-file I/O (`apt-get install`, untar of a docker
+    // image, etc.). Root-cause is upstream in AVF; the workaround is
+    // well-trodden:
+    //   * Lima PR #2026 (lima-vm/lima): switched to `.cached` after
+    //     hourly corruption reports on Apple Silicon (issue #1957).
+    //   * Tart `Sources/tart/VM.swift`: `.cached` for Linux guests,
+    //     `.automatic` only for macOS guests.
+    //   * UTM PR #5919 (utmapp/UTM): merged `.cached` + virtio-blk
+    //     after testing `.uncached` and NVMe and finding cached
+    //     virtio more reliable on Linux 6.1+.
     let diskAttachment = try VZDiskImageStorageDeviceAttachment(
         url: diskURL,
-        readOnly: false
+        readOnly: false,
+        cachingMode: .cached,
+        synchronizationMode: .full
     )
     let diskDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
 
