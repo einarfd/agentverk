@@ -35,6 +35,17 @@ const QEMU_HINT: &str = "sudo apt install qemu-system   (Debian/Ubuntu)\n\
 const QEMU_HINT: &str = "install QEMU for your platform";
 
 #[cfg(target_os = "macos")]
+const AVF_RUNNER_HINT: &str = "agv-avf-runner powers `backend = \"avf\"` (Apple Virtualization).\n\
+                                If you installed agv from a release tarball, your install is\n\
+                                incomplete — the runner should ship alongside the agv binary.\n\
+                                If you're building from source: `just build-avf-runner` from the\n\
+                                agv repo, then move the resulting `.build/release/agv-avf-runner`\n\
+                                next to your installed agv binary (or set AGV_AVF_RUNNER to its\n\
+                                path).\n\
+                                On Linux this check doesn't apply — AVF is macOS-only and the\n\
+                                QEMU backend is used regardless.";
+
+#[cfg(target_os = "macos")]
 const OPENSSH_HINT: &str = "OpenSSH is bundled with macOS — check your PATH";
 
 #[cfg(target_os = "linux")]
@@ -94,6 +105,17 @@ fn all_checks() -> Vec<Check> {
             candidates: vec!["hdiutil"],
             install_hint: "hdiutil is built into macOS — check your installation",
         },
+        #[cfg(target_os = "macos")]
+        Check {
+            label: "agv-avf-runner",
+            // Empty candidates — detection runs through `check_present`,
+            // which special-cases this label to use
+            // `backend::locate_avf_runner` (env override → sibling of
+            // the current agv binary). The runner is not expected on
+            // PATH; PATH search would always come up empty.
+            candidates: vec![],
+            install_hint: AVF_RUNNER_HINT,
+        },
         #[cfg(not(target_os = "macos"))]
         Check {
             label: "mkisofs / genisoimage",
@@ -112,6 +134,21 @@ fn is_available(name: &str) -> bool {
         return false;
     };
     std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+}
+
+/// Does this dependency check pass?
+///
+/// Defaults to PATH-based detection — `is_available()` across the
+/// check's `candidates` list. One special case: `agv-avf-runner`
+/// isn't expected on PATH (the install pattern is "sibling of the
+/// agv binary, or `AGV_AVF_RUNNER` env override"), so we route its
+/// detection through `backend::locate_avf_runner`.
+fn check_present(check: &Check) -> bool {
+    #[cfg(target_os = "macos")]
+    if check.label == "agv-avf-runner" {
+        return crate::vm::backend::locate_avf_runner().is_ok();
+    }
+    check.candidates.iter().any(|b| is_available(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +191,7 @@ fn build_report() -> DoctorReport {
     let mut entries = Vec::with_capacity(checks.len());
     let mut issues: u32 = 0;
     for check in &checks {
-        let found = check.candidates.iter().any(|b| is_available(b));
+        let found = check_present(check);
         if !found {
             issues += 1;
         }
@@ -185,7 +222,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut missing_indices: Vec<usize> = Vec::new();
 
     for (i, check) in checks.iter().enumerate() {
-        if check.candidates.iter().any(|b| is_available(b)) {
+        if check_present(check) {
             anstream::println!("  {:<col$}  {GREEN}✓{GREEN:#}", check.label);
         } else {
             anstream::println!("  {:<col$}  {RED}✗{RED:#}", check.label);
@@ -316,5 +353,29 @@ mod tests {
         let expected: std::collections::BTreeSet<&str> =
             ["found", "name"].into_iter().collect();
         assert_eq!(actual, expected, "CheckJson keys drifted");
+    }
+
+    /// macOS `agv doctor` must include the AVF runner in its checks
+    /// so users see whether `backend = "avf"` is going to work before
+    /// they hit a create-time error. Linux skips this check (AVF is
+    /// macOS-only).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_check_list_includes_avf_runner() {
+        let labels: Vec<&str> = all_checks().iter().map(|c| c.label).collect();
+        assert!(
+            labels.contains(&"agv-avf-runner"),
+            "macOS check list must include `agv-avf-runner`; got: {labels:?}"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_check_list_omits_avf_runner() {
+        let labels: Vec<&str> = all_checks().iter().map(|c| c.label).collect();
+        assert!(
+            !labels.contains(&"agv-avf-runner"),
+            "non-macOS check list must NOT include `agv-avf-runner`; got: {labels:?}"
+        );
     }
 }
