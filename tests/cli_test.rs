@@ -288,6 +288,48 @@ fn destroy_with_label_against_no_matches_succeeds() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// `--backend` validation happens during config build, before any
+/// real I/O — so even with a nonexistent image URL, an invalid backend
+/// value should be the visible failure mode and stderr should name
+/// the allowed values.
+#[test]
+fn create_rejects_unknown_backend_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["create", "--backend", "totally-bogus", "_test-bad-backend"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "create with bogus --backend should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown backend") || stderr.contains("bogus"),
+        "stderr should explain the invalid backend; got: {stderr}"
+    );
+}
+
+/// `--backend avf` on a non-macOS host (and `--backend qemu` everywhere)
+/// must parse cleanly — clap should accept the flag itself and surface
+/// the platform-availability check as a runtime error message, not an
+/// argument-parsing one. Mostly here to catch a regression where the
+/// flag gets accidentally renamed or removed from `CreateArgs`.
+#[test]
+fn create_backend_flag_is_registered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["create", "--backend", "qemu", "--help"])
+        .output()
+        .unwrap();
+    // --help short-circuits, exits 0; if `--backend` were unknown to
+    // clap, we'd get exit 2 instead.
+    assert!(
+        output.status.success(),
+        "agv create --backend qemu --help should succeed (clap parses the flag); stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn exit_code_2_for_clap_usage_errors() {
     // Unknown subcommand and missing required arg both go through clap and

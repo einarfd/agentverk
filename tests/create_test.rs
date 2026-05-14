@@ -368,6 +368,57 @@ disk = "2G"
     assert!(!error_log.is_empty(), "error.log should have content");
 }
 
+/// `agv create --backend qemu` must persist the choice into the saved
+/// instance config. Without this, you'd have to set `backend = "qemu"`
+/// in the TOML by hand or use `agv backend migrate-to-avf` later —
+/// neither of which is discoverable from `--help`.
+///
+/// Companion AVF case lives in `tests/avf_e2e_test.rs` so it gates on
+/// the AVF runner being present without dragging that requirement
+/// into the QEMU-flavoured tests here.
+#[tokio::test]
+async fn create_backend_flag_persists_to_saved_config() {
+    if !qemu_img_available() || !iso_tool_available() {
+        eprintln!("required tools missing — skipping create_backend_flag_persists_to_saved_config");
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let image_url = make_fake_base_image(data_dir.path()).await;
+    let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
+
+    let name = "_test-backend-flag";
+    let output = agv(data_dir.path())
+        .args([
+            "create",
+            "--no-checksum",
+            "--backend",
+            "qemu",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "create --backend qemu failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let saved = tokio::fs::read_to_string(
+        data_dir.path().join("instances").join(name).join("config.toml"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        saved.contains("backend = \"qemu\""),
+        "saved config should pin backend=qemu when --backend qemu was passed; got:\n{saved}",
+    );
+}
+
 /// Regression: `destroy` must reliably kill the host VM process even
 /// when the VM is recorded as `broken`. The bug it guards against:
 /// `mark_broken_with_error` deliberately leaves the VM process alive

@@ -1277,6 +1277,10 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     if args.disk.is_some() {
         vm.disk.clone_from(&args.disk);
     }
+    if let Some(backend) = &args.backend {
+        validate_backend(backend).with_context(|| format!("invalid --backend {backend}"))?;
+        vm.backend = Some(backend.clone());
+    }
 
     // 3. Parse --file src:dest strings into FileEntry structs.
     for raw in &args.files {
@@ -1430,6 +1434,7 @@ mod tests {
             memory: None,
             cpus: None,
             disk: None,
+            backend: None,
             image: None,
             spec: None,
             includes: vec![],

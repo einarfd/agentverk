@@ -198,6 +198,16 @@ pub struct CreateArgs {
     #[arg(long)]
     pub disk: Option<String>,
 
+    /// Hypervisor backend: `qemu` (default, cross-platform) or `avf`
+    /// (Apple Virtualization; macOS Apple Silicon only).
+    ///
+    /// Defaults to whatever the resolved config says, falling back to
+    /// `qemu`. Pass `--backend avf` to create an AVF-native VM directly
+    /// instead of creating it under QEMU and then migrating with
+    /// `agv backend migrate-to-avf`.
+    #[arg(long, value_name = "BACKEND")]
+    pub backend: Option<String>,
+
     /// Add a mixin to the VM (e.g. devtools, claude, docker, rust, nodejs).
     ///
     /// Mixins are named bundles of setup/provision steps that install and
