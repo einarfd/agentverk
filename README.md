@@ -36,8 +36,10 @@ cargo install agv
 ```sh
 git clone https://github.com/einarfd/agentverk.git
 cd agentverk
-cargo install --path .
+just install     # cargo install + builds + installs agv-avf-runner on macOS
 ```
+
+If you don't have [just](https://just.systems), the equivalent is `cargo install --path .` plus — on macOS Apple Silicon, where the `avf` backend is the default — `just build-avf-runner` (or `swift build -c release` in `swift/avf-runner/` plus the codesign step from the recipe) and copying `swift/avf-runner/.build/release/agv-avf-runner` next to the installed `agv` binary (typically `~/.cargo/bin/`). Without the sibling runner, `agv create` falls back to QEMU and `--backend avf` fails with a clear `agv doctor` hint.
 
 ## Requirements
 
@@ -55,7 +57,7 @@ cargo install --path .
   - Linux: usually pre-installed; `sudo apt install openssh-client` if missing
 - `agv-avf-runner` (macOS Apple Silicon only — required for the AVF backend)
   - Bundled with release tarballs (installs alongside the `agv` binary).
-  - From source: `just build-avf-runner` in the agv repo, then move the resulting `.build/release/agv-avf-runner` next to your installed `agv` binary (or set `AGV_AVF_RUNNER=/path/to/agv-avf-runner`).
+  - Source installs: `just install` handles this. Manual fallback: `just build-avf-runner` in the agv repo, then move the resulting `.build/release/agv-avf-runner` next to your installed `agv` binary (or set `AGV_AVF_RUNNER=/path/to/agv-avf-runner`).
 
 Run `agv doctor` at any time to check which dependencies are present and get install instructions.
 

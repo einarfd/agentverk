@@ -32,6 +32,30 @@ build-avf-runner:
     codesign --sign - --entitlements entitlements.plist --force \
         .build/release/agv-avf-runner
 
+# Install agv from source — runs `cargo install --path .` and, on
+# macOS, also builds and installs `agv-avf-runner` alongside it.
+# Without the sibling runner, `agv` falls back to QEMU even where AVF
+# would be the default and `--backend avf` fails with a clear error
+# from `agv doctor`.
+#
+# Honors cargo's standard install-location lookup: `CARGO_INSTALL_ROOT`
+# wins, then `CARGO_HOME`, then `$HOME/.cargo`. The runner lands at
+# `<root>/bin/agv-avf-runner` so `locate_avf_runner`'s
+# sibling-of-current-exe fallback picks it up automatically.
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo install --path .
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        exit 0
+    fi
+    install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
+    just build-avf-runner
+    install -m 0755 \
+        swift/avf-runner/.build/release/agv-avf-runner \
+        "$install_root/bin/agv-avf-runner"
+    echo "agv-avf-runner installed at $install_root/bin/agv-avf-runner"
+
 # Run the Swift unit tests for the AVF runner's pure-logic helpers
 # (LeaseLookup, …). macOS only; no-op on Linux. Uses Swift Testing
 # (`import Testing`) — works on Command Line Tools alone, no full
