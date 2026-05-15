@@ -537,13 +537,27 @@ pub struct ResolvedConfig {
     pub machine_type: Option<String>,
 
     /// Hypervisor backend (`"qemu"` or `"avf"`). See
-    /// [`VmConfig::backend`] for rationale. Defaults to `"qemu"` —
-    /// instance configs saved before this field existed deserialize
-    /// as such, preserving today's behavior. Validated by
-    /// [`load_resolved`] so call sites can treat the value as known-
-    /// good.
-    #[serde(default = "default_backend")]
+    /// [`VmConfig::backend`] for rationale. Defaults to `"qemu"` on
+    /// load — instance configs saved before this field existed (any
+    /// VM created prior to the AVF backend landing) deserialize as
+    /// such, preserving the backend they were originally booted with.
+    /// New VMs go through [`build_from_cli`] which fills the field via
+    /// [`default_backend`] (host-aware), so this load-time default
+    /// only ever fires for legacy on-disk configs.
+    /// Validated by [`load_resolved`] so call sites can treat the
+    /// value as known-good.
+    #[serde(default = "default_legacy_backend")]
     pub backend: String,
+}
+
+/// Default for [`ResolvedConfig::backend`] **on load** of a saved
+/// instance config. Always `"qemu"`, regardless of host shape — a
+/// missing `backend` field means the VM predates the field's
+/// existence, and every such VM was a QEMU VM. Distinct from
+/// [`default_backend`], which picks the default for *new* VMs based
+/// on the host.
+fn default_legacy_backend() -> String {
+    "qemu".to_string()
 }
 
 /// Default for [`ResolvedConfig::idle_load_threshold`]. Pulled into a
@@ -1435,6 +1449,33 @@ mod tests {
     #[test]
     fn default_backend_is_qemu_off_macos_apple_silicon() {
         assert_eq!(default_backend(), "qemu");
+    }
+
+    /// Regression: a saved instance config that predates the
+    /// `backend` field must deserialize as `"qemu"`, not the
+    /// host-aware new-VM default. Otherwise existing QEMU VMs on
+    /// macOS Apple Silicon would be misread as AVF after upgrading
+    /// agv, and `agv start` / `agv ssh` / `agv inspect` would all
+    /// silently use the wrong backend wiring.
+    #[test]
+    fn resolved_config_without_backend_field_loads_as_qemu() {
+        let toml = r#"
+base_url = "https://example.com/base.img"
+base_checksum = "sha256:abc"
+skip_checksum = false
+memory = "1G"
+cpus = 2
+disk = "10G"
+user = "agent"
+os_family = "debian"
+labels = {}
+"#;
+        let cfg: ResolvedConfig = toml::from_str(toml).expect("should parse");
+        assert_eq!(
+            cfg.backend, "qemu",
+            "legacy on-disk configs (no `backend` field) must default to qemu, \
+             regardless of host shape — they predate the AVF backend"
+        );
     }
 
     #[test]
