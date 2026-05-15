@@ -1,6 +1,8 @@
 //! End-to-end integration test for the AVF backend through the
 //! `agv` CLI — the same path real users hit. Boots a Debian VM under
-//! Apple Virtualization, asserts SSH works, exercises suspend/resume,
+//! Apple Virtualization, asserts SSH works, locks in the AVF
+//! suspend-refusal contract (Apple's framework doesn't support
+//! save/restore for Linux guests — see `src/vm/mod.rs::suspend`),
 //! then destroys. This is the load-bearing test for `agv create
 //! --backend avf` shippability.
 //!
@@ -117,18 +119,20 @@ async fn destroy(data_dir: &Path, name: &str) {
 
 /// Full AVF lifecycle end-to-end through `agv create --backend avf`:
 /// downloads Debian 12, converts qcow2→raw, boots under AVF,
-/// SSHes in, suspends, resumes, asserts SSH still works on the
-/// restored VM, then destroys.
+/// SSHes in, asserts the AVF suspend refusal is surfaced cleanly
+/// (and that the VM stays usable after the refusal — proving the
+/// early-bail in `vm::suspend` doesn't tear down forwards/watcher),
+/// then destroys.
 ///
 /// Reuses `AGV_DATA_DIR/cache/images/` if the Debian raw is already
 /// cached from a prior run, so subsequent runs skip the download.
 #[tokio::test]
 #[ignore = "boots a real AVF VM end-to-end through the agv CLI — slow, ~60s"]
 #[serial]
-async fn agv_create_start_suspend_resume_destroy() {
+async fn agv_create_start_ssh_suspend_refused_destroy() {
     let Some(runner) = runner_binary() else {
         eprintln!(
-            "agv-avf-runner not built — skipping agv_create_start_suspend_resume_destroy (run: just build-avf-runner)"
+            "agv-avf-runner not built — skipping agv_create_start_ssh_suspend_refused_destroy (run: just build-avf-runner)"
         );
         return;
     };
@@ -285,73 +289,65 @@ backend = "avf"
         "managed ssh_config for an AVF VM should target the guest's port 22; got:\n{managed}"
     );
 
-    // --- suspend ---
+    // --- suspend is refused for AVF (Apple framework limitation) ---
+    // Apple Virtualization framework does not support save/restore
+    // for Linux guests — `agv suspend` refuses early (before any
+    // teardown) with a clear, actionable error. This test locks in
+    // both the refusal AND that the VM stays in a usable state
+    // afterwards (status=running, SSH still works, no snapshot file
+    // written).
     let suspend_output = agv(data_dir.path())
         .args(["suspend", name])
         .output()
         .await
         .unwrap();
-    if !suspend_output.status.success() {
-        destroy(data_dir.path(), name).await;
-        panic!(
-            "agv suspend failed: {}",
-            String::from_utf8_lossy(&suspend_output.stderr),
-        );
-    }
-    let suspended = inspect(data_dir.path(), name).await;
-    assert_eq!(
-        suspended["status"], "suspended",
-        "VM status should be 'suspended' after agv suspend"
+    assert!(
+        !suspend_output.status.success(),
+        "agv suspend on an AVF VM must fail — Linux save/restore is unsupported by the framework"
+    );
+    let stderr = String::from_utf8_lossy(&suspend_output.stderr);
+    assert!(
+        stderr.contains("avf backend") && stderr.contains("Apple Virtualization framework"),
+        "refusal must mention the framework limitation; got stderr:\n{stderr}"
     );
     assert!(
-        inst_dir.join("avf-snapshot.bin").exists(),
-        "snapshot file should land at <inst>/avf-snapshot.bin",
+        stderr.contains("agv stop") || stderr.contains("--backend qemu"),
+        "refusal must point users at the workaround; got stderr:\n{stderr}"
     );
-
-    // --- resume ---
-    let resume_output = agv(data_dir.path())
-        .args(["resume", name])
-        .output()
-        .await
-        .unwrap();
-    if !resume_output.status.success() {
-        let runner_log = std::fs::read_to_string(inst_dir.join("avf-runner.log"))
-            .unwrap_or_default();
-        destroy(data_dir.path(), name).await;
-        panic!(
-            "agv resume failed: {}\n--- runner log ---\n{runner_log}\nstdout: {}",
-            String::from_utf8_lossy(&resume_output.stderr),
-            String::from_utf8_lossy(&resume_output.stdout),
-        );
-    }
-    let resumed = inspect(data_dir.path(), name).await;
-    assert_eq!(
-        resumed["status"], "running",
-        "VM status should be 'running' after agv resume"
-    );
+    // Critical: refusal must not write a misleading snapshot file
+    // on disk. If the file existed, a follow-up `agv resume` would
+    // attempt a restore that will Code=12 mid-restore — a much
+    // worse failure mode than the early refusal.
     assert!(
         !inst_dir.join("avf-snapshot.bin").exists(),
-        "snapshot file should be cleaned up after successful resume",
+        "refused suspend must not have created a snapshot at <inst>/avf-snapshot.bin"
     );
-
-    // SSH must still work on the resumed VM — the whole point of
-    // resume is that the guest comes back from where it left off.
-    let ssh_after_resume = agv(data_dir.path())
+    // Status stays running — the early refusal in `vm::suspend`
+    // bails before touching the idle watcher or port forwards.
+    let after_refuse = inspect(data_dir.path(), name).await;
+    assert_eq!(
+        after_refuse["status"], "running",
+        "VM should still be running after a refused suspend"
+    );
+    // SSH still works — proves the early refusal didn't tear down
+    // the live VM's networking / process state.
+    let ssh_after_refuse = agv(data_dir.path())
         .args(["ssh", name, "--", "whoami"])
         .output()
         .await
         .unwrap();
-    if !ssh_after_resume.status.success() {
+    if !ssh_after_refuse.status.success() {
         destroy(data_dir.path(), name).await;
         panic!(
-            "agv ssh after resume failed: {}",
-            String::from_utf8_lossy(&ssh_after_resume.stderr),
+            "agv ssh after refused suspend failed — the early-refuse path \
+             must not disturb the running VM. Stderr: {}",
+            String::from_utf8_lossy(&ssh_after_refuse.stderr),
         );
     }
-    let who2 = String::from_utf8_lossy(&ssh_after_resume.stdout);
+    let who2 = String::from_utf8_lossy(&ssh_after_refuse.stdout);
     assert!(
         who2.trim() == "agent",
-        "SSH after resume should run as 'agent', got: {who2:?}"
+        "SSH after refused suspend should still run as 'agent', got: {who2:?}"
     );
 
     destroy(data_dir.path(), name).await;

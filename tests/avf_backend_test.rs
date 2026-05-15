@@ -41,15 +41,31 @@ fn runner_binary() -> Option<PathBuf> {
     if path.exists() { Some(path) } else { None }
 }
 
-/// The base raw disk produced by the qcow2-rs PoC. Required for the
-/// boot tests since `provision_disk` needs a real qcow2 source — but
-/// these tests skip that step and inject the raw directly, since the
-/// converter has its own test coverage. Returns None if absent.
+/// The base raw disk used as the fixture for the boot tests. These
+/// tests skip `provision_disk` (which would handle the qcow2→raw
+/// conversion + resize) and inject the raw directly — the converter
+/// has its own test coverage and adds ~30s per test we don't want to
+/// pay here.
+///
+/// Checks two locations in order:
+///   1. `~/.local/share/agv/cache/images/…qcow2.raw` — agv's raw cache,
+///      populated by any prior `agv create --backend avf`. This is the
+///      durable location.
+///   2. `/tmp/qcow2-poc/out/…ours.raw` — legacy path from the qcow2-rs
+///      PoC. Kept as a fallback for developers with that workspace,
+///      but unreliable on macOS where `/tmp` is swept on day-boundary
+///      reboots.
 fn cached_raw() -> Option<PathBuf> {
-    let p = PathBuf::from(
-        "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
-    );
-    if p.exists() { Some(p) } else { None }
+    let candidates = [
+        std::env::home_dir().map(|h| {
+            h.join(".local/share/agv/cache/images")
+                .join("debian-12-genericcloud-arm64-20260210-2384.qcow2.raw")
+        }),
+        Some(PathBuf::from(
+            "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
+        )),
+    ];
+    candidates.into_iter().flatten().find(|p| p.exists())
 }
 
 /// Build a minimal `Instance` + a `ResolvedConfig` pointing at the AVF
@@ -189,46 +205,46 @@ fn ensure_runner_alongside_test_binary(source: &std::path::Path) {
         .expect("symlink runner alongside test binary");
 }
 
-/// End-to-end: cold boot → suspend → resume through the Rust API the
-/// production lifecycle dispatch uses. This closes the test gap where
-/// the Swift-binary suspend test was marked `#[should_panic]` for the
-/// known harness flake.
+/// Cold boot → backend.suspend() refusal contract test.
+///
+/// Apple Virtualization framework does not support save/restore for
+/// Linux guests as of macOS 26 (Tahoe and earlier). The runner refuses
+/// the `suspend` op with a clear error, and `LocalAvfBackend::suspend`
+/// surfaces that refusal as an `anyhow::Error` containing the
+/// framework-limitation message. This test exercises the Rust backend
+/// path (one layer below the CLI; one layer above the runner RPC).
+///
+/// If/when Apple lifts the restriction, this test will fail and we'll
+/// rewrite it as the full suspend/resume round-trip we originally had.
 ///
 /// Steps:
 ///   1. setup() — copy cached raw, gen seed
 ///   2. backend.start(loadvm=None) — cold boot, polls runner to running
 ///   3. wait_for_guest_ip — proxy for "guest finished cloud-init DHCP"
-///   4. backend.suspend(inst) — sends suspend RPC, waits for runner
-///      exit, sanity-checks snapshot file
-///   5. assert snapshot file exists
-///   6. backend.start(loadvm=Some("agv-suspend")) — resume from snapshot
-///   7. wait_for_guest_ip again — VM is actually running
-///   8. assert snapshot file is gone (runner removes after successful
-///      resume)
-///   9. backend.stop(inst) — clean shutdown
+///   4. backend.suspend(inst) → assert Err with the framework message,
+///      no snapshot written, runner PID file intact (VM still alive)
+///   5. backend.stop(inst) — clean shutdown
 #[tokio::test]
 #[ignore = "boots a real Apple Virtualization VM via the Rust backend API — slow"]
 #[serial]
-async fn cold_boot_suspend_resume_round_trip() {
+async fn cold_boot_suspend_refused_then_stop() {
     let Some(runner) = runner_binary() else {
-        eprintln!("agv-avf-runner not built — skipping cold_boot_suspend_resume_round_trip");
+        eprintln!("agv-avf-runner not built — skipping cold_boot_suspend_refused_then_stop");
         return;
     };
     if cached_raw().is_none() {
-        eprintln!("cached raw disk not present — skipping cold_boot_suspend_resume_round_trip");
+        eprintln!("cached raw disk not present — skipping cold_boot_suspend_refused_then_stop");
         return;
     }
     ensure_runner_alongside_test_binary(&runner);
 
     let dir = tempfile::tempdir().unwrap();
-    let name = unique_name("avf-backend-rt");
+    let name = unique_name("avf-backend-rf");
     let inst = setup(dir.path(), &name).await;
     let cfg = avf_config();
     let backend = backend::for_config(&cfg);
 
     // --- Cold boot ---
-    // `start` polls until the runner reports state=running. The
-    // machine_type arg is ignored by AVF.
     backend
         .start(&inst, &cfg, "ignored-for-avf", None)
         .await
@@ -242,110 +258,32 @@ async fn cold_boot_suspend_resume_round_trip() {
         "runner PID file should be written"
     );
 
-    // --- Suspend ---
-    // Sends the suspend RPC, waits up to 60s for the runner to exit
-    // (saveMachineStateTo finishes), then sanity-checks the snapshot
-    // and removes the PID file.
-    backend.suspend(&inst).await.expect("suspend");
-    assert!(
-        inst.avf_snapshot_path().exists(),
-        "snapshot file should exist after suspend at {}",
-        inst.avf_snapshot_path().display()
-    );
-    assert!(
-        !inst.avf_runner_pid_path().exists(),
-        "runner PID file should be cleaned up after suspend"
-    );
-    let snap_size = std::fs::metadata(inst.avf_snapshot_path())
-        .unwrap()
-        .len();
-    // Snapshot for a 1 GiB VM is typically 50-200 MiB; require >1 MiB
-    // as a sanity floor.
-    assert!(
-        snap_size > 1024 * 1024,
-        "snapshot file is suspiciously small: {snap_size} bytes"
-    );
-
-    // --- Resume ---
-    // `loadvm`'s value is ignored by AVF (one snapshot per VM); only
-    // `is_some()` matters. The runner will `restoreMachineStateFrom`
-    // + `vm.resume`, then poll until status=running.
-    let resume_log = inst.dir.join("avf-runner.log");
-    if let Err(e) = backend
-        .start(&inst, &cfg, "ignored-for-avf", Some("agv-suspend"))
+    // --- Suspend RPC must surface the framework-limitation refusal ---
+    let err = backend
+        .suspend(&inst)
         .await
-    {
-        let log = std::fs::read_to_string(&resume_log).unwrap_or_default();
-        panic!(
-            "resume start failed: {e:#}\n\n--- runner log ({}) ---\n{log}",
-            resume_log.display()
-        );
-    }
-    let ip2 = wait_for_guest_ip(backend, &inst, Duration::from_secs(60))
-        .await
-        .expect("guest IP after resume");
-    assert!(!ip2.is_empty(), "guest IP should not be empty after resume");
+        .expect_err("backend.suspend() must fail for an AVF Linux VM");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("Apple Virtualization framework") || msg.contains("save/restore"),
+        "backend.suspend() error must mention the framework limitation; got: {msg}"
+    );
+    // Refusal must not leave a misleading snapshot file behind.
     assert!(
         !inst.avf_snapshot_path().exists(),
-        "snapshot file should be cleaned up after successful resume"
+        "refused backend.suspend() must not have written a snapshot file"
+    );
+    // The runner must still be alive — refusal happens at the RPC
+    // boundary, the VM keeps running. PID file is the cheapest proof.
+    assert!(
+        inst.avf_runner_pid_path().exists(),
+        "runner PID file must persist after a refused suspend (VM still alive)"
     );
 
-    // --- Stop ---
+    // --- Stop cleanly ---
     backend.stop(&inst).await.expect("stop");
     assert!(
         !inst.avf_runner_pid_path().exists(),
         "runner PID file should be cleaned up after stop"
-    );
-}
-
-/// Smaller scope: cold boot → suspend only. Useful as a fast-fail when
-/// debugging — exercises the suspend write path without the resume
-/// roundtrip, which depends on more of the Swift state machine.
-#[tokio::test]
-#[ignore = "boots a real Apple Virtualization VM via the Rust backend API — slow"]
-#[serial]
-async fn cold_boot_then_suspend_writes_snapshot() {
-    let Some(runner) = runner_binary() else {
-        eprintln!("agv-avf-runner not built — skipping");
-        return;
-    };
-    if cached_raw().is_none() {
-        eprintln!("cached raw disk not present — skipping");
-        return;
-    }
-    ensure_runner_alongside_test_binary(&runner);
-
-    let dir = tempfile::tempdir().unwrap();
-    let name = unique_name("avf-backend-susp");
-    let inst = setup(dir.path(), &name).await;
-    let cfg = avf_config();
-    let backend = backend::for_config(&cfg);
-
-    backend
-        .start(&inst, &cfg, "ignored", None)
-        .await
-        .expect("cold boot start");
-    wait_for_guest_ip(backend, &inst, Duration::from_secs(90))
-        .await
-        .expect("guest IP after cold boot");
-
-    // Capture the runner log path before suspend so we can dump it
-    // on failure — the test's tempdir would otherwise be GCed and
-    // we'd lose the trace.
-    let log_path = inst.dir.join("avf-runner.log");
-    if let Err(e) = backend.suspend(&inst).await {
-        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        panic!(
-            "suspend failed: {e:#}\n\n--- runner log ({}) ---\n{log}",
-            log_path.display()
-        );
-    }
-    assert!(
-        inst.avf_snapshot_path().exists(),
-        "snapshot file should exist after suspend"
-    );
-    assert!(
-        !inst.avf_runner_pid_path().exists(),
-        "runner PID file should be cleaned up after suspend"
     );
 }
