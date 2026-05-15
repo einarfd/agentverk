@@ -1092,6 +1092,22 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
             expected: "running".to_string(),
         }
     );
+    // Refuse early for AVF VMs — Apple Virtualization framework does
+    // not support save/restore for Linux guests as of macOS 15 / 26
+    // (the runner itself also refuses, but checking here avoids tearing
+    // down the idle watcher and port forwards before learning the VM
+    // can't actually suspend). Re-enable once the framework lifts the
+    // restriction; see `swift/avf-runner/Sources/avf-runner/main.swift`
+    // `restoreAndResume` for the full root-cause notes.
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+    if cfg.backend == "avf" {
+        anyhow::bail!(
+            "suspend is not supported for VMs on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests. Use `agv stop {name}` + `agv start {name}` \
+             instead, or recreate the VM with `--backend qemu`."
+        );
+    }
     // Idempotent: the watcher (when triggering this code path itself)
     // removes its own pid file before calling us, so this is a no-op
     // in the auto-suspend case and a real cleanup in the manual case.

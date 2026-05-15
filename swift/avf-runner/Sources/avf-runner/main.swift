@@ -187,6 +187,56 @@ struct BuiltVMConfig {
     let macAddress: VZMACAddress
 }
 
+/// Canonicalize a file path before handing it to Apple Virtualization.
+///
+/// Apple's VZ stores file URLs *inside* the snapshot via
+/// `saveMachineStateTo`, and `restoreMachineStateFromURL` requires
+/// the new VM configuration's URLs to be byte-identical to the saved
+/// ones. macOS firmlinks (`/var → /private/var`, `/tmp → /private/tmp`)
+/// mean a path like `/var/folders/rf/.../T/.tmpXYZ/disk.raw` and its
+/// canonical form `/private/var/folders/...` resolve to the same
+/// inode, but VZ canonicalizes them at unpredictable points and
+/// throws `VZErrorDomain Code=12 "permission denied"` on restore if
+/// the save URL and restore URL differ even cosmetically.
+///
+/// `URL.resolvingSymlinksInPath()` is NOT sufficient here: firmlinks
+/// are not actual symbolic links (they're a VFS-layer redirection),
+/// so the Foundation API treats `/var/folders/...` as already
+/// canonical and returns it unchanged. POSIX `realpath(3)` DOES
+/// resolve firmlinks, which is what every other AVF wrapper that has
+/// hit this (Lima, Tart, UTM) ends up calling.
+///
+/// For paths that don't exist yet (EFI store on first boot, snapshot
+/// before suspend), we `realpath` the parent directory — which DOES
+/// exist — and append the basename. That produces the canonical form
+/// the OS will eventually report for the file once it's created, and
+/// matches the form VZ stores internally.
+///
+/// Root cause cite: `google/capsem` PR thread on
+/// `vsock-resume-reconnect` — same Code=12 error, identical root
+/// cause, fix is `std::fs::canonicalize` (Rust) which under the hood
+/// also calls `realpath(3)`.
+private func canonicalFileURL(_ path: String) -> URL {
+    var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+    if realpath(path, &buf) != nil {
+        return URL(fileURLWithPath: String(cString: buf))
+    }
+    // File doesn't exist (yet). Canonicalize the parent dir, then
+    // re-append the basename. The parent must exist for any path we
+    // intend to write to, so realpath on it is expected to succeed.
+    let nsPath = path as NSString
+    let parent = nsPath.deletingLastPathComponent
+    let base = nsPath.lastPathComponent
+    if !parent.isEmpty, realpath(parent, &buf) != nil {
+        let canonicalParent = String(cString: buf)
+        return URL(fileURLWithPath: (canonicalParent as NSString).appendingPathComponent(base))
+    }
+    // Last-resort fallback: hand back the original path unchanged.
+    // If we're here the parent doesn't exist either, and the
+    // subsequent file operation will fail with a clearer error.
+    return URL(fileURLWithPath: path)
+}
+
 func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     let vm = VZVirtualMachineConfiguration()
     vm.cpuCount = config.cpuCount
@@ -197,7 +247,7 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     vm.platform = platform
 
     let bootLoader = VZEFIBootLoader()
-    let efiURL = URL(fileURLWithPath: config.efiVariableStorePath)
+    let efiURL = canonicalFileURL(config.efiVariableStorePath)
     let efiStore: VZEFIVariableStore
     if FileManager.default.fileExists(atPath: efiURL.path) {
         efiStore = VZEFIVariableStore(url: efiURL)
@@ -207,7 +257,7 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     bootLoader.variableStore = efiStore
     vm.bootLoader = bootLoader
 
-    let diskURL = URL(fileURLWithPath: config.diskPath)
+    let diskURL = canonicalFileURL(config.diskPath)
     // Explicit `.cached` + `.full` instead of the 2-arg initializer's
     // `.automatic` default. `.automatic` lets the host page cache
     // reorder/coalesce writes in ways the guest's ext4 journal
@@ -232,7 +282,7 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     )
     let diskDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
 
-    let seedURL = URL(fileURLWithPath: config.seedIsoPath)
+    let seedURL = canonicalFileURL(config.seedIsoPath)
     let seedAttachment = try VZDiskImageStorageDeviceAttachment(
         url: seedURL,
         readOnly: true
@@ -256,12 +306,7 @@ func buildVMConfiguration(from config: RunnerConfig) throws -> BuiltVMConfig {
     vm.networkDevices = [netDevice]
 
     let serial = VZVirtioConsoleDeviceSerialPortConfiguration()
-    let serialURL = URL(fileURLWithPath: config.serialLogPath)
-    // Only create the file on cold boot — `restoreMachineStateFrom`
-    // requires the new VZ configuration to match what was saved, and
-    // truncating the serial log on resume seemed to be one of the
-    // things AVF disliked (Code=12 "permission denied"). Append-only
-    // on every boot keeps the device state stable from AVF's view.
+    let serialURL = canonicalFileURL(config.serialLogPath)
     if !FileManager.default.fileExists(atPath: serialURL.path) {
         FileManager.default.createFile(atPath: serialURL.path, contents: nil, attributes: nil)
     }
@@ -385,6 +430,10 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     let restoreOnBoot: Bool
     private let queue: DispatchQueue
     private let vm: VZVirtualMachine
+    /// We hold onto the VZ configuration so we can call
+    /// `validateSaveRestoreSupport()` before restore. `VZVirtualMachine`
+    /// itself doesn't expose its configuration after construction.
+    private let vmConfiguration: VZVirtualMachineConfiguration
     private let exitSemaphore = DispatchSemaphore(value: 0)
     private var exitCode: Int32 = 0
     private var hasExited = false
@@ -407,6 +456,7 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         self.snapshotPath = snapshotPath
         self.restoreOnBoot = restoreOnBoot
         self.queue = DispatchQueue(label: "agv-avf-runner.vm.\(vmName)")
+        self.vmConfiguration = configuration
         self.vm = VZVirtualMachine(configuration: configuration, queue: self.queue)
         super.init()
         queue.sync {
@@ -469,7 +519,39 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     /// `vm.start` because that would lose the in-RAM guest state
     /// the user expected to recover.
     private func restoreAndResume() {
-        let url = URL(fileURLWithPath: snapshotPath)
+        // KNOWN LIMITATION: Apple Virtualization framework does not
+        // actually support save/restore for Linux guests as of
+        // macOS 15 / 26 — `validateSaveRestoreSupport()` returns ok,
+        // but `restoreMachineStateFrom` consistently fails with
+        //   `VZErrorDomain Code=12 "permission denied"`
+        // regardless of process boundary (same-process restore
+        // exhibits the identical failure). Reproduced with: minimal
+        // device list (no entropy, no serial, no virtio-socket),
+        // canonicalized file paths (`realpath(3)` resolves firmlinks),
+        // persisted MAC + machine identifier, `.cached`+`.full` disk
+        // attachment, and verified byte-identical save/restore URLs.
+        // Apple's "save and restore" sample exclusively targets macOS
+        // guests; Tart hard-codes a "you can only suspend macOS VMs"
+        // refusal for the same reason. We surface a clear error
+        // rather than appear to support it. Restore is gated to
+        // macOS guests by the framework itself; for Linux agent VMs
+        // the agv user should `agv stop` + `agv start` instead.
+        //
+        // We still attempt the restore so the failure mode is
+        // observable in logs and any future macOS update that fixes
+        // the framework lights this path up automatically.
+        let url = canonicalFileURL(snapshotPath)
+        do {
+            try self.vmConfiguration.validateSaveRestoreSupport()
+        } catch {
+            FileHandle.standardError.write(Data(
+                "agv-avf-runner: validateSaveRestoreSupport failed for '\(self.vmName)': \(error)\n".utf8
+            ))
+            self.setState(.errored)
+            self.exitCode = 1
+            self.signalExitOnce()
+            return
+        }
         vm.restoreMachineStateFrom(url: url) { [weak self] error in
             guard let self else { return }
             if let error {
@@ -528,7 +610,10 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
                     self.setState(.running)
                     return
                 }
-                let url = URL(fileURLWithPath: self.snapshotPath)
+                // Match `restoreAndResume`'s canonicalization — VZ
+                // records the URL in the snapshot and re-validates it
+                // on restore byte-for-byte.
+                let url = canonicalFileURL(self.snapshotPath)
                 self.vm.saveMachineStateTo(url: url) { [weak self] err in
                     guard let self else { return }
                     if let err {
@@ -761,8 +846,23 @@ final class ControlServer {
             runner.forceStop()
             return ControlResponse(ok: true)
         case "suspend":
-            runner.requestSuspend()
-            return ControlResponse(ok: true)
+            // Apple Virtualization framework does not support
+            // save/restore for Linux guests as of macOS 15 / 26 —
+            // `saveMachineStateTo` succeeds but the subsequent
+            // `restoreMachineStateFrom` consistently fails with the
+            // misleading `VZErrorDomain Code=12 "permission denied"`,
+            // regardless of process boundary or device list. Apple's
+            // sample code and every working public project (Tart,
+            // UTM, Lima) restrict save/restore to macOS guests. We
+            // refuse here so users get a clear, actionable error up
+            // front rather than a snapshot file that can't be
+            // restored. Re-enable once Apple's framework lifts the
+            // restriction; the `restoreAndResume` path is already
+            // wired.
+            return ControlResponse(
+                ok: false,
+                error: "suspend not supported on AVF backend (Apple Virtualization framework does not support save/restore for Linux guests). Use `agv stop` + `agv start` instead, or switch this VM to the qemu backend."
+            )
         case "status":
             // Look up the guest IP fresh on every status — DHCP
             // leases can take a few seconds after boot, and a stale
