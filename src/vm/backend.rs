@@ -366,7 +366,7 @@ impl VmBackend for LocalAvfBackend {
         match wait_for_avf_socket(inst, pid, Duration::from_secs(10)).await {
             Ok(()) => {}
             Err(e) => {
-                avf_kill_runner(pid);
+                avf_signal_runner(pid, rustix::process::Signal::TERM);
                 let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
                 return Err(e.context(runner_failure_message(
                     "agv-avf-runner failed to start",
@@ -382,7 +382,7 @@ impl VmBackend for LocalAvfBackend {
         match wait_for_avf_running(inst, Duration::from_secs(30)).await {
             Ok(()) => {}
             Err(e) => {
-                avf_kill_runner(pid);
+                avf_signal_runner(pid, rustix::process::Signal::TERM);
                 let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
                 return Err(e.context(runner_failure_message(
                     "agv-avf-runner did not reach running state",
@@ -413,22 +413,24 @@ impl VmBackend for LocalAvfBackend {
         // Fire the RPC even if we don't have a PID — the runner may
         // be alive without us having recorded the PID (e.g. user
         // hand-restored a state dir). Loss of PID just means we
-        // can't fall back to SIGTERM.
-        avf_rpc(&inst.avf_control_socket_path(), "stop").await?;
+        // can't fall back to SIGTERM/SIGKILL afterwards.
+        //
+        // The RPC itself can fail when the runner is wedged (socket
+        // present but unresponsive). Treat that as a soft failure if
+        // we have a PID — the SIGTERM/SIGKILL escalation below will
+        // recover. Without a PID there's nothing else to try.
+        let rpc_result = avf_rpc(&inst.avf_control_socket_path(), "stop").await;
+        if rpc_result.is_err() && pid.is_none() {
+            rpc_result?;
+        }
 
         if let Some(pid) = pid {
-            match wait_for_pid_exit(pid, Duration::from_secs(30)).await {
-                Ok(()) => {}
-                Err(_) => {
-                    warn!(
-                        pid,
-                        "agv-avf-runner didn't exit within 30s after stop RPC; sending SIGTERM"
-                    );
-                    avf_kill_runner(pid);
-                    wait_for_pid_exit(pid, Duration::from_secs(10))
-                        .await
-                        .context("agv-avf-runner did not exit after SIGTERM")?;
-                }
+            if wait_for_pid_exit(pid, Duration::from_secs(30)).await.is_err() {
+                warn!(
+                    pid,
+                    "agv-avf-runner didn't exit within 30s after stop RPC; escalating signals"
+                );
+                avf_terminate_runner(pid).await?;
             }
         }
         let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
@@ -442,7 +444,7 @@ impl VmBackend for LocalAvfBackend {
     async fn force_stop(&self, inst: &Instance) -> anyhow::Result<()> {
         let pid = read_avf_runner_pid(inst).await;
         // RPC may fail (socket gone, runner wedged) — that's fine,
-        // we'll SIGTERM via the recorded PID below.
+        // we'll signal-escalate via the recorded PID below.
         let rpc_result = avf_rpc(&inst.avf_control_socket_path(), "force_stop").await;
 
         if let Some(pid) = pid {
@@ -454,10 +456,7 @@ impl VmBackend for LocalAvfBackend {
                     return Ok(());
                 }
             }
-            avf_kill_runner(pid);
-            wait_for_pid_exit(pid, Duration::from_secs(10))
-                .await
-                .context("agv-avf-runner did not exit after SIGTERM")?;
+            avf_terminate_runner(pid).await?;
         } else if let Err(e) = rpc_result {
             // No PID and the RPC failed — nothing left to do.
             return Err(e).context("force_stop: RPC failed and no PID file to fall back on");
@@ -729,17 +728,40 @@ async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> anyhow::Result<()> {
     }
 }
 
-/// SIGTERM the runner's process group. Same primitive
+/// Signal the runner's process group. Same primitive
 /// `forward::kill_supervisor` uses for forward supervisors — kills
 /// the runner and any in-flight subprocess (it doesn't have any
 /// today, but defensively it's the right move).
 #[cfg(target_os = "macos")]
-fn avf_kill_runner(pid: u32) {
+fn avf_signal_runner(pid: u32, signal: rustix::process::Signal) {
     if let Some(p) = crate::forward::pid_from_u32(pid) {
-        // Negative PID targets the process group, which the runner
-        // owns because we spawned with process_group(0).
-        let _ = rustix::process::kill_process(p, rustix::process::Signal::TERM);
+        let _ = rustix::process::kill_process(p, signal);
     }
+}
+
+/// SIGTERM then, if needed, SIGKILL the runner's process group.
+/// Returns Ok once the process is gone. Always succeeds eventually
+/// unless the kernel itself is unresponsive — SIGKILL can't be caught
+/// or blocked, which is the recovery path when the runner is wedged
+/// (e.g. the guest issued `sudo halt`, leaving ACPI shutdown unable
+/// to resolve, and the runner's signal handler retries the same
+/// hopeless ACPI request).
+#[cfg(target_os = "macos")]
+async fn avf_terminate_runner(pid: u32) -> anyhow::Result<()> {
+    avf_signal_runner(pid, rustix::process::Signal::TERM);
+    if wait_for_pid_exit(pid, Duration::from_secs(10)).await.is_ok() {
+        return Ok(());
+    }
+    warn!(
+        pid,
+        "agv-avf-runner did not exit after SIGTERM; escalating to SIGKILL"
+    );
+    avf_signal_runner(pid, rustix::process::Signal::KILL);
+    wait_for_pid_exit(pid, Duration::from_secs(5))
+        .await
+        .with_context(|| {
+            format!("agv-avf-runner (pid {pid}) survived SIGKILL — kernel-level wedge")
+        })
 }
 
 /// Wait for the runner's control socket to appear. Aborts early if
@@ -1081,6 +1103,63 @@ mod tests {
         );
         child.kill().expect("kill sleep");
         child.wait().expect("reap sleep");
+    }
+
+    /// `avf_terminate_runner` escalates SIGTERM → SIGKILL when the
+    /// target ignores SIGTERM. Without this, an AVF runner wedged on
+    /// an ACPI shutdown that never resolves (e.g. guest issued
+    /// `sudo halt`) would leave `agv stop` unable to recover.
+    /// Reproduce with a bash child that `trap`s SIGTERM and ignores
+    /// it; only SIGKILL gets through.
+    ///
+    /// Timing assertion: the SIGTERM window in `avf_terminate_runner`
+    /// is 10s, so a successful escalation must take *at least* that
+    /// long. If the test returns in <10s we know SIGTERM accidentally
+    /// killed the child (test is invalid) rather than the escalation
+    /// firing as designed.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn avf_terminate_runner_escalates_to_sigkill_when_sigterm_ignored() {
+        // Use Perl rather than a shell `trap`: bash's `trap '' TERM`
+        // is unreliable here because bash forks an external `sleep`
+        // and the wait/signal interaction can fall through (verified
+        // by an earlier timing-assert run that exited in 100ms).
+        // Perl's `$SIG{TERM} = "IGNORE"` sets the kernel-level
+        // disposition to SIG_IGN in the same process that calls
+        // `sleep`, which is the rigorous reproduction we need.
+        // macOS ships Perl by default.
+        let mut child = std::process::Command::new("perl")
+            .args(["-e", "$SIG{TERM} = \"IGNORE\"; sleep 60"])
+            .spawn()
+            .expect("spawning sigterm-ignoring perl");
+        let pid = child.id();
+        // Give perl a moment to install the signal handler. Without
+        // this delay, an early SIGTERM lands before `$SIG{TERM} =
+        // "IGNORE"` executes — kernel default disposition (terminate)
+        // wins and the test sees a sub-second exit that *looks* like
+        // a broken escalation but is really a race.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(crate::forward::is_alive(pid));
+
+        let start = std::time::Instant::now();
+        let result = avf_terminate_runner(pid).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "avf_terminate_runner should succeed via SIGKILL escalation, got: {result:?}"
+        );
+        assert!(
+            !crate::forward::is_alive(pid),
+            "process should be gone after avf_terminate_runner returns"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(10),
+            "escalation must wait the full 10s SIGTERM window before SIGKILL — \
+             got {elapsed:?}, suggesting SIGTERM killed the child unexpectedly \
+             and the test isn't actually exercising the escalation path"
+        );
+        let _ = child.wait();
     }
 
     /// `read_avf_runner_pid` is forgiving — missing or malformed
