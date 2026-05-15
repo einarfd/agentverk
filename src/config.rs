@@ -1395,6 +1395,21 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         resolved.labels.insert(k, v);
     }
 
+    // 13. Refuse the auto-suspend + AVF combination at the boundary.
+    // The idle watcher's job is to trigger `vm::suspend`, which AVF
+    // refuses (Apple's framework doesn't support save/restore for
+    // Linux guests). Allowing this combination through would yield a
+    // watcher that retries-and-fails forever.
+    if resolved.backend == "avf" && resolved.idle_suspend_minutes > 0 {
+        anyhow::bail!(
+            "idle_suspend_minutes is not supported on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests, so the idle watcher's auto-suspend would \
+             always fail. Either unset idle_suspend_minutes, or use \
+             `--backend qemu`."
+        );
+    }
+
     Ok(resolved)
 }
 
@@ -2192,6 +2207,97 @@ cpus = 4
         let resolved = build_from_cli(&args).unwrap();
         assert_eq!(resolved.memory, "16G");
         assert_eq!(resolved.cpus, 4); // kept from config
+    }
+
+    /// `idle_suspend_minutes > 0` plus `backend = "avf"` is an
+    /// unworkable combination — AVF refuses suspend, so the watcher
+    /// would retry-and-fail forever. Refused at create time so users
+    /// can't accidentally save a VM into that state.
+    #[test]
+    fn build_from_cli_rejects_avf_with_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "avf"
+idle_suspend_minutes = 30
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let err = build_from_cli(&args)
+            .expect_err("avf + idle_suspend_minutes combo should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("idle_suspend_minutes") && msg.contains("avf"),
+            "error must mention the unsupported combination; got: {msg}"
+        );
+    }
+
+    /// AVF without auto-suspend is fine — only `idle_suspend_minutes > 0`
+    /// trips the combination check. (0 / unset = disabled.)
+    #[test]
+    fn build_from_cli_allows_avf_without_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "avf"
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let resolved = build_from_cli(&args)
+            .expect("avf without idle_suspend_minutes should build cleanly");
+        assert_eq!(resolved.backend, "avf");
+        assert_eq!(resolved.idle_suspend_minutes, 0);
+    }
+
+    /// QEMU + auto-suspend is supported and must not be rejected by
+    /// the AVF combination check.
+    #[test]
+    fn build_from_cli_allows_qemu_with_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "qemu"
+idle_suspend_minutes = 15
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let resolved = build_from_cli(&args)
+            .expect("qemu + idle_suspend_minutes should build cleanly");
+        assert_eq!(resolved.backend, "qemu");
+        assert_eq!(resolved.idle_suspend_minutes, 15);
     }
 
     #[tokio::test]

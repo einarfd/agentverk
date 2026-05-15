@@ -710,6 +710,25 @@ pub async fn config_set(
     }
 
     let inst = Instance::open(name)?;
+
+    // Refuse to enable auto-suspend on an AVF VM. The idle watcher's
+    // job is to trigger `vm::suspend`, which AVF refuses (Apple's
+    // framework doesn't support save/restore for Linux guests). A
+    // watcher there would just retry-and-fail forever in the logs.
+    if let Some(m) = idle_suspend_minutes
+        && m > 0
+    {
+        let cfg = crate::config::load_resolved(&inst.config_path())?;
+        anyhow::ensure!(
+            cfg.backend != "avf",
+            "idle_suspend_minutes is not supported on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests, so the idle watcher's auto-suspend would \
+             always fail. Recreate the VM with `--backend qemu` if you \
+             need auto-suspend."
+        );
+    }
+
     let status = inst.reconcile_status().await?;
 
     anyhow::ensure!(
