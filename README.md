@@ -6,8 +6,8 @@ Create and manage microVMs for AI agents.
 
 **Two backends, picked per VM:**
 
-- `qemu` — QEMU process. Cross-platform. Default everywhere except macOS on Apple Silicon.
-- `avf` — Apple Virtualization (`Virtualization.framework`). macOS Apple Silicon only. Default on that host shape. Faster cold boot, suspend, and resume.
+- `qemu` — QEMU process. Cross-platform. Default everywhere except macOS on Apple Silicon. Supports `agv suspend` / `agv resume` and `idle_suspend_minutes` auto-suspend.
+- `avf` — Apple Virtualization (`Virtualization.framework`). macOS Apple Silicon only. Default on that host shape. Faster cold boot than QEMU. Does **not** support `agv suspend` / `agv resume` or `idle_suspend_minutes` — Apple's framework doesn't support save/restore for Linux guests. Use `agv stop` + `agv start` instead, or pick the `qemu` backend if auto-suspend matters.
 
 Override per VM with `--backend avf` / `--backend qemu` on `agv create`, or `backend = "..."` in the TOML config. See `docs/config.md` for the full reference.
 
