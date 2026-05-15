@@ -716,6 +716,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[files]]
 source = "{src}"
@@ -846,6 +847,7 @@ include = ["devtools"]
 memory = "2G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[files]]
 source = "{src}"
@@ -984,6 +986,7 @@ include = ["{mixin_name}"]
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 "#
     );
     let toml_path = write_config(host_tmp.path(), &config_toml).await;
@@ -1129,6 +1132,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 "#;
     let toml_path = write_config(host_tmp.path(), config_toml).await;
 
@@ -1279,6 +1283,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[provision]]
 run = "echo first >> /tmp/agv-retry-log"
@@ -1399,6 +1404,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 idle_suspend_minutes = 1
 idle_load_threshold = 2.0
 "#;
@@ -1472,6 +1478,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 idle_suspend_minutes = 1
 idle_load_threshold = 2.0
 "#;

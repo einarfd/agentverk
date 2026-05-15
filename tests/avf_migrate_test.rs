@@ -349,6 +349,10 @@ async fn migrate_refuses_running_vm() {
     let name = format!("avf-mig-run-{suffix}");
     let name = name.as_str();
 
+    // Explicit `backend = "qemu"` — the host's default backend is now
+    // `"avf"` on macOS Apple Silicon, but this test specifically
+    // exercises `agv backend migrate-to-avf`, which requires a QEMU
+    // source VM.
     let qemu_config = r#"
 [base]
 from = "debian-12"
@@ -357,6 +361,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "3G"
+backend = "qemu"
 "#;
     let toml_path = write_config(host_tmp.path(), qemu_config).await;
 
