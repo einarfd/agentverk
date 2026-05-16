@@ -89,8 +89,11 @@ test-slow:
     cargo test -- --include-ignored --nocapture
 
 # Lint with clippy::pedantic. Must pass with zero warnings.
+# `-D warnings` matches the CI invocation in `.github/workflows/ci.yml`
+# so `just verify` and CI agree: a passing local run guarantees the
+# clippy step on either CI leg.
 clippy:
-    cargo clippy --all-targets --all-features
+    cargo clippy --all-targets --all-features -- -D warnings
 
 # Run clippy + the fast test suite + Swift unit tests. Pre-commit gate.
 verify: clippy test test-avf-runner
