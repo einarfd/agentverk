@@ -113,6 +113,15 @@ fn make_empty_raw(dir: &std::path::Path) -> PathBuf {
     path
 }
 
+/// Wire-protocol version currently expected by the runner. Must
+/// match `RUNNER_PROTOCOL_VERSION` in
+/// `src/vm/backend.rs` and the Swift constant in main.swift.
+/// Tests pin the value explicitly rather than importing the Rust
+/// constant — the runner is a black box from the test's
+/// perspective, and the protocol version is part of its public
+/// contract.
+const RUNNER_PROTOCOL_VERSION: u32 = 1;
+
 /// Write a runner config JSON pointing at the supplied disk + seed paths.
 fn write_config(
     dir: &std::path::Path,
@@ -120,8 +129,22 @@ fn write_config(
     disk: &std::path::Path,
     seed: &std::path::Path,
 ) -> PathBuf {
+    write_config_with_protocol_version(dir, name, disk, seed, RUNNER_PROTOCOL_VERSION)
+}
+
+/// Variant of [`write_config`] that lets the test choose the protocol
+/// version. Used by the version-mismatch test to write a config the
+/// runner must reject.
+fn write_config_with_protocol_version(
+    dir: &std::path::Path,
+    name: &str,
+    disk: &std::path::Path,
+    seed: &std::path::Path,
+    protocol_version: u32,
+) -> PathBuf {
     let cfg = format!(
         r#"{{
+  "runner_protocol_version": {protocol_version},
   "name": "{name}",
   "memory_bytes": 1073741824,
   "cpu_count": 2,
@@ -152,19 +175,23 @@ fn write_config(
 }
 
 #[test]
-fn version_flag_succeeds() {
+fn version_flag_reports_protocol_version() {
     let Some(binary) = runner_binary() else {
         eprintln!(
-            "agv-avf-runner not built — skipping version_flag_succeeds (run: just build-avf-runner)"
+            "agv-avf-runner not built — skipping version_flag_reports_protocol_version (run: just build-avf-runner)"
         );
         return;
     };
     let out = Command::new(&binary).arg("--version").output().unwrap();
     assert!(out.status.success(), "--version exited non-zero");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // The runner prints `agv-avf-runner protocol <N>` so agv (or
+    // a human reading `agv doctor` output) can sanity-check what
+    // wire version the installed binary speaks.
+    let expected = format!("agv-avf-runner protocol {RUNNER_PROTOCOL_VERSION}");
     assert!(
-        stdout.starts_with("agv-avf-runner "),
-        "unexpected --version output: {stdout}"
+        stdout.trim() == expected,
+        "expected `{expected}` from --version, got: {stdout:?}"
     );
 }
 
@@ -257,6 +284,56 @@ fn validate_fails_when_disk_missing() {
     assert!(
         !out.status.success(),
         "validate should fail when disk path doesn't exist"
+    );
+}
+
+/// Wire-protocol version skew is fail-fast. Write a config that
+/// declares a version the runner doesn't know and assert the runner
+/// refuses with a clear, actionable error pointing at reinstall —
+/// the install-skew scenario this guard exists to prevent (e.g.
+/// `cargo install agv` upgraded the Rust side but the user's
+/// `agv-avf-runner` is still from an older tarball).
+#[test]
+fn rejects_config_with_wrong_protocol_version() {
+    let Some(binary) = runner_binary() else {
+        eprintln!(
+            "agv-avf-runner not built — skipping rejects_config_with_wrong_protocol_version"
+        );
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let disk = make_empty_raw(dir.path());
+    let seed = make_seed_iso(dir.path(), "avf-version-mismatch");
+    // 999 stays far enough above the current version that this test
+    // doesn't need to be updated every time we bump.
+    let cfg = write_config_with_protocol_version(
+        dir.path(),
+        "avf-version-mismatch",
+        &disk,
+        &seed,
+        999,
+    );
+
+    let out = Command::new(&binary)
+        .arg("--config")
+        .arg(&cfg)
+        .arg("--validate-only")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "runner must refuse a config with a wrong protocol version"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("protocol version mismatch")
+            && stderr.contains("v999")
+            && stderr.contains(&format!("v{RUNNER_PROTOCOL_VERSION}")),
+        "error must name both versions; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Reinstall") || stderr.contains("reinstall"),
+        "error should point users at the reinstall fix; got: {stderr}"
     );
 }
 

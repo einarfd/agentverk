@@ -12,10 +12,54 @@ import Virtualization
 import Darwin
 
 // ---------------------------------------------------------------------------
+// Runner ↔ agv wire-protocol version
+// ---------------------------------------------------------------------------
+
+/// Wire-protocol version this runner speaks.
+///
+/// Must match `RUNNER_PROTOCOL_VERSION` in
+/// `src/vm/backend.rs` on the Rust side. The runner refuses to boot
+/// when the value embedded in `RunnerConfig.runnerProtocolVersion`
+/// (sent by agv at spawn time) doesn't match this constant —
+/// strict equality, not a compatibility range. agv and the runner
+/// ship from the same repo and are expected to be installed
+/// together (`just install` or release-tarball install).
+///
+/// **Bump this on any change that affects the runner ↔ agv contract
+/// or observable behaviour:**
+/// - Adding / removing / renaming a field in `RunnerConfig`
+/// - Adding / removing / renaming a control-socket op
+/// - Adding / removing / renaming a field in `ControlResponse`
+/// - Changing the *semantics* of an existing op or field, even if
+///   the wire shape is unchanged (e.g. `stop` used to mean
+///   ACPI-shutdown and now means SIGKILL — bump)
+/// - Fixing a runner bug that changes what agv observes (e.g. the
+///   path-canonicalization fix that changed restore behaviour)
+/// - Adding a new capability the runner advertises
+///
+/// **Don't bump for pure refactors** that have no observable wire
+/// or behavioural change.
+///
+/// Increment by 1 for every change. There's no semver here —
+/// install-skew is the only failure mode we're guarding against,
+/// and any drift is a hard error, not a compatibility window.
+/// When bumping, update the matching `RUNNER_PROTOCOL_VERSION`
+/// constant in `src/vm/backend.rs` in the same commit. Document
+/// the change in `AGENTS.md` under
+/// "Runner ↔ agv wire-protocol versioning" if the rationale isn't
+/// obvious from the commit message.
+let RUNNER_PROTOCOL_VERSION: UInt32 = 1
+
+// ---------------------------------------------------------------------------
 // JSON config sent by the Rust side
 // ---------------------------------------------------------------------------
 
 struct RunnerConfig: Codable {
+    /// Wire-protocol version agv built this config against. The
+    /// runner validates `== RUNNER_PROTOCOL_VERSION` at load and
+    /// refuses to boot on mismatch — fail-fast with a clear install
+    /// hint, rather than risk silent behavioural drift mid-run.
+    let runnerProtocolVersion: UInt32
     let name: String
     let memoryBytes: UInt64
     let cpuCount: Int
@@ -91,8 +135,6 @@ enum VMState: String {
 // CLI entry
 // ---------------------------------------------------------------------------
 
-let version = "0.0.0"
-
 let args = CommandLine.arguments
 var configPath: String? = nil
 var validateOnly = false
@@ -102,7 +144,13 @@ while i < args.count {
     let arg = args[i]
     switch arg {
     case "--version", "-V":
-        print("agv-avf-runner \(version)")
+        // Print the wire-protocol version. agv compares this against
+        // its own `RUNNER_PROTOCOL_VERSION` to detect binary-skew
+        // installs (e.g. `cargo install agv` upgraded the Rust side
+        // but the user's `agv-avf-runner` is still from an older
+        // tarball). The runner does not carry an independent semver
+        // — protocol version IS the version that matters to agv.
+        print("agv-avf-runner protocol \(RUNNER_PROTOCOL_VERSION)")
         exit(0)
     case "--help", "-h":
         printHelp()
@@ -176,7 +224,26 @@ func loadConfig(from path: String) throws -> RunnerConfig {
     let data = try Data(contentsOf: url)
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
-    return try decoder.decode(RunnerConfig.self, from: data)
+    let config = try decoder.decode(RunnerConfig.self, from: data)
+    // Strict equality on the wire-protocol version. agv and the
+    // runner are expected to be installed together; any drift
+    // means a partial install (or a dev build mixed with a
+    // released binary) and we'd rather surface that explicitly
+    // here than risk silent semantic drift later.
+    guard config.runnerProtocolVersion == RUNNER_PROTOCOL_VERSION else {
+        throw NSError(
+            domain: "agv-avf-runner.protocol",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "runner protocol version mismatch: agv expects v\(config.runnerProtocolVersion), " +
+                    "this runner speaks v\(RUNNER_PROTOCOL_VERSION). " +
+                    "Reinstall so both come from the same build " +
+                    "(`just install` from a clone, or grab the matching release tarball)."
+            ]
+        )
+    }
+    return config
 }
 
 /// `buildVMConfiguration`'s return shape: the VZ config plus the MAC

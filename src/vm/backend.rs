@@ -31,6 +31,36 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use tracing::{debug, info, warn};
 
+/// Wire-protocol version agv expects from `agv-avf-runner`.
+///
+/// Must match `RUNNER_PROTOCOL_VERSION` in
+/// `swift/avf-runner/Sources/avf-runner/main.swift`. Bump on any
+/// change that affects the runner ↔ agv contract or observable
+/// behaviour:
+/// - Adding / removing / renaming fields in [`AvfRunnerConfig`]
+///   (or the Swift `RunnerConfig`)
+/// - Adding / removing / renaming control-socket ops or
+///   [`AvfRpcResponse`] fields
+/// - Changing the *semantics* of an existing op or field even if
+///   the wire shape is unchanged (e.g. `stop` used to do ACPI-only
+///   shutdown and now SIGKILL-escalates — bump)
+/// - Fixing a runner bug that changes what agv observes
+/// - Adding a new capability the runner advertises
+///
+/// Don't bump for pure refactors with no observable change.
+///
+/// Increment by 1 each time. There is no semver, no compatibility
+/// range — install-skew is the only failure mode we guard against,
+/// and the runner refuses to boot on mismatch (strict equality,
+/// fail-fast with a clear install hint).
+///
+/// When bumping: update this constant **and** the matching
+/// constant in main.swift in the *same commit*, and mention the
+/// reason in the commit message. See `AGENTS.md` →
+/// "Runner ↔ agv wire-protocol versioning".
+#[cfg(target_os = "macos")]
+pub const RUNNER_PROTOCOL_VERSION: u32 = 1;
+
 /// Backends own VM lifecycle: boot, stop, suspend/resume, and the SSH
 /// endpoint of the guest.
 ///
@@ -291,6 +321,7 @@ impl VmBackend for LocalAvfBackend {
 
         // Compose the JSON config the runner reads.
         let runner_cfg = AvfRunnerConfig {
+            runner_protocol_version: RUNNER_PROTOCOL_VERSION,
             name: inst.name.clone(),
             memory_bytes: parse_memory(&cfg.memory)?,
             cpu_count: cfg.cpus,
@@ -537,6 +568,12 @@ impl VmBackend for LocalAvfBackend {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct AvfRunnerConfig {
+    /// Wire-protocol version. The runner refuses to boot on
+    /// mismatch — fail-fast for binary-skew installs (e.g.
+    /// `cargo install agv` upgraded the Rust side but the user's
+    /// `agv-avf-runner` is still from an older tarball). Always
+    /// set to [`RUNNER_PROTOCOL_VERSION`] at serialize time.
+    runner_protocol_version: u32,
     name: String,
     memory_bytes: u64,
     cpu_count: u32,

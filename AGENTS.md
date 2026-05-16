@@ -121,6 +121,26 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Inline `run` scripts get `set -e` injected before bash sees them.** `provision.rs::with_set_e` prepends `set -e\n` to every inline setup/provision `run` string. Without it, multi-line scripts silently swallow mid-script failures because bash's exit status is the last command's. Mixins that want stricter modes (`-u`, `pipefail`) still declare them themselves; this is just the safe default. Script-file steps (`script = "..."`) are unaffected — those carry their own shebang.
 - **`~/.agv/system.md` for in-VM agent discoverability.** Written once at the end of first-boot provisioning via SSH (base64-encoded payload to sidestep shell quoting). Contains OS family, user + sudo capability, and one bullet per applied mixin (with its `notes = [...]` line if declared, else just the name). Each agent-CLI mixin wires its tool to pick the file up automatically: `claude` and `gemini` append a one-line `@~/.agv/system.md` pointer to `~/.claude/CLAUDE.md` / `~/.gemini/GEMINI.md` (both tools resolve `@<path>` as a file include); `codex` and `openclaw` have no include syntax, so they symlink `~/.codex/AGENTS.md` / `~/.openclaw/workspace/AGENTS.md` to `~/.agv/system.md`. All four are idempotent on retry and skip silently if a user-authored file is already there.
 
+## Runner ↔ agv wire-protocol versioning
+
+The agv (Rust) ↔ agv-avf-runner (Swift) JSON contract — both the spawn-time `RunnerConfig` and the line-delimited control-socket RPC — carries a `runner_protocol_version` field. The runner refuses to boot if the version in its config doesn't match its own compiled-in constant, with a clear `reinstall` hint. The two source-of-truth constants must match exactly:
+
+- Rust: `RUNNER_PROTOCOL_VERSION` in `src/vm/backend.rs`
+- Swift: `RUNNER_PROTOCOL_VERSION` in `swift/avf-runner/Sources/avf-runner/main.swift`
+
+**Bump both constants — in the same commit — when:**
+- Adding, removing, or renaming a field in the runner config or control-socket request/response.
+- Adding, removing, or renaming a control-socket op.
+- Changing the *semantics* of an existing op or field even if the wire shape is unchanged. Example: `stop` used to only do ACPI shutdown and now escalates to SIGKILL — that's a semantic change agv depends on, so it would have been a bump.
+- Fixing a runner bug that changes what agv observes (e.g. the path-canonicalization change to make restore work).
+- Adding a new capability the runner advertises.
+
+**Don't bump for** pure refactors with no observable wire or behavioural change.
+
+Increment by 1 each time. There is no semver and no compatibility range — strict equality, install-skew is the only failure mode this guards against, and agv + runner are expected to ship together (`just install` for source installs; release tarballs bundle both binaries). `agv-avf-runner --version` prints the protocol version directly (no separate binary version), which is what `agv doctor` checks against to surface mismatches early.
+
+Forward-compatibility caveat: serde and Swift's `JSONDecoder` both ignore unknown JSON fields by default, so an older runner reading a newer agv's config will silently drop fields rather than reject them. That's why we have the explicit version field — wire-shape tolerance is not enough to catch behavioural drift.
+
 ## Conventions
 
 - **Error handling**: `anyhow::Result` for application code, `thiserror` for library error types in `error.rs`
