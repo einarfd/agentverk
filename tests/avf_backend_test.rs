@@ -14,7 +14,7 @@
 //! - On macOS without the Swift runner built: skipped via runtime check
 //!   for the binary at `swift/avf-runner/.build/release/agv-avf-runner`.
 //!   Build with `just build-avf-runner`.
-//! - On macOS without the cached PoC raw disk: skipped. Boot fixture is
+//! - On macOS without the cached `PoC` raw disk: skipped. Boot fixture is
 //!   the same one the swift-binary tests use — see `tests/avf_runner_test.rs`.
 //!
 //! Marked `#[ignore]` because each test boots a real VM (~10-30s each).
