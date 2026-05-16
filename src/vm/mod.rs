@@ -1264,6 +1264,10 @@ pub async fn rename(old: &str, new: &str) -> anyhow::Result<()> {
 ///
 /// macOS-only. The function returns an error on Linux because the
 /// `avf` backend can't be selected there.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Migration is a sequential transactional pipeline (validate → convert disk → bump instance-id → switch backend field → save config → optionally delete qcow2 → emit report). Each step has rollback-on-failure semantics that depend on the surrounding state; pulling them into helpers would scatter the rollback logic and make the failure path harder to verify."
+)]
 pub async fn migrate_to_avf(
     name: &str,
     delete_qcow2: bool,

@@ -19,6 +19,20 @@
 //! cloud image. Run with `cargo test -- --include-ignored --nocapture`.
 
 #![cfg(target_os = "macos")]
+// Test-pragmatism lints. macOS-only file; pinned at file scope per
+// the AGENTS.md convention (use `#[expect]` over `#[allow]`).
+#![expect(
+    clippy::doc_markdown,
+    reason = "test docstrings quote tool / path names freely without backticks"
+)]
+#![expect(
+    clippy::map_unwrap_or,
+    reason = "test code prefers the verb form for readability"
+)]
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "nanos-since-epoch ANDed with 0xff_ffff is a deliberate 24-bit hash for unique test VM names"
+)]
 
 use std::path::{Path, PathBuf};
 

@@ -14,6 +14,25 @@
 //! `swift build`, and the JSON config protocol.
 
 #![cfg(target_os = "macos")]
+// Test-pragmatism lints. These only fire on macOS (the file itself is
+// `#[cfg]`-gated); pinning them at file scope keeps test scaffolding
+// terse instead of forcing every fixture into a helper.
+#![expect(
+    clippy::doc_markdown,
+    reason = "test docstrings quote tool / path names freely without backticks"
+)]
+#![expect(
+    clippy::single_match_else,
+    reason = "early-return match form reads more clearly than nested if-let in helpers"
+)]
+#![expect(
+    clippy::zombie_processes,
+    reason = "termination-escalation tests reap their child via assertions, not Drop"
+)]
+#![expect(
+    clippy::manual_assert,
+    reason = "panic-with-message inside an if is clearer when the failure path IS the test"
+)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;

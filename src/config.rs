@@ -576,7 +576,7 @@ fn default_idle_load_threshold() -> f32 {
 ///
 /// Intel macOS could in principle use AVF too, but the cloud images
 /// we ship are arm64 and we don't currently bundle the runner for
-/// x86_64 Mac builds — defaulting them to AVF would just produce a
+/// `x86_64` Mac builds — defaulting them to AVF would just produce a
 /// boot failure. They land on QEMU and `--backend avf` still
 /// validates if anyone has bootstrapped it themselves.
 ///
@@ -1279,6 +1279,10 @@ pub fn parse_labels(raw: &[String]) -> anyhow::Result<BTreeMap<String, String>> 
     Ok(out)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Sequential 13-step pipeline (config-source → overlays → parsing → resolution → template expansion → validation). Each numbered step is small and self-contained; splitting them across helpers would just move comment-numbered prose into function names without changing what a reader has to keep in their head."
+)]
 pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 1. Determine the base config source.
     //    Also record the config file's directory so we can look for .env there.

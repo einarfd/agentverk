@@ -21,6 +21,20 @@
 //! Run with `cargo test -- --include-ignored --nocapture`.
 
 #![cfg(target_os = "macos")]
+// Test-pragmatism lints. macOS-only file; pinned at file scope per
+// the AGENTS.md convention (use `#[expect]` over `#[allow]`).
+#![expect(
+    clippy::doc_markdown,
+    reason = "test docstrings quote tool / path names freely without backticks"
+)]
+#![expect(
+    clippy::map_unwrap_or,
+    reason = "the read .map().unwrap_or() form reads as 'normalize-or-default' more clearly than .map_or() in test setup"
+)]
+#![expect(
+    clippy::uninlined_format_args,
+    reason = "older format-arg style kept for parity with surrounding test helpers"
+)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

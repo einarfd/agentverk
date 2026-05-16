@@ -436,7 +436,7 @@ impl VmBackend for LocalAvfBackend {
     ///
     /// ACPI shutdown on a quiet Linux guest is a few seconds; we
     /// allow 30s so a busy guest with active fsync work has time to
-    /// finish. If the runner overruns, fall back to SIGTERMing its
+    /// finish. If the runner overruns, fall back to `SIGTERM`ing its
     /// process group and waiting again. PID file is removed on
     /// successful exit so a future start has a clean slate.
     async fn stop(&self, inst: &Instance) -> anyhow::Result<()> {
@@ -586,7 +586,7 @@ struct AvfRunnerConfig {
     /// where it reads it from on resume. Same file in both directions.
     snapshot_path: String,
     /// True for `agv resume`: runner calls `restoreMachineStateFrom`
-    /// + `vm.resume` instead of `vm.start`. False for a cold boot.
+    /// and `vm.resume` instead of `vm.start`. False for a cold boot.
     /// The Swift side decodes a missing key as false, but we
     /// always serialize the bool explicitly.
     restore_on_boot: bool,
@@ -613,7 +613,7 @@ struct AvfRunnerConfig {
 pub fn locate_avf_runner() -> anyhow::Result<PathBuf> {
     locate_avf_runner_with(
         std::env::var("AGV_AVF_RUNNER").ok(),
-        std::env::current_exe().context("locating current agv binary")?,
+        &std::env::current_exe().context("locating current agv binary")?,
     )
 }
 
@@ -623,7 +623,7 @@ pub fn locate_avf_runner() -> anyhow::Result<PathBuf> {
 #[cfg(target_os = "macos")]
 fn locate_avf_runner_with(
     env_override: Option<String>,
-    current_exe: PathBuf,
+    current_exe: &Path,
 ) -> anyhow::Result<PathBuf> {
     if let Some(raw) = env_override {
         let path = PathBuf::from(&raw);
@@ -663,11 +663,11 @@ fn parse_memory(spec: &str) -> anyhow::Result<u64> {
 /// inline if present. The runner is detached and its stderr/stdout
 /// go to `<inst>/avf-runner.log`; tail of that file is what the
 /// user actually needs to debug a startup failure (codesign
-/// rejection, validate() errors, etc.). Read synchronously — we're
+/// rejection, `validate()` errors, etc.). Read synchronously — we're
 /// already on the error path and the log is small (a few KB at
 /// most). On empty/missing log, fall back to just the file path so
 /// the user can investigate manually (typical when the runner was
-/// SIGKILL'd by AppleSystemPolicy before producing any output).
+/// `SIGKILL`'d by `AppleSystemPolicy` before producing any output).
 #[cfg(target_os = "macos")]
 fn runner_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
     let log = std::fs::read_to_string(log_path).unwrap_or_default();
@@ -746,8 +746,8 @@ fn pid_is_running(pid: u32) -> bool {
 /// reaper is whatever process becomes its parent. In production
 /// that's `init` (the agv binary exits shortly after sending
 /// suspend), but inside a long-lived test binary the runner
-/// stays a zombie of the test process until reaped — and is_alive
-/// would report it alive forever. We complement is_alive with a
+/// stays a zombie of the test process until reaped — and `is_alive`
+/// would report it alive forever. We complement `is_alive` with a
 /// best-effort `waitpid(WNOHANG)` to reap if we happen to be the
 /// parent. Both checks return cheaply for non-children (rustix
 /// surfaces `ECHILD`), so it's safe to call in either context.
@@ -1061,7 +1061,7 @@ mod tests {
         // returned binary's behavior.
         let exe = std::env::current_exe().unwrap();
         let resolved =
-            locate_avf_runner_with(Some(exe.display().to_string()), exe.clone()).unwrap();
+            locate_avf_runner_with(Some(exe.display().to_string()), &exe).unwrap();
         assert_eq!(resolved, exe);
     }
 
@@ -1071,7 +1071,7 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let err = locate_avf_runner_with(
             Some("/no/such/path/agv-avf-runner".to_string()),
-            exe,
+            &exe,
         )
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -1091,7 +1091,7 @@ mod tests {
         std::fs::write(&fake_exe, b"#!/bin/sh\nexit 0\n").unwrap();
         let runner = dir.path().join("agv-avf-runner");
         std::fs::write(&runner, b"#!/bin/sh\nexit 0\n").unwrap();
-        let resolved = locate_avf_runner_with(None, fake_exe).unwrap();
+        let resolved = locate_avf_runner_with(None, &fake_exe).unwrap();
         assert_eq!(resolved, runner);
     }
 

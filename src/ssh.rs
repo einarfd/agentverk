@@ -320,6 +320,10 @@ fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
 /// IP arrives via guest DHCP, not when the VM process starts. The
 /// QEMU backend's endpoint is stable (a host-side port forward), so
 /// the re-resolve is a cheap read of one file per iteration.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Single polling state machine — readability comes from keeping the loop, the re-resolve of guest IP per iteration, and the multi-class error parsing (Connection refused, publickey, host-key changed, generic timeout) co-located. Pulling each branch into a helper would obscure the linear timing logic that ties them together."
+)]
 pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<()> {
     let backend = crate::vm::backend::for_instance(instance)?;
     let key_path = instance.ssh_key_path();

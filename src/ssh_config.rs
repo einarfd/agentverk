@@ -342,7 +342,7 @@ Host foo
         assert!(entry.contains("StrictHostKeyChecking no"));
     }
 
-    /// AVF backend: HostName must be the guest's NAT IP (port 22),
+    /// AVF backend: `HostName` must be the guest's NAT IP (port 22),
     /// not the QEMU `localhost`+`hostport` shape. A stale entry from
     /// before the AVF backend existed would render this as
     /// `HostName localhost / Port 22` and `ssh <name>` would try to
