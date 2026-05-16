@@ -35,17 +35,43 @@ jobs:
         if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get install -y musl-tools
 
-      - name: Build
+      - name: Build agv (Rust)
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
+      # macOS releases bundle `agv-avf-runner` alongside `agv` so a
+      # single install step lays down both binaries. Without this an
+      # install on macOS Apple Silicon — where `avf` is the default
+      # backend — would get a working `agv` whose default-backend
+      # path immediately fails to spawn the runner.
+      - name: Install just (macOS only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: brew install just
+
+      - name: Build agv-avf-runner (macOS only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: just build-avf-runner
+
+      # Stage binaries into a per-target dir, then tar. Tarballs
+      # rather than raw binaries so:
+      #   1. The install script has one shape across platforms.
+      #   2. macOS ships two binaries (`agv` + `agv-avf-runner`)
+      #      without a second download step.
+      - name: Package tarball
         shell: bash
-        run: cp "target/${{ matrix.target }}/release/agv" "agv-${{ matrix.target }}"
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/agv-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/agv" "dist/agv-${{ matrix.target }}/agv"
+          if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
+            cp "swift/avf-runner/.build/release/agv-avf-runner" \
+               "dist/agv-${{ matrix.target }}/agv-avf-runner"
+          fi
+          tar czf "dist/agv-${{ matrix.target }}.tar.gz" -C dist "agv-${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: agv-${{ matrix.target }}
+          path: dist/agv-${{ matrix.target }}.tar.gz
 
   release:
     name: Create release
@@ -63,7 +89,7 @@ jobs:
       - name: Checksums
         run: |
           cd artifacts
-          sha256sum agv-* > checksums.txt
+          sha256sum agv-*.tar.gz > checksums.txt
 
       - name: Create GitHub release
         run: |
@@ -71,7 +97,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            artifacts/agv-* \
+            artifacts/agv-*.tar.gz \
             artifacts/checksums.txt
         env:
           GH_TOKEN: ${{ github.token }}

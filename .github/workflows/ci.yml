@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    name: Clippy + Test
+    name: Clippy + Test (Linux)
     runs-on: ubuntu-latest
 
     steps:
@@ -31,5 +31,66 @@ jobs:
         run: cargo test --lib
 
       # CLI argument tests — invoke the compiled binary, no QEMU needed.
+      - name: CLI tests
+        run: cargo test --test cli_test
+
+  # macOS job — without this, the whole AVF code path (most of
+  # src/vm/backend.rs, the Swift runner, the four AVF integration test
+  # files) goes un-compiled and un-linted in CI. The Ubuntu job
+  # silently skips them via `#[cfg(target_os = "macos")]`.
+  check-macos:
+    name: Clippy + Test (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `just` isn't preinstalled on GH Actions macOS runners. Brew
+      # is, and `just` installs in a few seconds.
+      - name: Install just
+        run: brew install just
+
+      # Build the Swift runner first. Several Rust integration tests
+      # (`avf_runner_test`, `avf_backend_test`) skip themselves at
+      # runtime if the binary isn't present — which would defeat the
+      # purpose of running them in CI. Builds in ~5s; codesigns ad-hoc
+      # with the virtualization entitlement.
+      - name: Build agv-avf-runner
+        run: just build-avf-runner
+
+      # Clippy with the same `-D warnings` strictness as the Linux
+      # job. The macOS-only code (`#[cfg(target_os = "macos")]` gates
+      # in src/vm/backend.rs, src/doctor.rs, src/ssh_config.rs) is
+      # only ever linted here.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Rust unit tests. Same coverage as the Linux job, plus the
+      # macOS-gated modules.
+      - name: Unit tests
+        run: cargo test --lib
+
+      # Fast AVF integration tests (5 tests): version flag, unknown
+      # arg, config-without-path, validate-only success, validate-only
+      # failure on missing disk, plus the new runner-protocol-version
+      # mismatch test. None boot a VM; total ~1s.
+      - name: AVF runner tests (fast)
+        run: cargo test --test avf_runner_test
+
+      # Swift unit tests for the runner's pure-logic helpers
+      # (LeaseLookup, etc.). Run via `just` so the -F flags for
+      # Command Line Tools' Testing framework are applied.
+      - name: Swift runner tests
+        run: just test-avf-runner
+
+      # CLI argument tests — same as Linux job, runs on macOS too so
+      # the macOS-specific `agv create --backend avf` flag wiring
+      # gets exercised.
       - name: CLI tests
         run: cargo test --test cli_test
