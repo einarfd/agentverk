@@ -186,6 +186,8 @@ Options:
   -y, --yes      Assume yes for all confirmations
 ```
 
+**Shutting down from inside the VM**: use `sudo poweroff` (or `sudo shutdown -h now`). `sudo halt` only halts the CPUs — it skips the ACPI poweroff event, so neither QEMU nor AVF notices the guest stopped, and `agv ls` will keep reporting the VM as `running` until you run `agv stop` from the host.
+
 ## Config file
 
 VMs can be configured with a TOML file passed to `agv create --config <path>`.
