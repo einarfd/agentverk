@@ -132,92 +132,15 @@ enum VMState: String {
 }
 
 // ---------------------------------------------------------------------------
-// CLI entry
-// ---------------------------------------------------------------------------
-
-let args = CommandLine.arguments
-var configPath: String? = nil
-var validateOnly = false
-
-var i = 1
-while i < args.count {
-    let arg = args[i]
-    switch arg {
-    case "--version", "-V":
-        // Print the wire-protocol version. agv compares this against
-        // its own `RUNNER_PROTOCOL_VERSION` to detect binary-skew
-        // installs (e.g. `cargo install agv` upgraded the Rust side
-        // but the user's `agv-avf-runner` is still from an older
-        // tarball). The runner does not carry an independent semver
-        // — protocol version IS the version that matters to agv.
-        print("agv-avf-runner protocol \(RUNNER_PROTOCOL_VERSION)")
-        exit(0)
-    case "--help", "-h":
-        printHelp()
-        exit(0)
-    case "--config":
-        guard i + 1 < args.count else {
-            die("--config requires a path argument")
-        }
-        configPath = args[i + 1]
-        i += 2
-        continue
-    case "--validate-only":
-        validateOnly = true
-        i += 1
-        continue
-    default:
-        die("unrecognized argument '\(arg)'")
-    }
-}
-
-guard let configPath else {
-    die("missing required --config <path>")
-}
-
-let config: RunnerConfig
-let vmConfig: VZVirtualMachineConfiguration
-let macAddress: VZMACAddress
-do {
-    config = try loadConfig(from: configPath)
-    let built = try buildVMConfiguration(from: config)
-    vmConfig = built.configuration
-    macAddress = built.macAddress
-    try vmConfig.validate()
-} catch {
-    die("\(error)")
-}
-
-if validateOnly {
-    print("agv-avf-runner: config validates for VM '\(config.name)'")
-    exit(0)
-}
-
-let runner = VMRunner(
-    configuration: vmConfig,
-    vmName: config.name,
-    macAddress: macAddress,
-    snapshotPath: config.snapshotPath,
-    restoreOnBoot: config.restoreOnBoot ?? false
-)
-
-// Bind the control socket before booting so the parent agv process can
-// connect immediately. If this fails, treat it as fatal — there's no
-// point booting a VM we can't control.
-let controlServer = ControlServer(path: config.controlSocketPath, runner: runner)
-do {
-    try controlServer.start()
-} catch {
-    die("failed to bind control socket at \(config.controlSocketPath): \(error)")
-}
-
-let exitCode = runner.runUntilStopped()
-controlServer.stop()
-exit(exitCode)
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+//
+// All `func` / `class` / `struct` declarations live above the CLI-entry
+// block at the bottom of this file. Swift hoists declarations within a
+// single file, so reachability isn't an issue — but the compiler does
+// warn when declarations appear *after* a top-level
+// `Never`-returning call (the `exit(exitCode)` at the end of CLI
+// entry). Keep new helpers above the CLI entry to avoid that warning.
 
 func loadConfig(from path: String) throws -> RunnerConfig {
     let url = URL(fileURLWithPath: path)
@@ -984,3 +907,96 @@ final class ControlServer {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// CLI entry
+// ---------------------------------------------------------------------------
+//
+// Top-level script body lives at the bottom of the file so all
+// helpers / types / classes are declared before any `exit()`-returning
+// statement. Putting it earlier triggers a Swift "will never be
+// executed" warning on every declaration below it (since `exit()` is
+// `Never`-returning, Swift treats anything after it in the linear
+// source order as unreachable — even though declarations are hoisted
+// and the program is semantically fine). Keep new top-level statements
+// here, not interleaved above.
+
+let args = CommandLine.arguments
+var configPath: String? = nil
+var validateOnly = false
+
+var i = 1
+while i < args.count {
+    let arg = args[i]
+    switch arg {
+    case "--version", "-V":
+        // Print the wire-protocol version. agv compares this against
+        // its own `RUNNER_PROTOCOL_VERSION` to detect binary-skew
+        // installs (e.g. `cargo install agv` upgraded the Rust side
+        // but the user's `agv-avf-runner` is still from an older
+        // tarball). The runner does not carry an independent semver
+        // — protocol version IS the version that matters to agv.
+        print("agv-avf-runner protocol \(RUNNER_PROTOCOL_VERSION)")
+        exit(0)
+    case "--help", "-h":
+        printHelp()
+        exit(0)
+    case "--config":
+        guard i + 1 < args.count else {
+            die("--config requires a path argument")
+        }
+        configPath = args[i + 1]
+        i += 2
+        continue
+    case "--validate-only":
+        validateOnly = true
+        i += 1
+        continue
+    default:
+        die("unrecognized argument '\(arg)'")
+    }
+}
+
+guard let configPath else {
+    die("missing required --config <path>")
+}
+
+let config: RunnerConfig
+let vmConfig: VZVirtualMachineConfiguration
+let macAddress: VZMACAddress
+do {
+    config = try loadConfig(from: configPath)
+    let built = try buildVMConfiguration(from: config)
+    vmConfig = built.configuration
+    macAddress = built.macAddress
+    try vmConfig.validate()
+} catch {
+    die("\(error)")
+}
+
+if validateOnly {
+    print("agv-avf-runner: config validates for VM '\(config.name)'")
+    exit(0)
+}
+
+let runner = VMRunner(
+    configuration: vmConfig,
+    vmName: config.name,
+    macAddress: macAddress,
+    snapshotPath: config.snapshotPath,
+    restoreOnBoot: config.restoreOnBoot ?? false
+)
+
+// Bind the control socket before booting so the parent agv process can
+// connect immediately. If this fails, treat it as fatal — there's no
+// point booting a VM we can't control.
+let controlServer = ControlServer(path: config.controlSocketPath, runner: runner)
+do {
+    try controlServer.start()
+} catch {
+    die("failed to bind control socket at \(config.controlSocketPath): \(error)")
+}
+
+let exitCode = runner.runUntilStopped()
+controlServer.stop()
+exit(exitCode)
