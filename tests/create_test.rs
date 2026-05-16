@@ -217,11 +217,18 @@ async fn create_without_start() {
 
     let name = "_test-create-nostrt";
 
+    // Pinned `--backend qemu`: this test asserts the QEMU file
+    // layout (`disk.qcow2`, no `pid` / `ssh_port`). The default
+    // backend on macOS Apple Silicon flipped to `"avf"`, which
+    // produces `disk.raw` and `avf-runner.pid` instead; without
+    // the pin, the qcow2 assertion below would fail on those hosts.
     let output = agv(data_dir.path())
         .args([
             "create",
             "--json",
             "--no-checksum",
+            "--backend",
+            "qemu",
             "--config",
             toml_path.to_str().unwrap(),
             name,
@@ -368,6 +375,314 @@ disk = "2G"
     assert!(!error_log.is_empty(), "error.log should have content");
 }
 
+/// `agv create --backend qemu` must persist the choice into the saved
+/// instance config. Without this, you'd have to set `backend = "qemu"`
+/// in the TOML by hand or use `agv backend migrate-to-avf` later —
+/// neither of which is discoverable from `--help`.
+///
+/// Companion AVF case lives in `tests/avf_e2e_test.rs` so it gates on
+/// the AVF runner being present without dragging that requirement
+/// into the QEMU-flavoured tests here.
+#[tokio::test]
+async fn create_backend_flag_persists_to_saved_config() {
+    if !qemu_img_available() || !iso_tool_available() {
+        eprintln!("required tools missing — skipping create_backend_flag_persists_to_saved_config");
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let image_url = make_fake_base_image(data_dir.path()).await;
+    let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
+
+    let name = "_test-backend-flag";
+    let output = agv(data_dir.path())
+        .args([
+            "create",
+            "--no-checksum",
+            "--backend",
+            "qemu",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "create --backend qemu failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let saved = tokio::fs::read_to_string(
+        data_dir.path().join("instances").join(name).join("config.toml"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        saved.contains("backend = \"qemu\""),
+        "saved config should pin backend=qemu when --backend qemu was passed; got:\n{saved}",
+    );
+}
+
+/// `agv backend cleanup` must remove residual QEMU files (`disk.qcow2`,
+/// etc.) when the VM has been flipped to `backend = "avf"`. The
+/// common use case: after `migrate-to-avf` without `--delete-qcow2`
+/// and a successful AVF boot, reclaim the qcow2's disk space.
+///
+/// Doesn't actually run the migrate flow (that's the slow `tests/avf_
+/// migrate_test.rs::migrate_qemu_vm_to_avf_backend` test). Just lays
+/// down a normal QEMU instance, flips `backend = "avf"` in the saved
+/// config to simulate a successful migration, and asserts cleanup
+/// then removes the qcow2 while leaving the rest of the instance dir
+/// intact.
+#[tokio::test]
+async fn backend_cleanup_removes_residual_qcow2_after_flip() {
+    if !qemu_img_available() || !iso_tool_available() {
+        eprintln!("required tools missing — skipping backend_cleanup_removes_residual_qcow2_after_flip");
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let image_url = make_fake_base_image(data_dir.path()).await;
+    let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
+
+    let name = "_test-cleanup-flip";
+    // Pinned `--backend qemu` so the test still creates a QEMU
+    // instance under hosts where the default flipped to `"avf"`
+    // (macOS Apple Silicon). The whole point of this test is "QEMU
+    // VM gets migrated to AVF, residue gets cleaned" — needs the
+    // starting state to be QEMU regardless of host default.
+    let create_output = agv(data_dir.path())
+        .args([
+            "create",
+            "--no-checksum",
+            "--backend",
+            "qemu",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        create_output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+
+    let inst_dir = data_dir.path().join("instances").join(name);
+    let qcow2 = inst_dir.join("disk.qcow2");
+    let config_path = inst_dir.join("config.toml");
+    assert!(qcow2.exists(), "create should produce disk.qcow2 under QEMU defaults");
+
+    // Simulate a successful migrate-to-avf without --delete-qcow2:
+    // backend flag flipped, disk.qcow2 still on disk.
+    let cfg = tokio::fs::read_to_string(&config_path).await.unwrap();
+    let cfg = cfg.replace("backend = \"qemu\"", "backend = \"avf\"");
+    let cfg = if cfg.contains("backend = \"avf\"") {
+        cfg
+    } else {
+        // The default config has no backend line; append one.
+        format!("{cfg}\nbackend = \"avf\"\n")
+    };
+    tokio::fs::write(&config_path, cfg).await.unwrap();
+
+    // --- dry-run leaves the file intact ---
+    let dry = agv(data_dir.path())
+        .args(["backend", "cleanup", "--dry-run", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        dry.status.success(),
+        "cleanup --dry-run failed: {}",
+        String::from_utf8_lossy(&dry.stderr),
+    );
+    let dry_report = parse_json("backend cleanup --dry-run", &dry.stdout);
+    assert_eq!(dry_report["dry_run"], serde_json::Value::Bool(true));
+    assert_eq!(dry_report["backend"], "avf");
+    assert!(
+        dry_report["removed"].as_array().is_some_and(|a| a.iter()
+            .any(|f| f["path"].as_str().is_some_and(|p| p.ends_with("disk.qcow2")))),
+        "dry-run report should list disk.qcow2 in `removed`: {dry_report}"
+    );
+    assert!(qcow2.exists(), "dry-run must NOT delete the file");
+
+    // --- real run removes it ---
+    let real = agv(data_dir.path())
+        .args(["backend", "cleanup", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        real.status.success(),
+        "cleanup failed: {}",
+        String::from_utf8_lossy(&real.stderr),
+    );
+    let real_report = parse_json("backend cleanup", &real.stdout);
+    assert_eq!(real_report["dry_run"], serde_json::Value::Bool(false));
+    assert!(real_report["bytes_freed"].as_u64().is_some_and(|b| b > 0));
+    assert!(!qcow2.exists(), "real run must delete disk.qcow2");
+
+    // Non-residue files must stay put — config, seed, ssh keys, the
+    // status file — otherwise we've nuked too much.
+    for f in ["config.toml", "seed.iso", "id_ed25519", "id_ed25519.pub", "status"] {
+        assert!(
+            inst_dir.join(f).exists(),
+            "{f} must NOT be touched by cleanup",
+        );
+    }
+
+    // --- idempotent: a second cleanup reports zero removed ---
+    let again = agv(data_dir.path())
+        .args(["backend", "cleanup", "--json", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(again.status.success());
+    let again_report = parse_json("backend cleanup #2", &again.stdout);
+    assert_eq!(
+        again_report["removed"].as_array().map(Vec::len),
+        Some(0),
+        "second cleanup should be a no-op"
+    );
+    assert_eq!(again_report["bytes_freed"], 0);
+}
+
+/// Regression: `destroy` must reliably kill the host VM process even
+/// when the VM is recorded as `broken`. The bug it guards against:
+/// `mark_broken_with_error` deliberately leaves the VM process alive
+/// so the user can SSH in to debug, and on the AVF backend the runner
+/// is `mem::forget`'d — so the previous `destroy` implementation,
+/// which only called `backend.force_stop` when status was `Running`,
+/// orphaned the host process when wiping the instance directory.
+///
+/// We can't easily exercise the real AVF runner here (different
+/// platforms, codesigning, etc.), but the fix is backend-agnostic:
+/// any time `is_process_alive()` returns true, destroy must call
+/// `force_stop`. We simulate that condition by laying down a real VM
+/// instance dir via `agv create`, stuffing the QEMU pid file with the
+/// PID of a sleep child we spawn ourselves, and marking the VM as
+/// broken. After `destroy`, the sleep process must be gone and the
+/// instance dir removed.
+#[tokio::test]
+async fn destroy_kills_live_process_for_broken_vm() {
+    if !qemu_img_available() {
+        eprintln!("qemu-img not installed — skipping destroy_kills_live_process_for_broken_vm");
+        return;
+    }
+    if !iso_tool_available() {
+        eprintln!(
+            "mkisofs/genisoimage not installed — skipping destroy_kills_live_process_for_broken_vm"
+        );
+        return;
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let image_url = make_fake_base_image(data_dir.path()).await;
+    let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
+
+    let name = "_test-destroy-broken";
+
+    // Pinned `--backend qemu`: this test writes a fake QEMU pid
+    // file at `<inst>/pid` and relies on destroy's force_stop path
+    // matching that location. On the AVF backend the runner pid
+    // lives at `<inst>/avf-runner.pid` instead, and the AVF
+    // `force_stop` would look there — so the planted QEMU pid
+    // wouldn't get killed and the assertion at the bottom would
+    // fire even on a healthy host. The fix under test (destroy
+    // killing a live process on a broken VM regardless of recorded
+    // status) is backend-agnostic; we pick QEMU here purely to
+    // keep the file layout matching the planted state.
+    let output = agv(data_dir.path())
+        .args([
+            "create",
+            "--no-checksum",
+            "--backend",
+            "qemu",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "create failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let inst_dir = data_dir.path().join("instances").join(name);
+
+    // Spawn a real child so we have a PID that's actually alive. Use
+    // `sleep 600` — long enough to outlive any plausible test run, so
+    // a successful destroy is the *only* way the process exits before
+    // the cleanup at the bottom.
+    let mut sleep_child = tokio::process::Command::new("sleep")
+        .arg("600")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let sleep_pid = sleep_child.id().unwrap();
+
+    // Fake a "broken VM with live host process" state:
+    //   * status = "broken"
+    //   * QEMU pid file points at our sleep child
+    // is_process_alive() will check kill(pid, 0) and return true.
+    tokio::fs::write(inst_dir.join("status"), "broken").await.unwrap();
+    tokio::fs::write(inst_dir.join("pid"), sleep_pid.to_string())
+        .await
+        .unwrap();
+
+    let output = agv(data_dir.path())
+        .args(["destroy", "--force", name])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "destroy failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    assert!(!inst_dir.exists(), "instance dir should be removed by destroy");
+
+    // The sleep child should be gone. Poll briefly — destroy sends
+    // SIGKILL and waits 200ms but the OS reaping the zombie can be
+    // racy, so allow up to 2s before failing.
+    let killed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match sleep_child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    if !killed {
+        // Defensive cleanup so a failing test doesn't leak a sleep.
+        let _ = sleep_child.kill().await;
+        panic!(
+            "sleep child (pid {sleep_pid}) was NOT killed by destroy — \
+             this is the bug the test is guarding against: destroy on \
+             a broken VM with a live host process must call \
+             backend.force_stop, otherwise the runner is orphaned."
+        );
+    }
+}
+
 /// Full create-start-provision lifecycle test using debian-12 (smaller image,
 /// faster download than Ubuntu).
 ///
@@ -401,6 +716,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[files]]
 source = "{src}"
@@ -531,6 +847,7 @@ include = ["devtools"]
 memory = "2G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[files]]
 source = "{src}"
@@ -669,6 +986,7 @@ include = ["{mixin_name}"]
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 "#
     );
     let toml_path = write_config(host_tmp.path(), &config_toml).await;
@@ -814,6 +1132,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 "#;
     let toml_path = write_config(host_tmp.path(), config_toml).await;
 
@@ -964,6 +1283,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 
 [[provision]]
 run = "echo first >> /tmp/agv-retry-log"
@@ -1084,6 +1404,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 idle_suspend_minutes = 1
 idle_load_threshold = 2.0
 "#;
@@ -1157,6 +1478,7 @@ from = "debian-12"
 memory = "1G"
 cpus = 2
 disk = "10G"
+backend = "qemu"
 idle_suspend_minutes = 1
 idle_load_threshold = 2.0
 "#;

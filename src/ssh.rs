@@ -62,11 +62,13 @@ pub async fn session(
     ssh_opts: &[String],
     command: &[String],
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
-    let destination = format!("{user}@localhost");
+    let destination = format!("{user}@{host}");
 
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(&args).args(ssh_opts).arg(&destination);
@@ -100,11 +102,13 @@ pub async fn run_cmd(
     user: &str,
     command: &[String],
 ) -> anyhow::Result<String> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
     let args = base_ssh_args(&key_path, port);
 
-    let destination = format!("{user}@localhost");
+    let destination = format!("{user}@{host}");
 
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(&args).arg(&destination);
@@ -158,14 +162,16 @@ pub async fn copy_to(
     local_path: &Path,
     remote_path: &str,
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
 
     let local_str = local_path
         .to_str()
         .context("local path is not valid UTF-8")?;
 
-    let destination = format!("{user}@localhost:{remote_path}");
+    let destination = format!("{user}@{host}:{remote_path}");
 
     let mut args = vec![
         "-i".to_string(),
@@ -220,12 +226,14 @@ pub async fn transfer(
     recursive: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let (host, port) = crate::vm::backend::for_instance(instance)?
+        .ssh_endpoint(instance)
+        .await?;
     let key_path = instance.ssh_key_path();
 
-    // Expand :path → user@localhost:path
-    let scp_source = expand_vm_path(source, user);
-    let scp_dest = expand_vm_path(dest, user);
+    // Expand :path → user@host:path
+    let scp_source = expand_vm_path(source, user, &host);
+    let scp_dest = expand_vm_path(dest, user, &host);
 
     // Determine direction for display.
     let is_upload = !source.starts_with(':');
@@ -285,10 +293,12 @@ pub async fn transfer(
     Ok(())
 }
 
-/// Expand a `:path` prefix into `user@localhost:path` for scp.
-fn expand_vm_path(path: &str, user: &str) -> String {
+/// Expand a `:path` prefix into `user@host:path` for scp. `host` comes from
+/// the backend's `ssh_endpoint` (`127.0.0.1` for QEMU, the guest's NAT IP
+/// for AVF).
+fn expand_vm_path(path: &str, user: &str, host: &str) -> String {
     if let Some(remote) = path.strip_prefix(':') {
-        format!("{user}@localhost:{remote}")
+        format!("{user}@{host}:{remote}")
     } else {
         path.to_string()
     }
@@ -296,18 +306,61 @@ fn expand_vm_path(path: &str, user: &str) -> String {
 
 /// Wait for SSH to become available on a VM, polling until ready.
 ///
-/// Retries up to 60 times with 1-second intervals (60s total timeout).
+/// Retries up to 180 times with 1-second intervals (180s total).
+/// The window covers first-boot cloud-init runs on slow setups —
+/// AVF specifically needs more time than QEMU because its retry
+/// loop only effectively starts once the guest has DHCP (the
+/// runner can't report an `ssh_endpoint` before then). With a
+/// 60-second budget, a fresh AVF first boot could time out
+/// mid-cloud-init with sshd up but the agent user not yet
+/// created, giving a misleading "publickey" rejection.
+///
+/// The backend's `ssh_endpoint` is re-resolved each iteration so the
+/// AVF backend can return "no guest IP yet" early in the boot — its
+/// IP arrives via guest DHCP, not when the VM process starts. The
+/// QEMU backend's endpoint is stable (a host-side port forward), so
+/// the re-resolve is a cheap read of one file per iteration.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Single polling state machine — readability comes from keeping the loop, the re-resolve of guest IP per iteration, and the multi-class error parsing (Connection refused, publickey, host-key changed, generic timeout) co-located. Pulling each branch into a helper would obscure the linear timing logic that ties them together."
+)]
 pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<()> {
-    let port = ssh_port(instance).await?;
+    let backend = crate::vm::backend::for_instance(instance)?;
     let key_path = instance.ssh_key_path();
-    let args = base_ssh_args(&key_path, port);
-
-    let destination = format!("{user}@localhost");
     let start = std::time::Instant::now();
 
     info!(vm = %instance.name, "waiting for SSH to become ready");
 
-    for attempt in 1..=60 {
+    // Track the most recent observation so the timeout error can
+    // distinguish "guest never got an IP" from "guest had an IP but
+    // SSH kept refusing" — two very different problems with two
+    // very different fixes.
+    let mut last_endpoint: Option<(String, u16)> = None;
+    let mut last_endpoint_error: Option<String> = None;
+    let mut last_ssh_failure: Option<String> = None;
+
+    for attempt in 1..=180 {
+        let endpoint = backend.ssh_endpoint(instance).await;
+        let (host, port) = match endpoint {
+            Ok(hp) => {
+                last_endpoint = Some(hp.clone());
+                hp
+            }
+            Err(e) => {
+                last_endpoint_error = Some(format!("{e:#}"));
+                debug!(
+                    vm = %instance.name,
+                    attempt,
+                    error = %format!("{e:#}"),
+                    "endpoint not ready yet, retrying in 1s"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let args = base_ssh_args(&key_path, port);
+        let destination = format!("{user}@{host}");
+
         let output = tokio::process::Command::new("ssh")
             .args(&args)
             .arg(&destination)
@@ -322,14 +375,27 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
             _ => {}
         }
 
-        if output.is_ok_and(|o| o.status.success()) {
-            let elapsed = start.elapsed();
-            info!(
-                vm = %instance.name,
-                elapsed_secs = elapsed.as_secs(),
-                "SSH ready after {attempt} attempt(s)"
-            );
-            return Ok(());
+        match output {
+            Ok(o) if o.status.success() => {
+                let elapsed = start.elapsed();
+                info!(
+                    vm = %instance.name,
+                    elapsed_secs = elapsed.as_secs(),
+                    "SSH ready after {attempt} attempt(s)"
+                );
+                return Ok(());
+            }
+            Ok(o) => {
+                // Capture stderr for the diagnostic; ssh emits
+                // useful clues here ("Connection refused", "Host
+                // key verification failed", "Permission denied",
+                // etc.).
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                last_ssh_failure = Some(stderr.trim().to_string());
+            }
+            Err(e) => {
+                last_ssh_failure = Some(format!("spawn error: {e}"));
+            }
         }
 
         debug!(
@@ -340,8 +406,43 @@ pub async fn wait_for_ready(instance: &Instance, user: &str) -> anyhow::Result<(
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
+    let diagnostic = match (last_endpoint, last_ssh_failure, last_endpoint_error) {
+        (Some((host, port)), Some(err), _) => {
+            let publickey_hint = if err.contains("Permission denied (publickey)") {
+                "\n  This usually means cloud-init hadn't finished creating \
+                 the guest user / installing the SSH key by the timeout. Try \
+                 `agv start --retry <name>`."
+            } else {
+                ""
+            };
+            format!(
+                "  Last endpoint:  {host}:{port}\n  Last SSH error: {err}\n  \
+                 VM is reachable on the network; sshd may still be coming \
+                 up, the SSH key may have drifted, or the guest user may \
+                 not be ready yet.{publickey_hint}"
+            )
+        }
+        (Some((host, port)), None, _) => format!(
+            "  Last endpoint:  {host}:{port}\n  No SSH error captured — the \
+             VM accepted no connection attempts. Check that sshd is running \
+             in the guest."
+        ),
+        (None, _, Some(err)) => format!(
+            "  No endpoint ever resolved.\n  Last error:     {err}\n  \
+             For AVF: the guest never got a DHCP lease the runner could \
+             see. Typical causes are stale cloud-init network state from a \
+             pre-migration QEMU boot (try `agv backend migrate-to-avf` \
+             again, which regenerates the seed with a fresh instance-id so \
+             cloud-init re-runs networking) or sshd never coming up at all."
+        ),
+        (None, _, None) => {
+            "  No endpoint ever resolved; no underlying error captured.".to_string()
+        }
+    };
+
     Err(Error::SshTimeout {
         name: instance.name.clone(),
+        diagnostic,
     }
     .into())
 }
@@ -460,26 +561,41 @@ mod tests {
 
     #[test]
     fn expand_vm_path_with_colon_prefix() {
-        assert_eq!(expand_vm_path(":~/file.txt", "agent"), "agent@localhost:~/file.txt");
+        assert_eq!(
+            expand_vm_path(":~/file.txt", "agent", "127.0.0.1"),
+            "agent@127.0.0.1:~/file.txt"
+        );
     }
 
     #[test]
     fn expand_vm_path_with_absolute_remote() {
-        assert_eq!(expand_vm_path(":/tmp/file", "agent"), "agent@localhost:/tmp/file");
+        assert_eq!(
+            expand_vm_path(":/tmp/file", "agent", "127.0.0.1"),
+            "agent@127.0.0.1:/tmp/file"
+        );
     }
 
     #[test]
     fn expand_vm_path_local_unchanged() {
-        assert_eq!(expand_vm_path("./local/file.txt", "agent"), "./local/file.txt");
+        assert_eq!(
+            expand_vm_path("./local/file.txt", "agent", "127.0.0.1"),
+            "./local/file.txt"
+        );
     }
 
     #[test]
     fn expand_vm_path_absolute_local_unchanged() {
-        assert_eq!(expand_vm_path("/tmp/file.txt", "agent"), "/tmp/file.txt");
+        assert_eq!(
+            expand_vm_path("/tmp/file.txt", "agent", "127.0.0.1"),
+            "/tmp/file.txt"
+        );
     }
 
     #[test]
-    fn expand_vm_path_custom_user() {
-        assert_eq!(expand_vm_path(":~/data", "myuser"), "myuser@localhost:~/data");
+    fn expand_vm_path_custom_user_and_host() {
+        assert_eq!(
+            expand_vm_path(":~/data", "myuser", "192.168.64.5"),
+            "myuser@192.168.64.5:~/data"
+        );
     }
 }

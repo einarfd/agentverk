@@ -502,7 +502,17 @@ pub async fn clean_cache() -> anyhow::Result<Vec<(String, u64)>> {
     Ok(deleted)
 }
 
-/// Collect the set of cache filenames currently referenced by VM configs.
+/// Collect the set of cache filenames currently referenced by VM
+/// configs.
+///
+/// For each referenced qcow2, also reference `<qcow2>.raw` — the
+/// cached AVF-side conversion sibling (see `raw_cache`). The raw is
+/// a speedup cache, not a runtime dependency (per-instance AVF disks
+/// are clonefile-detached from it), but pruning it would force the
+/// next AVF create from this base to redo the multi-second
+/// conversion, which is exactly what the cache is there to avoid.
+/// Treat the pair atomically: if the qcow2 is kept, the raw is kept;
+/// if the qcow2 is pruned, the raw is orphaned and also pruned.
 async fn referenced_cache_files() -> anyhow::Result<std::collections::HashSet<String>> {
     let instances_dir = dirs::instances_dir()?;
     let mut referenced = std::collections::HashSet::new();
@@ -529,7 +539,9 @@ async fn referenced_cache_files() -> anyhow::Result<std::collections::HashSet<St
             continue;
         };
         if !config.base_url.is_empty() {
-            referenced.insert(filename_from_url(&config.base_url));
+            let qcow2 = filename_from_url(&config.base_url);
+            referenced.insert(format!("{qcow2}.raw"));
+            referenced.insert(qcow2);
         }
     }
 

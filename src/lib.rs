@@ -40,6 +40,12 @@ pub mod interactive;
 pub mod locks;
 #[doc(hidden)]
 pub mod manual_steps;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod qcow2;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod raw_cache;
 #[doc(hidden)]
 pub mod resources;
 #[doc(hidden)]
@@ -53,7 +59,9 @@ pub mod template;
 #[doc(hidden)]
 pub mod vm;
 
-use cli::{CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs};
+use cli::{
+    BackendCommand, CacheCommand, Cli, Command, ConfigCommand, TemplateCommand, TemplateRmArgs,
+};
 use specs::SpecSource;
 use images::ImageType;
 
@@ -628,6 +636,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             struct Row {
                 name: String,
                 status: String,
+                backend: String,
                 memory: String,
                 cpus: String,
                 disk: String,
@@ -704,11 +713,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 // Best-effort: show "?" if config can't be read, but leave
                 // a debug trace so `agv -v ls` surfaces the parse/IO error
                 // instead of silently hiding it behind "?".
-                let (memory, cpus, disk_max, labels_str) =
+                let (memory, cpus, disk_max, backend, labels_str) =
                     match config::load_resolved(&inst.config_path()) {
                         Ok(c) => {
                             let labels_str = format_labels_inline(&c.labels);
-                            (c.memory, c.cpus.to_string(), c.disk, labels_str)
+                            (c.memory, c.cpus.to_string(), c.disk, c.backend, labels_str)
                         }
                         Err(e) => {
                             tracing::debug!(
@@ -716,18 +725,35 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                 error = %format!("{e:#}"),
                                 "failed to read instance config for ls row"
                             );
-                            ("?".to_string(), "?".to_string(), "?".to_string(), String::new())
+                            (
+                                "?".to_string(),
+                                "?".to_string(),
+                                "?".to_string(),
+                                "?".to_string(),
+                                String::new(),
+                            )
                         }
                     };
-                // Actual on-disk size of the qcow2 file. qcow2 grows as the
-                // guest writes, so this is much more useful than the maximum.
-                let disk_used = tokio::fs::metadata(inst.disk_path())
+                // Actual on-disk size. QEMU keeps it in disk.qcow2;
+                // AVF in the sparse disk.raw. qcow2 grows as the
+                // guest writes; raw shows allocated blocks via
+                // st_blocks (Rust's metadata.len() returns the
+                // apparent size, which for a sparse raw is the
+                // virtual size and not very informative — close
+                // enough for ls).
+                let disk_path = if backend == "avf" {
+                    inst.avf_disk_path()
+                } else {
+                    inst.disk_path()
+                };
+                let disk_used = tokio::fs::metadata(&disk_path)
                     .await
                     .map_or_else(|_| "?".to_string(), |m| format_size(m.len()));
                 let disk = format!("{disk_used}/{disk_max}");
                 rows.push(Row {
                     name: inst.name.clone(),
                     status,
+                    backend,
                     memory,
                     cpus,
                     disk,
@@ -740,16 +766,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let mem_w = rows.iter().map(|r| r.memory.len()).max().unwrap_or(0);
             let cpus_w = rows.iter().map(|r| r.cpus.len()).max().unwrap_or(0);
             let disk_w = rows.iter().map(|r| r.disk.len()).max().unwrap_or(0);
+            // Show the backend column only when there's something
+            // interesting to surface — at least one non-qemu VM
+            // (today: AVF on macOS). Keeps the output uncluttered
+            // for the all-QEMU case, which is most users.
+            let show_backend = rows.iter().any(|r| r.backend != "qemu");
+            let backend_w = if show_backend {
+                rows.iter().map(|r| r.backend.len()).max().unwrap_or(0)
+            } else {
+                0
+            };
             for r in &rows {
+                let backend_col = if show_backend {
+                    format!("  {:<backend_w$}", r.backend)
+                } else {
+                    String::new()
+                };
                 if args.labels {
                     println!(
-                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk  {labels}",
+                        "  {:<name_w$}  {:<status_w$}{backend_col}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk  {labels}",
                         r.name, r.status, r.memory, r.cpus, r.disk,
                         labels = r.labels,
                     );
                 } else {
                     println!(
-                        "  {:<name_w$}  {:<status_w$}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
+                        "  {:<name_w$}  {:<status_w$}{backend_col}  {:>mem_w$} RAM  {:>cpus_w$} vCPUs  {:>disk_w$} disk",
                         r.name, r.status, r.memory, r.cpus, r.disk,
                     );
                 }
@@ -1105,6 +1146,66 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init(args) => {
             init::run(args.template.as_deref(), &args.output, args.force)
         }
+        Command::Backend(args) => match args.command {
+            BackendCommand::MigrateToAvf(a) => {
+                let report = vm::migrate_to_avf(&a.name, a.delete_qcow2).await?;
+                if a.json {
+                    let json = serde_json::to_string_pretty(&report)
+                        .map_err(|e| anyhow::anyhow!("serializing migration report: {e}"))?;
+                    println!("{json}");
+                } else {
+                    println!(
+                        "  ✓ VM '{}' migrated to AVF backend.",
+                        a.name
+                    );
+                    println!("    disk:      {}", report.raw_disk_path);
+                    println!("    size:     {} bytes", report.raw_disk_size_bytes);
+                    if report.qcow2_disk_kept {
+                        println!(
+                            "    qcow2:    kept at {} — delete once AVF boot is verified",
+                            report.qcow2_disk_path,
+                        );
+                        println!(
+                            "    cleanup:  agv backend cleanup {} (after verifying)",
+                            a.name,
+                        );
+                    } else {
+                        println!("    qcow2:    deleted ({})", report.qcow2_disk_path);
+                    }
+                    println!(
+                        "\n  Next: agv start {} to boot under Apple Virtualization.",
+                        a.name
+                    );
+                }
+                Ok(())
+            }
+            BackendCommand::Cleanup(a) => {
+                let report = vm::backend_cleanup(&a.name, a.dry_run).await?;
+                if a.json {
+                    let json = serde_json::to_string_pretty(&report)
+                        .map_err(|e| anyhow::anyhow!("serializing cleanup report: {e}"))?;
+                    println!("{json}");
+                } else if report.removed.is_empty() {
+                    println!(
+                        "  VM '{}' has no residue from a previous backend — nothing to remove.",
+                        a.name,
+                    );
+                } else {
+                    let verb = if a.dry_run { "Would remove" } else { "Removed" };
+                    println!("  ✓ {verb} {} file(s) for VM '{}':", report.removed.len(), a.name);
+                    for f in &report.removed {
+                        println!("    - {} ({} bytes)", f.path, f.bytes);
+                    }
+                    println!("    total: {} bytes", report.bytes_freed);
+                    if a.dry_run {
+                        println!(
+                            "\n  Re-run without --dry-run to delete (or `rm` the paths above directly)."
+                        );
+                    }
+                }
+                Ok(())
+            }
+        },
     }
 }
 

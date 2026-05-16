@@ -26,6 +26,27 @@ pub async fn generate_seed(
     vm_name: &str,
     user: &str,
 ) -> anyhow::Result<()> {
+    generate_seed_with_instance_id(output, ssh_pub_key, vm_name, vm_name, user).await
+}
+
+/// Like [`generate_seed`], but with an explicit cloud-init
+/// `instance-id`. The hostname is still derived from `vm_name`.
+///
+/// Used by backend migration: the `instance-id` is what cloud-init
+/// uses to decide whether a boot is a "new instance" (re-run the
+/// init modules including networking) or a returning one (do
+/// nothing). Bumping it forces a re-run, which lets the guest
+/// regenerate its netplan/systemd-networkd state against the new
+/// hypervisor's virtual NIC. Without this, a QEMU-provisioned guest
+/// can boot under AVF but never bring up its network because the
+/// on-disk config is tied to the old NIC's identity.
+pub async fn generate_seed_with_instance_id(
+    output: &Path,
+    ssh_pub_key: &str,
+    vm_name: &str,
+    instance_id: &str,
+    user: &str,
+) -> anyhow::Result<()> {
     let parent = output
         .parent()
         .context("seed output path has no parent directory")?;
@@ -34,7 +55,7 @@ pub async fn generate_seed(
         .await
         .with_context(|| format!("failed to create staging directory {}", staging.display()))?;
 
-    let meta_data = render_meta_data(vm_name);
+    let meta_data = render_meta_data_with_instance_id(instance_id, vm_name);
     let user_data = render_user_data(ssh_pub_key, vm_name, user);
 
     tokio::fs::write(staging.join("meta-data"), &meta_data)
@@ -60,9 +81,12 @@ pub async fn generate_seed(
     Ok(())
 }
 
-/// Render the cloud-init `meta-data` YAML.
-fn render_meta_data(vm_name: &str) -> String {
-    format!("instance-id: {vm_name}\nlocal-hostname: {vm_name}\n")
+/// Render the cloud-init `meta-data` YAML. `instance-id` is what
+/// cloud-init uses to recognise a "new instance" boot; on a cold
+/// boot it equals `vm_name`, on a backend migration the caller
+/// passes a distinct value so cloud-init re-runs networking.
+fn render_meta_data_with_instance_id(instance_id: &str, vm_name: &str) -> String {
+    format!("instance-id: {instance_id}\nlocal-hostname: {vm_name}\n")
 }
 
 /// Render the cloud-init `user-data` cloud-config YAML.
@@ -177,8 +201,15 @@ mod tests {
 
     #[test]
     fn meta_data_contains_instance_id_and_hostname() {
-        let output = render_meta_data("test-vm");
+        let output = render_meta_data_with_instance_id("test-vm", "test-vm");
         assert!(output.contains("instance-id: test-vm"));
+        assert!(output.contains("local-hostname: test-vm"));
+    }
+
+    #[test]
+    fn migration_instance_id_differs_from_hostname() {
+        let output = render_meta_data_with_instance_id("test-vm-avf-migrated", "test-vm");
+        assert!(output.contains("instance-id: test-vm-avf-migrated"));
         assert!(output.contains("local-hostname: test-vm"));
     }
 

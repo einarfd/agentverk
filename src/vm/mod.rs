@@ -3,6 +3,7 @@
 //! This module orchestrates the high-level VM operations, delegating to
 //! submodules for QEMU process management, cloud-init, and instance state.
 
+pub mod backend;
 pub mod cloud_init;
 pub mod forwarding;
 pub mod instance;
@@ -61,6 +62,11 @@ pub struct VmStateReport {
     pub cpus: u32,
     /// Configured disk size (e.g. `"40G"`).
     pub disk: String,
+    /// Backend the VM runs on: `"qemu"` (default, all platforms) or
+    /// `"avf"` (Apple Virtualization, macOS-only). Set at create
+    /// time; consumers can use it to render the right SSH endpoint
+    /// (`ssh_port` is null on AVF; SSH goes through the guest IP).
+    pub backend: String,
     /// Mixins applied at create time, in the order they were merged.
     pub mixins_applied: Vec<String>,
     /// Per-mixin manual setup steps the human invoker still needs to do.
@@ -129,6 +135,50 @@ pub struct DestroyReport {
     pub destroyed: bool,
 }
 
+/// JSON shape returned by `agv backend migrate-to-avf --json`.
+///
+/// Stable over the 0.x minor series — additions OK, removals/renames
+/// need a major bump.
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrateToAvfReport {
+    pub name: String,
+    /// Path to the new sparse raw disk under the instance dir.
+    pub raw_disk_path: String,
+    /// Size of the raw disk in bytes (the qcow2's virtual size, post-grow).
+    pub raw_disk_size_bytes: u64,
+    /// Path to the original qcow2. Whether it still exists depends on
+    /// `qcow2_disk_kept`.
+    pub qcow2_disk_path: String,
+    /// `true` when the qcow2 was preserved for one-step rollback;
+    /// `false` when `--delete-qcow2` was passed.
+    pub qcow2_disk_kept: bool,
+}
+
+/// JSON shape returned by `agv backend cleanup --json`. Lists the
+/// previous-backend files agv would remove (or did remove) from a
+/// VM's instance directory.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendCleanupReport {
+    pub name: String,
+    /// Current backend (the one whose files are kept).
+    pub backend: String,
+    /// Files removed, in deletion order. Absolute paths under the
+    /// instance directory. Empty when there was nothing to clean.
+    pub removed: Vec<RemovedFile>,
+    /// Total bytes freed across `removed`.
+    pub bytes_freed: u64,
+    /// `true` when `--dry-run` was passed — `removed` then describes
+    /// what *would* be deleted; the files are still on disk.
+    pub dry_run: bool,
+}
+
+/// One entry in `BackendCleanupReport::removed`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemovedFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
 /// Build a `VmStateReport` for an existing instance.
 ///
 /// `created` distinguishes "I just created this VM" (true) from
@@ -169,6 +219,7 @@ pub async fn state_report(inst: &Instance, created: bool) -> anyhow::Result<VmSt
         memory: cfg.memory,
         cpus: cfg.cpus,
         disk: cfg.disk,
+        backend: cfg.backend,
         mixins_applied: cfg.mixins_applied,
         manual_steps: cfg.mixin_manual_steps,
         config_manual_steps: cfg.config_manual_steps,
@@ -250,21 +301,46 @@ pub(super) fn status_spinner(verbose: bool, quiet: bool) -> ProgressBar {
 
 /// Update the managed SSH config with this VM's connection details.
 ///
+/// Resolves the SSH endpoint through the backend trait so the entry is
+/// correct for both QEMU (loopback + hostport) and AVF (guest NAT IP +
+/// port 22). Called after `wait_for_ssh` succeeds, so the AVF runner
+/// has a DHCP-assigned guest IP to report.
+///
 /// Best-effort — failures are logged but do not abort the operation.
 async fn update_ssh_config(inst: &Instance, user: &str) {
-    let port = match tokio::fs::read_to_string(inst.ssh_port_path()).await {
-        Ok(raw) => match raw.trim().parse::<u16>() {
-            Ok(p) => p,
-            Err(_) => return,
-        },
-        Err(_) => return,
+    let backend = match backend::for_instance(inst) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(vm = %inst.name, error = %format!("{e:#}"), "could not resolve backend for SSH config update");
+            return;
+        }
     };
-    if let Err(e) = ssh_config::add_entry(&inst.name, port, user, &inst.ssh_key_path()).await {
+    let (host, port) = match backend.ssh_endpoint(inst).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(vm = %inst.name, error = %format!("{e:#}"), "could not resolve SSH endpoint for managed SSH config");
+            return;
+        }
+    };
+    if let Err(e) =
+        ssh_config::add_entry(&inst.name, &host, port, user, &inst.ssh_key_path()).await
+    {
         warn!(vm = %inst.name, error = %format!("{e:#}"), "failed to update managed SSH config");
     }
 }
 
 /// Print a completed-step line above the spinner, keeping previous output visible.
+/// Human label for a backend, for user-facing spinner / log messages.
+/// Matches the value of `backend = "..."` in `agv.toml`.
+fn backend_label(cfg: &ResolvedConfig) -> &'static str {
+    match cfg.backend.as_str() {
+        "avf" => "Apple Virtualization",
+        // Default + qemu both render as "QEMU"; an unknown value
+        // shouldn't get this far (config validation catches it).
+        _ => "QEMU",
+    }
+}
+
 pub(super) fn step_done(spinner: &ProgressBar, msg: &str) {
     spinner.println(format!("  ✓ {msg}"));
 }
@@ -529,11 +605,14 @@ async fn create_inner(
         step_done(&spinner, &format!("Base image cached ({image_label})"));
     }
 
-    // Create qcow2 overlay disk.
-    spinner.set_message(format!("Creating {} disk overlay...", config.disk));
-    info!(size = %config.disk, "creating overlay disk");
-    image::create_overlay(&base_image, &inst.disk_path(), &config.disk).await?;
-    step_done(&spinner, &format!("Created {} disk overlay", config.disk));
+    // Provision the per-instance disk in whatever format the chosen
+    // backend wants (qcow2 overlay for QEMU, sparse raw for AVF).
+    spinner.set_message(format!("Provisioning {} disk...", config.disk));
+    info!(size = %config.disk, backend = %config.backend, "provisioning disk");
+    backend::for_config(&config)
+        .provision_disk(inst, &base_image, &config.disk)
+        .await?;
+    step_done(&spinner, &format!("Provisioned {} disk", config.disk));
 
     // Generate SSH keypair.
     spinner.set_message("Generating SSH keypair...");
@@ -558,17 +637,20 @@ async fn create_inner(
     // start; no-op once the value is recorded in the instance config).
     let machine_type = ensure_machine_type(inst, &mut config).await?;
 
-    // Start QEMU.
+    // Start the VM under the configured backend.
+    let label = backend_label(&config);
     spinner.set_message(format!(
-        "Starting QEMU ({} RAM, {} vCPUs)...",
+        "Starting {label} ({} RAM, {} vCPUs)...",
         config.memory, config.cpus
     ));
-    info!(name, memory = %config.memory, cpus = config.cpus, "starting QEMU");
-    qemu::start(inst, &config.memory, config.cpus, &machine_type).await?;
+    info!(name, memory = %config.memory, cpus = config.cpus, backend = %config.backend, "starting VM");
+    backend::for_config(&config)
+        .start(inst, &config, &machine_type, None)
+        .await?;
     inst.write_status(Status::Running).await?;
     step_done(
         &spinner,
-        &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
+        &format!("Started {label} ({} RAM, {} vCPUs)", config.memory, config.cpus),
     );
 
     // Run first-boot provisioning (wait for SSH, setup, provision).
@@ -628,6 +710,25 @@ pub async fn config_set(
     }
 
     let inst = Instance::open(name)?;
+
+    // Refuse to enable auto-suspend on an AVF VM. The idle watcher's
+    // job is to trigger `vm::suspend`, which AVF refuses (Apple's
+    // framework doesn't support save/restore for Linux guests). A
+    // watcher there would just retry-and-fail forever in the logs.
+    if let Some(m) = idle_suspend_minutes
+        && m > 0
+    {
+        let cfg = crate::config::load_resolved(&inst.config_path())?;
+        anyhow::ensure!(
+            cfg.backend != "avf",
+            "idle_suspend_minutes is not supported on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests, so the idle watcher's auto-suspend would \
+             always fail. Recreate the VM with `--backend qemu` if you \
+             need auto-suspend."
+        );
+    }
+
     let status = inst.reconcile_status().await?;
 
     anyhow::ensure!(
@@ -729,26 +830,28 @@ pub async fn start(
         );
     }
 
-    // Handle --retry: VM must be broken with non-complete provision state.
+    // Handle --retry: VM must be broken. Provisioning can be in any
+    // state — `--retry` either resumes provisioning (if incomplete)
+    // or just re-attempts the boot/SSH wait (if complete). The
+    // latter is the right escape hatch when a VM ends up broken
+    // for reasons unrelated to provisioning — e.g. an AVF cold
+    // boot after migration where wait_for_ssh timed out but the
+    // disk is fully provisioned from its QEMU life.
     if retry {
         if status != Status::Broken {
             anyhow::bail!(
                 "--retry requires VM '{name}' to be in broken state (currently {status})"
             );
         }
-        let state = inst.read_provision_state().await;
-        if state.is_complete() {
-            anyhow::bail!(
-                "VM '{name}' has no failed provisioning to retry — provisioning already completed"
-            );
-        }
     } else {
-        // Normal start: VM must be stopped, OR broken with QEMU still running
-        // (in which case we tell the user to use --retry).
+        // Normal start: VM must be stopped, OR broken with the VM process
+        // still running (in which case we tell the user to use --retry).
         if status == Status::Broken {
             anyhow::bail!(
-                "VM '{name}' is broken. Use 'agv start --retry {name}' to resume \
-                 provisioning, or 'agv destroy {name}' to start over."
+                "VM '{name}' is broken. Use 'agv start --retry {name}' to \
+                 retry (resumes provisioning if incomplete, or retries the \
+                 boot if it is complete), or 'agv destroy {name}' to start \
+                 over."
             );
         }
         anyhow::ensure!(
@@ -766,20 +869,23 @@ pub async fn start(
     let spinner = status_spinner(verbose, quiet);
 
     // Start QEMU only if it's not already running (a broken VM may still
-    // have QEMU alive — the user wants to retry, not restart from scratch).
-    let qemu_already_running = retry && inst.is_process_alive().await;
-    if qemu_already_running {
-        step_done(&spinner, "QEMU already running — retrying provisioning");
+    // have the VM process alive — the user wants to retry, not restart from scratch).
+    let label = backend_label(&config);
+    let already_running = retry && inst.is_process_alive().await;
+    if already_running {
+        step_done(&spinner, &format!("{label} already running — retrying provisioning"));
     } else {
         let machine_type = ensure_machine_type(&inst, &mut config).await?;
         spinner.set_message(format!(
-            "Starting QEMU ({} RAM, {} vCPUs)...",
+            "Starting {label} ({} RAM, {} vCPUs)...",
             config.memory, config.cpus
         ));
-        qemu::start(&inst, &config.memory, config.cpus, &machine_type).await?;
+        backend::for_config(&config)
+            .start(&inst, &config, &machine_type, None)
+            .await?;
         step_done(
             &spinner,
-            &format!("Started QEMU ({} RAM, {} vCPUs)", config.memory, config.cpus),
+            &format!("Started {label} ({} RAM, {} vCPUs)", config.memory, config.cpus),
         );
     }
     inst.write_status(Status::Running).await?;
@@ -836,11 +942,15 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
         "Hardware", config.memory, config.cpus, config.disk
     );
     println!("  {:<w$}  {}", "User", config.user);
+    println!("  {:<w$}  {}", "Backend", backend_label(&config));
 
     // SSH connection info — meaningful when running, or broken-but-SSH-came-up.
+    // Only QEMU writes an ssh_port file (host-side port forward);
+    // AVF VMs reach the guest via its NAT IP, surfaced as the
+    // backend's `ssh_endpoint` rather than a fixed port.
     let ssh_might_work = status == Status::Running
         || (status == Status::Broken && provision_state.phase != Phase::SshWait);
-    if ssh_might_work {
+    if ssh_might_work && config.backend != "avf" {
         let port_raw = tokio::fs::read_to_string(inst.ssh_port_path())
             .await
             .unwrap_or_default();
@@ -974,10 +1084,11 @@ pub async fn stop(name: &str, force: bool) -> anyhow::Result<()> {
     // gets the same treatment so it doesn't keep probing a stopping VM.
     idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
+    let backend = backend::for_instance(&inst)?;
     if force {
-        qemu::force_stop(&inst).await?;
+        backend.force_stop(&inst).await?;
     } else {
-        qemu::stop(&inst).await?;
+        backend.stop(&inst).await?;
     }
     inst.write_status(Status::Stopped).await?;
     let _ = ssh_config::remove_entry(name).await;
@@ -1000,18 +1111,35 @@ pub async fn suspend(name: &str) -> anyhow::Result<()> {
             expected: "running".to_string(),
         }
     );
+    // Refuse early for AVF VMs — Apple Virtualization framework does
+    // not support save/restore for Linux guests as of macOS 15 / 26
+    // (the runner itself also refuses, but checking here avoids tearing
+    // down the idle watcher and port forwards before learning the VM
+    // can't actually suspend). Re-enable once the framework lifts the
+    // restriction; see `swift/avf-runner/Sources/avf-runner/main.swift`
+    // `restoreAndResume` for the full root-cause notes.
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+    if cfg.backend == "avf" {
+        anyhow::bail!(
+            "suspend is not supported for VMs on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests. Use `agv stop {name}` + `agv start {name}` \
+             instead, or recreate the VM with `--backend qemu`."
+        );
+    }
     // Idempotent: the watcher (when triggering this code path itself)
     // removes its own pid file before calling us, so this is a no-op
     // in the auto-suspend case and a real cleanup in the manual case.
     idle_watcher::stop(&inst).await;
     forwarding::stop_all_for_instance(&inst).await;
-    qemu::suspend(&inst).await?;
+    backend::for_instance(&inst)?.suspend(&inst).await?;
     inst.write_status(Status::Suspended).await?;
     let _ = ssh_config::remove_entry(name).await;
     Ok(())
 }
 
-/// Resume a suspended VM by starting QEMU with the saved snapshot.
+/// Resume a suspended VM by restarting the VM process with the
+/// saved snapshot.
 pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
@@ -1033,14 +1161,9 @@ pub async fn resume(name: &str, verbose: bool, quiet: bool) -> anyhow::Result<()
     ));
 
     let machine_type = ensure_machine_type(&inst, &mut config).await?;
-    qemu::start_with_loadvm(
-        &inst,
-        &config.memory,
-        config.cpus,
-        &machine_type,
-        Some("agv-suspend"),
-    )
-    .await?;
+    backend::for_config(&config)
+        .start(&inst, &config, &machine_type, Some("agv-suspend"))
+        .await?;
     inst.write_status(Status::Running).await?;
     step_done(&spinner, "Resumed VM");
 
@@ -1117,6 +1240,302 @@ pub async fn rename(old: &str, new: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Migrate a stopped VM from the QEMU backend to Apple Virtualization.
+///
+/// Pipeline:
+///   1. VM must be stopped (suspended/running rejected — the snapshot
+///      state captured by QEMU's savevm has a different format and
+///      can't be carried across; users should resume + stop first).
+///   2. Current backend must be `"qemu"`; flipping an already-AVF VM
+///      is rejected as a no-op error to surface user mistakes.
+///   3. Convert `disk.qcow2` → `disk.raw` via the same qcow2-rs
+///      converter the AVF cold-boot uses. Output sparseness is
+///      slightly less aggressive than `qemu-img convert` (see
+///      `src/qcow2.rs`) — acceptable for a one-time migration.
+///   4. Rewrite `<inst>/config.toml` with `backend = "avf"`.
+///   5. Optionally delete the source qcow2.
+///
+/// The MAC and machine-id sidecars get created on first AVF boot by
+/// the runner — no need to pre-generate them. The AVF EFI variable
+/// store is also created on first boot, so we leave the QEMU
+/// `efi-vars.fd` in place rather than convert (incompatible
+/// formats; the AVF backend reads its own
+/// `avf-efi-vars.bin` and ignores `efi-vars.fd`).
+///
+/// macOS-only. The function returns an error on Linux because the
+/// `avf` backend can't be selected there.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Migration is a sequential transactional pipeline (validate → convert disk → bump instance-id → switch backend field → save config → optionally delete qcow2 → emit report). Each step has rollback-on-failure semantics that depend on the surrounding state; pulling them into helpers would scatter the rollback logic and make the failure path harder to verify."
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unused_async,
+        reason = "Non-macOS bodies are a stub `anyhow::bail!`; keeping the `async fn` signature uniform across platforms so the dispatch site doesn't need a cfg-cascade. The macOS body uses `.await`."
+    )
+)]
+pub async fn migrate_to_avf(
+    name: &str,
+    delete_qcow2: bool,
+) -> anyhow::Result<MigrateToAvfReport> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, delete_qcow2);
+        anyhow::bail!(
+            "`agv backend migrate-to-avf` is macOS-only — Apple Virtualization is not available on this platform"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let inst = Instance::open(name)?;
+        let status = inst.reconcile_status().await?;
+        anyhow::ensure!(
+            status == Status::Stopped,
+            Error::VmBadState {
+                name: name.to_string(),
+                status: status.to_string(),
+                expected: "stopped".to_string(),
+            }
+        );
+
+        let mut cfg = crate::config::load_resolved(&inst.config_path())?;
+        anyhow::ensure!(
+            cfg.backend != "avf",
+            "VM '{name}' is already on the AVF backend — nothing to migrate"
+        );
+
+        // Fail-fast: confirm the AVF runner binary is locatable
+        // BEFORE we do anything destructive. Without this, a user
+        // who hasn't installed agv-avf-runner alongside agv (e.g.
+        // a dev `cargo install` without the runner) would get
+        // through conversion + config flip and only see the
+        // problem on `agv start`, by which point rollback means
+        // re-running the converter or manually flipping the
+        // config back.
+        let _runner = backend::locate_avf_runner().with_context(|| {
+            format!(
+                "cannot migrate '{name}' to AVF — the agv-avf-runner binary isn't \
+                 findable. Run `just build-avf-runner` and either set \
+                 AGV_AVF_RUNNER, or install agv-avf-runner alongside agv \
+                 (`{}`)",
+                std::env::current_exe()
+                    .map(|p| p.parent().map(|p| p.display().to_string()).unwrap_or_default())
+                    .unwrap_or_default(),
+            )
+        })?;
+
+        let qcow2 = inst.disk_path();
+        let raw = inst.avf_disk_path();
+        anyhow::ensure!(
+            qcow2.exists(),
+            "source disk {} doesn't exist — VM may be corrupted",
+            qcow2.display()
+        );
+        anyhow::ensure!(
+            !raw.exists(),
+            "destination raw disk {} already exists — refusing to overwrite",
+            raw.display()
+        );
+
+        info!(vm = name, "converting qcow2 → sparse raw");
+        // Long-running step on multi-GiB disks (typically 5–30s for
+        // a 10G image). Render a spinner so the user knows the
+        // command isn't hung — the underlying converter doesn't
+        // expose progress so we can only show "still working."
+        let spinner = status_spinner(false, false);
+        spinner.set_message(format!(
+            "Converting disk image (qcow2 → raw) — {}",
+            qcow2.display()
+        ));
+        let result = crate::qcow2::convert_to_sparse_raw(&qcow2, &raw).await;
+        if let Err(e) = result {
+            spinner.finish_and_clear();
+            return Err(e).with_context(|| {
+                format!("converting {} → {}", qcow2.display(), raw.display())
+            });
+        }
+        step_done(&spinner, "Converted disk image to sparse raw");
+
+        let raw_size = tokio::fs::metadata(&raw)
+            .await
+            .with_context(|| format!("stat {}", raw.display()))?
+            .len();
+
+        // Regenerate the cloud-init seed with a fresh instance-id.
+        // Without this, the QEMU-era cloud-init networking config
+        // sticks to the disk and the guest never brings up its NIC
+        // on the AVF NAT (different virtual hardware, no DHCP
+        // request → runner's status RPC never reports a guest_ip
+        // → `agv ssh` can't reach the migrated VM). Bumping the
+        // instance-id is the cloud-init-native way to say "treat
+        // this boot as a new instance and re-run init."
+        let pub_key_path = inst.ssh_pub_key_path();
+        let pub_key = tokio::fs::read_to_string(&pub_key_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "reading {} (needed to regenerate the cloud-init seed)",
+                    pub_key_path.display()
+                )
+            })?;
+        let migration_instance_id = format!("{}-avf-migrated", inst.name);
+        cloud_init::generate_seed_with_instance_id(
+            &inst.seed_path(),
+            pub_key.trim(),
+            &inst.name,
+            &migration_instance_id,
+            &cfg.user,
+        )
+        .await
+        .context("regenerating cloud-init seed for AVF migration")?;
+
+        // Flip the config to backend=avf. Reuse the existing
+        // config persistence path so the on-disk TOML is rewritten
+        // through the same code that handles any other field.
+        cfg.backend = "avf".to_string();
+        crate::config::save(&cfg, &inst.config_path())
+            .await
+            .with_context(|| format!("writing {}", inst.config_path().display()))?;
+
+        let kept = if delete_qcow2 {
+            tokio::fs::remove_file(&qcow2)
+                .await
+                .with_context(|| format!("removing {}", qcow2.display()))?;
+            false
+        } else {
+            true
+        };
+
+        info!(
+            vm = name,
+            kept_qcow2 = kept,
+            raw_size_bytes = raw_size,
+            "AVF migration complete"
+        );
+
+        Ok(MigrateToAvfReport {
+            name: name.to_string(),
+            raw_disk_path: raw.display().to_string(),
+            raw_disk_size_bytes: raw_size,
+            qcow2_disk_path: qcow2.display().to_string(),
+            qcow2_disk_kept: kept,
+        })
+    }
+}
+
+/// Files that belong exclusively to the QEMU backend. When the VM
+/// has flipped to `backend = "avf"`, anything still on disk under
+/// these names is residue from before the flip and can be removed.
+///
+/// `pid` / `qmp.sock` are runtime-only (cleaned up at stop) and
+/// rarely present, but listing them here makes the cleanup
+/// idempotent if a previous run crashed before the runtime sweep
+/// finished.
+fn qemu_residue_files(inst: &Instance) -> Vec<std::path::PathBuf> {
+    vec![
+        inst.disk_path(),
+        inst.efi_vars_path(),
+        inst.pid_path(),
+        inst.qmp_socket_path(),
+        inst.ssh_port_path(),
+    ]
+}
+
+/// Files that belong exclusively to the AVF backend. The mirror
+/// of [`qemu_residue_files`] — removed when the VM has been
+/// flipped back to `backend = "qemu"` (a flow that doesn't exist
+/// today as a built-in, but the cleanup is symmetric for
+/// completeness and matches the doc on `agv backend cleanup`).
+fn avf_residue_files(inst: &Instance) -> Vec<std::path::PathBuf> {
+    vec![
+        inst.avf_disk_path(),
+        inst.avf_runner_pid_path(),
+        inst.avf_runner_config_path(),
+        inst.avf_control_socket_path(),
+        inst.avf_efi_vars_path(),
+        inst.avf_snapshot_path(),
+        inst.avf_mac_path(),
+        inst.avf_machine_id_path(),
+        // The runner log is informational, but it's per-backend
+        // and grows on every boot — sweep it too.
+        inst.dir.join("avf-runner.log"),
+    ]
+}
+
+/// Sweep residual files from the previous backend.
+///
+/// Refuses to do anything if the host VM process is alive — the
+/// running backend might be writing to one of these files. Otherwise
+/// stats each file in the opposite backend's residue list, sums the
+/// sizes for the report, and (unless `dry_run`) removes them.
+///
+/// Bidirectional even though only `migrate-to-avf` exists today:
+/// keeps the command symmetric if the reverse migration ever lands,
+/// and means a hand-edited `backend = "qemu"` flip still gets the
+/// expected sweep.
+pub async fn backend_cleanup(name: &str, dry_run: bool) -> anyhow::Result<BackendCleanupReport> {
+    let inst = Instance::open(name)?;
+    let status = inst.reconcile_status().await?;
+    anyhow::ensure!(
+        status != Status::Running,
+        Error::VmBadState {
+            name: name.to_string(),
+            status: status.to_string(),
+            expected: "stopped, suspended, or broken (not running)".to_string(),
+        }
+    );
+    // Belt and braces — `reconcile_status` flips a stale `running`
+    // to `stopped`, but a `broken` VM deliberately keeps its host
+    // process alive for debugging. Refuse there too: deleting
+    // disk.raw out from under a live AVF runner would be bad.
+    anyhow::ensure!(
+        !inst.is_process_alive().await,
+        "VM '{name}' has a live host process — stop or destroy it before running cleanup"
+    );
+
+    let cfg = crate::config::load_resolved(&inst.config_path())?;
+    let targets = match cfg.backend.as_str() {
+        "avf" => qemu_residue_files(&inst),
+        // Everything else (qemu or any unrecognised value that
+        // config validation hasn't already rejected) — sweep the
+        // AVF side.
+        _ => avf_residue_files(&inst),
+    };
+
+    let mut removed = Vec::new();
+    let mut bytes_freed: u64 = 0;
+    for path in targets {
+        // Stat first — missing files are the common case and
+        // shouldn't appear in the report.
+        let Ok(meta) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        let bytes = meta.len();
+        if !dry_run {
+            // For symlinks / regular files / FIFOs use remove_file;
+            // a socket file like avf-control.sock counts as a
+            // "file" for remove_file purposes.
+            tokio::fs::remove_file(&path).await.with_context(|| {
+                format!("removing {}", path.display())
+            })?;
+        }
+        bytes_freed += bytes;
+        removed.push(RemovedFile {
+            path: path.display().to_string(),
+            bytes,
+        });
+    }
+
+    Ok(BackendCleanupReport {
+        name: name.to_string(),
+        backend: cfg.backend,
+        removed,
+        bytes_freed,
+        dry_run,
+    })
+}
+
 pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(name)?;
     let status = inst.reconcile_status().await?;
@@ -1126,15 +1545,21 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
             force,
             "VM '{name}' is running — stop it first, or pass --force to destroy it anyway"
         );
-        idle_watcher::stop(&inst).await;
-        forwarding::stop_all_for_instance(&inst).await;
-        let _ = qemu::force_stop(&inst).await;
-    } else {
-        // Even on a stopped/broken VM, sweep any stale supervisors that
-        // a previous run might have left in forwards.toml or the watcher
-        // pid file.
-        idle_watcher::stop(&inst).await;
-        forwarding::stop_all_for_instance(&inst).await;
+    }
+
+    idle_watcher::stop(&inst).await;
+    forwarding::stop_all_for_instance(&inst).await;
+
+    // A "broken" VM deliberately keeps its host process alive so the user
+    // can SSH in to debug, and for AVF the runner is `mem::forget`'d so it
+    // survives the parent that spawned it. Either way: if anything's still
+    // running, kill it before we nuke the instance dir, otherwise we
+    // orphan the process (especially painful for AVF — the runner holds
+    // the VZ VM open and there's no pid file left to find it from).
+    if inst.is_process_alive().await {
+        if let Ok(backend) = backend::for_instance(&inst) {
+            let _ = backend.force_stop(&inst).await;
+        }
     }
 
     let _ = ssh_config::remove_entry(name).await;
@@ -1243,6 +1668,7 @@ mod tests {
             memory: "8G".to_string(),
             cpus: 4,
             disk: "40G".to_string(),
+            backend: "qemu".to_string(),
             mixins_applied: vec!["devtools".to_string(), "claude".to_string()],
             manual_steps: vec![MixinManualSteps {
                 name: "claude".to_string(),
@@ -1280,6 +1706,7 @@ mod tests {
         // Sorted alphabetically so a removal lands on the same line as the
         // assertion that fails — easier to spot in a diff.
         let expected: &[&str] = &[
+            "backend",
             "config_manual_steps",
             "cpus",
             "created",

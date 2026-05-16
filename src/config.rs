@@ -265,6 +265,17 @@ pub struct VmConfig {
     /// device topology and breaking `savevm`/`loadvm`. Set explicitly only
     /// when overriding (e.g. forcing an older version).
     pub machine_type: Option<String>,
+
+    /// Hypervisor backend for this VM. `"qemu"` (default) runs the VM
+    /// under a local QEMU process; `"avf"` (macOS only, requires Apple
+    /// Silicon) runs it under Apple Virtualization. Unset means
+    /// `"qemu"`.
+    ///
+    /// Per-VM rather than per-host because each VM's snapshot format,
+    /// disk layout, and SSH endpoint are tied to the backend that
+    /// created it — switching is not a free operation. `agv migrate-
+    /// to-avf <name>` (planned) will handle the conversion.
+    pub backend: Option<String>,
 }
 
 /// A file or directory to copy into the VM.
@@ -524,12 +535,91 @@ pub struct ResolvedConfig {
     /// existed deserialize as `None` and get auto-pinned on next start.
     #[serde(default)]
     pub machine_type: Option<String>,
+
+    /// Hypervisor backend (`"qemu"` or `"avf"`). See
+    /// [`VmConfig::backend`] for rationale. Defaults to `"qemu"` on
+    /// load — instance configs saved before this field existed (any
+    /// VM created prior to the AVF backend landing) deserialize as
+    /// such, preserving the backend they were originally booted with.
+    /// New VMs go through [`build_from_cli`] which fills the field via
+    /// [`default_backend`] (host-aware), so this load-time default
+    /// only ever fires for legacy on-disk configs.
+    /// Validated by [`load_resolved`] so call sites can treat the
+    /// value as known-good.
+    #[serde(default = "default_legacy_backend")]
+    pub backend: String,
+}
+
+/// Default for [`ResolvedConfig::backend`] **on load** of a saved
+/// instance config. Always `"qemu"`, regardless of host shape — a
+/// missing `backend` field means the VM predates the field's
+/// existence, and every such VM was a QEMU VM. Distinct from
+/// [`default_backend`], which picks the default for *new* VMs based
+/// on the host.
+fn default_legacy_backend() -> String {
+    "qemu".to_string()
 }
 
 /// Default for [`ResolvedConfig::idle_load_threshold`]. Pulled into a
 /// function so serde can reference it from `#[serde(default = "...")]`.
 fn default_idle_load_threshold() -> f32 {
     0.2
+}
+
+/// Default for [`ResolvedConfig::backend`].
+///
+/// macOS on Apple Silicon defaults to `"avf"` — Apple Virtualization
+/// is purpose-built for this host shape, boots faster than QEMU, has
+/// better passthrough, and is what most macOS users want by default.
+/// Everywhere else (Linux, Intel macOS, anything we haven't shipped
+/// an AVF runner for) the default stays `"qemu"`.
+///
+/// Intel macOS could in principle use AVF too, but the cloud images
+/// we ship are arm64 and we don't currently bundle the runner for
+/// `x86_64` Mac builds — defaulting them to AVF would just produce a
+/// boot failure. They land on QEMU and `--backend avf` still
+/// validates if anyone has bootstrapped it themselves.
+///
+/// Existing instances are unaffected: their saved
+/// `<inst>/config.toml` records whichever backend they were created
+/// under, and `agv start` reads from there. The default only
+/// influences new VMs created without `--backend` or a TOML
+/// `backend = "..."` entry.
+fn default_backend() -> String {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "avf".to_string()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        "qemu".to_string()
+    }
+}
+
+/// Validate that `backend` is one of the values agv knows how to
+/// dispatch on. Called from [`load_resolved`] so call sites can rely
+/// on the field being known-good.
+///
+/// `"avf"` is macOS-only — Apple Virtualization is a Darwin
+/// framework, so a config asking for it on Linux is a hard error
+/// rather than something we silently fall back from.
+fn validate_backend(value: &str) -> anyhow::Result<()> {
+    match value {
+        "qemu" => Ok(()),
+        #[cfg(target_os = "macos")]
+        "avf" => Ok(()),
+        #[cfg(not(target_os = "macos"))]
+        "avf" => anyhow::bail!(
+            "backend 'avf' is macOS-only — Apple Virtualization is not available on this platform"
+        ),
+        other => {
+            #[cfg(target_os = "macos")]
+            let expected = "qemu, avf";
+            #[cfg(not(target_os = "macos"))]
+            let expected = "qemu";
+            anyhow::bail!("unknown backend '{other}' (expected: {expected})")
+        }
+    }
 }
 
 /// Notes contributed by a single mixin, tagged with the mixin's name.
@@ -777,6 +867,10 @@ fn resolve_inner(config: Config, seen: &mut HashSet<String>) -> anyhow::Result<R
                 .and_then(|v| v.idle_load_threshold)
                 .unwrap_or_else(default_idle_load_threshold),
             machine_type: vm.as_ref().and_then(|v| v.machine_type.clone()),
+            backend: vm
+                .as_ref()
+                .and_then(|v| v.backend.clone())
+                .unwrap_or_else(default_backend),
         };
 
         // Apply includes before the config's own steps.
@@ -1100,6 +1194,9 @@ fn merge(parent: ResolvedConfig, child: Config) -> ResolvedConfig {
         machine_type: vm
             .and_then(|v| v.machine_type.clone())
             .or(parent.machine_type),
+        backend: vm
+            .and_then(|v| v.backend.clone())
+            .unwrap_or(parent.backend),
     }
 }
 
@@ -1117,11 +1214,16 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
 }
 
 /// Load a resolved config from an instance's saved config file.
+///
+/// Validates the `backend` field as part of the load so call sites
+/// can treat the value as known-good without re-checking.
 pub fn load_resolved(path: &Path) -> anyhow::Result<ResolvedConfig> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
     let config: ResolvedConfig = toml::from_str(&contents)
         .with_context(|| format!("failed to parse config file {}", path.display()))?;
+    validate_backend(&config.backend)
+        .with_context(|| format!("invalid backend in {}", path.display()))?;
     Ok(config)
 }
 
@@ -1177,6 +1279,10 @@ pub fn parse_labels(raw: &[String]) -> anyhow::Result<BTreeMap<String, String>> 
     Ok(out)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Sequential 13-step pipeline (config-source → overlays → parsing → resolution → template expansion → validation). Each numbered step is small and self-contained; splitting them across helpers would just move comment-numbered prose into function names without changing what a reader has to keep in their head."
+)]
 pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     // 1. Determine the base config source.
     //    Also record the config file's directory so we can look for .env there.
@@ -1213,6 +1319,10 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     }
     if args.disk.is_some() {
         vm.disk.clone_from(&args.disk);
+    }
+    if let Some(backend) = &args.backend {
+        validate_backend(backend).with_context(|| format!("invalid --backend {backend}"))?;
+        vm.backend = Some(backend.clone());
     }
 
     // 3. Parse --file src:dest strings into FileEntry structs.
@@ -1303,12 +1413,74 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
         resolved.labels.insert(k, v);
     }
 
+    // 13. Refuse the auto-suspend + AVF combination at the boundary.
+    // The idle watcher's job is to trigger `vm::suspend`, which AVF
+    // refuses (Apple's framework doesn't support save/restore for
+    // Linux guests). Allowing this combination through would yield a
+    // watcher that retries-and-fails forever.
+    if resolved.backend == "avf" && resolved.idle_suspend_minutes > 0 {
+        anyhow::bail!(
+            "idle_suspend_minutes is not supported on the avf backend — \
+             Apple Virtualization framework does not support save/restore \
+             for Linux guests, so the idle watcher's auto-suspend would \
+             always fail. Either unset idle_suspend_minutes, or use \
+             `--backend qemu`."
+        );
+    }
+
     Ok(resolved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host-wide backend default flips by platform:
+    ///   * macOS Apple Silicon → `"avf"`
+    ///   * everything else      → `"qemu"`
+    ///
+    /// Pin both sides so a future refactor of `default_backend` can't
+    /// silently flip non-aarch64 macOS (which doesn't have an AVF
+    /// runner build and would fail to boot) or roll back the
+    /// macOS-aarch64 case to `"qemu"` (regressing user-facing perf).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn default_backend_is_avf_on_macos_apple_silicon() {
+        assert_eq!(default_backend(), "avf");
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn default_backend_is_qemu_off_macos_apple_silicon() {
+        assert_eq!(default_backend(), "qemu");
+    }
+
+    /// Regression: a saved instance config that predates the
+    /// `backend` field must deserialize as `"qemu"`, not the
+    /// host-aware new-VM default. Otherwise existing QEMU VMs on
+    /// macOS Apple Silicon would be misread as AVF after upgrading
+    /// agv, and `agv start` / `agv ssh` / `agv inspect` would all
+    /// silently use the wrong backend wiring.
+    #[test]
+    fn resolved_config_without_backend_field_loads_as_qemu() {
+        let toml = r#"
+base_url = "https://example.com/base.img"
+base_checksum = "sha256:abc"
+skip_checksum = false
+memory = "1G"
+cpus = 2
+disk = "10G"
+user = "agent"
+os_family = "debian"
+labels = {}
+"#;
+        let cfg: ResolvedConfig = toml::from_str(toml).expect("should parse");
+        assert_eq!(
+            cfg.backend, "qemu",
+            "legacy on-disk configs (no `backend` field) must default to qemu, \
+             regardless of host shape — they predate the AVF backend"
+        );
+    }
 
     #[test]
     fn parse_labels_basic_kv_pairs() {
@@ -1367,6 +1539,7 @@ mod tests {
             memory: None,
             cpus: None,
             disk: None,
+            backend: None,
             image: None,
             spec: None,
             includes: vec![],
@@ -1768,6 +1941,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
         let child = Config {
             base: None,
@@ -1832,6 +2006,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         let child = Config {
@@ -1900,6 +2075,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         let child = Config {
@@ -2078,6 +2254,97 @@ cpus = 4
         assert_eq!(resolved.cpus, 4); // kept from config
     }
 
+    /// `idle_suspend_minutes > 0` plus `backend = "avf"` is an
+    /// unworkable combination — AVF refuses suspend, so the watcher
+    /// would retry-and-fail forever. Refused at create time so users
+    /// can't accidentally save a VM into that state.
+    #[test]
+    fn build_from_cli_rejects_avf_with_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "avf"
+idle_suspend_minutes = 30
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let err = build_from_cli(&args)
+            .expect_err("avf + idle_suspend_minutes combo should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("idle_suspend_minutes") && msg.contains("avf"),
+            "error must mention the unsupported combination; got: {msg}"
+        );
+    }
+
+    /// AVF without auto-suspend is fine — only `idle_suspend_minutes > 0`
+    /// trips the combination check. (0 / unset = disabled.)
+    #[test]
+    fn build_from_cli_allows_avf_without_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "avf"
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let resolved = build_from_cli(&args)
+            .expect("avf without idle_suspend_minutes should build cleanly");
+        assert_eq!(resolved.backend, "avf");
+        assert_eq!(resolved.idle_suspend_minutes, 0);
+    }
+
+    /// QEMU + auto-suspend is supported and must not be rejected by
+    /// the AVF combination check.
+    #[test]
+    fn build_from_cli_allows_qemu_with_idle_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("agv.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+backend = "qemu"
+idle_suspend_minutes = 15
+"#,
+        )
+        .unwrap();
+
+        let args = CreateArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..minimal_args()
+        };
+        let resolved = build_from_cli(&args)
+            .expect("qemu + idle_suspend_minutes should build cleanly");
+        assert_eq!(resolved.backend, "qemu");
+        assert_eq!(resolved.idle_suspend_minutes, 15);
+    }
+
     #[tokio::test]
     async fn save_and_reload_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -2115,6 +2382,7 @@ cpus = 4
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         };
 
         save(&config, &path).await.unwrap();

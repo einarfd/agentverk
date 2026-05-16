@@ -1,8 +1,15 @@
 # agv
 
-Create and manage QEMU VMs for AI agents.
+Create and manage microVMs for AI agents.
 
 `agv` gives each AI agent its own isolated Linux VM with SSH access, provisioned from a simple TOML config file. Supports macOS (Apple Silicon) and Linux (x86_64, aarch64).
+
+**Two backends, picked per VM:**
+
+- `qemu` — QEMU process. Cross-platform. Default everywhere except macOS on Apple Silicon. Supports `agv suspend` / `agv resume` and `idle_suspend_minutes` auto-suspend.
+- `avf` — Apple Virtualization (`Virtualization.framework`). macOS Apple Silicon only. Default on that host shape. Faster cold boot than QEMU. Does **not** support `agv suspend` / `agv resume` or `idle_suspend_minutes` — Apple's framework doesn't support save/restore for Linux guests. Use `agv stop` + `agv start` instead, or pick the `qemu` backend if auto-suspend matters.
+
+Override per VM with `--backend avf` / `--backend qemu` on `agv create`, or `backend = "..."` in the TOML config. See `docs/config.md` for the full reference.
 
 ## Installation
 
@@ -29,14 +36,16 @@ cargo install agv
 ```sh
 git clone https://github.com/einarfd/agentverk.git
 cd agentverk
-cargo install --path .
+just install     # cargo install + builds + installs agv-avf-runner on macOS
 ```
+
+If you don't have [just](https://just.systems), the equivalent is `cargo install --path .` plus — on macOS Apple Silicon, where the `avf` backend is the default — `just build-avf-runner` (or `swift build -c release` in `swift/avf-runner/` plus the codesign step from the recipe) and copying `swift/avf-runner/.build/release/agv-avf-runner` next to the installed `agv` binary (typically `~/.cargo/bin/`). Without the sibling runner, `agv create` falls back to QEMU and `--backend avf` fails with a clear `agv doctor` hint.
 
 ## Requirements
 
 **Runtime dependencies:**
 
-- QEMU
+- QEMU (required — `qemu-img` is used to build disk overlays, and the `qemu` backend uses `qemu-system-*` to boot)
   - macOS: `brew install qemu`
   - Ubuntu/Debian: `sudo apt install qemu-system`
   - Fedora: `sudo dnf install qemu-system-x86` (or `qemu-system-aarch64`)
@@ -46,6 +55,9 @@ cargo install --path .
 - OpenSSH (for SSH access to VMs)
   - macOS: included with the OS
   - Linux: usually pre-installed; `sudo apt install openssh-client` if missing
+- `agv-avf-runner` (macOS Apple Silicon only — required for the AVF backend)
+  - Bundled with release tarballs (installs alongside the `agv` binary).
+  - Source installs: `just install` handles this. Manual fallback: `just build-avf-runner` in the agv repo, then move the resulting `.build/release/agv-avf-runner` next to your installed `agv` binary (or set `AGV_AVF_RUNNER=/path/to/agv-avf-runner`).
 
 Run `agv doctor` at any time to check which dependencies are present and get install instructions.
 
@@ -173,6 +185,8 @@ Options:
       --json     Output in JSON format
   -y, --yes      Assume yes for all confirmations
 ```
+
+**Shutting down from inside the VM**: use `sudo poweroff` (or `sudo shutdown -h now`). `sudo halt` only halts the CPUs — it skips the ACPI poweroff event, so neither QEMU nor AVF notices the guest stopped, and `agv ls` will keep reporting the VM as `running` until you run `agv stop` from the host.
 
 ## Config file
 

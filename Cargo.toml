@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "development-tools", "virtualization"]
 anstream = "0.6"
 anstyle = "1"
 anyhow = "1"
+async-trait = "0.1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
@@ -31,6 +32,12 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# AVF on macOS reads cached cloud images as qcow2 but Apple Virtualization
+# only accepts raw disks, so we need a pure-Rust qcow2 reader. PoC verified
+# against qemu-img for Ubuntu/Debian/Fedora — byte-identical conversion.
+[target.'cfg(target_os = "macos")'.dependencies]
+qcow2-rs = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2"

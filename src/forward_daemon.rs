@@ -38,9 +38,14 @@ pub async fn run(vm: &str, spec: ForwardSpec) -> anyhow::Result<()> {
         signal(SignalKind::interrupt()).context("failed to install SIGINT handler")?;
 
     loop {
-        // Look up the SSH port fresh each iteration: if the VM is restarted
-        // while we're running, the forwarded port may change.
-        let Ok(port) = ssh::ssh_port(&instance).await else {
+        // Look up the SSH endpoint fresh each iteration: if the VM is
+        // restarted while we're running, the host/port may change (QEMU
+        // hostfwd port reallocates on every boot; AVF NAT IP can also
+        // change across restarts).
+        let Ok((host, port)) = (match crate::vm::backend::for_instance(&instance) {
+            Ok(b) => b.ssh_endpoint(&instance).await,
+            Err(e) => Err(e),
+        }) else {
             tokio::select! {
                 () = tokio::time::sleep(RESPAWN_DELAY) => continue,
                 _ = term.recv() => return Ok(()),
@@ -48,7 +53,7 @@ pub async fn run(vm: &str, spec: ForwardSpec) -> anyhow::Result<()> {
             }
         };
 
-        let mut cmd = build_ssh_command(&instance, port, &user, spec);
+        let mut cmd = build_ssh_command(&instance, &host, port, &user, spec);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -94,6 +99,7 @@ fn read_user(instance: &Instance) -> anyhow::Result<String> {
 
 fn build_ssh_command(
     instance: &Instance,
+    host: &str,
     port: u16,
     user: &str,
     spec: ForwardSpec,
@@ -107,8 +113,11 @@ fn build_ssh_command(
     args.push("-o".to_string());
     args.push("ServerAliveCountMax=2".to_string());
     args.push("-L".to_string());
+    // The middle `localhost` is the *guest-side* destination interpretation
+    // by sshd inside the guest (we tunnel to services bound to the guest's
+    // 127.0.0.1). Only the SSH connection target changes per backend.
     args.push(format!("{h}:localhost:{g}", h = spec.host, g = spec.guest));
-    args.push(format!("{user}@localhost"));
+    args.push(format!("{user}@{host}"));
 
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(&args)

@@ -27,6 +27,12 @@ pub fn render(config: &ResolvedConfig, arch: &str) -> String {
     out.push_str("_Initial VM state — what agv installed at first boot. May have drifted since._\n\n");
     writeln!(out, "- OS family: {} ({arch})", config.os_family).unwrap();
     writeln!(out, "- User: `{}` (passwordless sudo)", config.user).unwrap();
+    // Shutdown hint: `halt` halts CPUs without firing ACPI poweroff, so
+    // the host process (QEMU / AVF runner) keeps running and agv doesn't
+    // notice the guest stopped. `poweroff` goes through ACPI and the host
+    // tears down cleanly. Cheap line, prevents a class of confused
+    // "VM stuck running" reports.
+    out.push_str("- Shutdown: `sudo poweroff` (not `sudo halt` — halt skips ACPI and leaves agv unaware the guest stopped)\n");
 
     // VM-specific notes from the user's own config (top-level `notes = [...]`).
     // Surfaced above the mixin list because they describe *this VM's* purpose,
@@ -104,6 +110,7 @@ mod tests {
             idle_suspend_minutes: 0,
             idle_load_threshold: 0.2,
             machine_type: None,
+            backend: "qemu".to_string(),
         }
     }
 
@@ -117,6 +124,20 @@ mod tests {
         assert!(md.contains("User: `agent` (passwordless sudo)"));
         // No mixins section when nothing was applied.
         assert!(!md.contains("## Mixins"));
+    }
+
+    /// Shutdown hint is on the always-rendered top section so agents
+    /// see it before issuing any shutdown command. Pinned so a future
+    /// refactor that strips "noise" doesn't lose the warning — the
+    /// `halt`-vs-`poweroff` distinction has a class of "VM stuck"
+    /// failures behind it on both QEMU and AVF.
+    #[test]
+    fn includes_shutdown_hint() {
+        let md = render(&empty(), "aarch64");
+        assert!(
+            md.contains("sudo poweroff") && md.contains("sudo halt"),
+            "system.md should warn against `halt` in favor of `poweroff`; got:\n{md}"
+        );
     }
 
     #[test]

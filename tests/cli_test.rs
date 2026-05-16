@@ -288,6 +288,148 @@ fn destroy_with_label_against_no_matches_succeeds() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// `agv cache clean` must keep both halves of an AVF base's cache
+/// pair: the qcow2 source AND the `<qcow2>.raw` it converts to.
+/// Pruning the raw out from under a referenced base would force the
+/// next AVF create to redo a multi-second conversion — exactly what
+/// the cache is there to avoid.
+///
+/// Conversely, orphan raws (no qcow2 still referenced) must get
+/// swept, otherwise an old base whose VMs have all been destroyed
+/// keeps its derivative around forever.
+///
+/// Doesn't need to actually convert anything — just plants the
+/// expected filenames and asserts the prune logic treats the pair
+/// correctly.
+#[test]
+fn cache_clean_keeps_raw_alongside_referenced_qcow2() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Stand up a fake instance whose config.toml references a base
+    // URL. `referenced_cache_files` reads this to decide what to keep.
+    let inst_dir = tmp.path().join("instances").join("_test-vm");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    let cfg = r#"
+base_url = "https://example.invalid/base.qcow2"
+base_checksum = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+skip_checksum = true
+memory = "1G"
+cpus = 1
+disk = "10G"
+user = "agent"
+os_family = "debian"
+files = []
+forwards = []
+backend = "avf"
+"#;
+    std::fs::write(inst_dir.join("config.toml"), cfg).unwrap();
+    std::fs::write(inst_dir.join("status"), "stopped").unwrap();
+
+    // Plant fixture cache files: the referenced pair + an orphan
+    // pair (no instance references it).
+    let cache = tmp.path().join("cache").join("images");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("base.qcow2"), b"qcow2-bytes").unwrap();
+    std::fs::write(cache.join("base.qcow2.raw"), b"raw-bytes").unwrap();
+    std::fs::write(cache.join("orphan.qcow2"), b"orphan-qcow2").unwrap();
+    std::fs::write(cache.join("orphan.qcow2.raw"), b"orphan-raw").unwrap();
+
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["cache", "clean"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cache clean failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Referenced pair survives.
+    assert!(
+        cache.join("base.qcow2").exists(),
+        "referenced qcow2 must be kept",
+    );
+    assert!(
+        cache.join("base.qcow2.raw").exists(),
+        "the .raw sibling of a referenced qcow2 must also be kept — \
+         otherwise the next AVF create has to redo the conversion",
+    );
+
+    // Orphan pair gets pruned.
+    assert!(
+        !cache.join("orphan.qcow2").exists(),
+        "orphan qcow2 should be pruned",
+    );
+    assert!(
+        !cache.join("orphan.qcow2.raw").exists(),
+        "orphan raw should be pruned",
+    );
+}
+
+/// `agv backend cleanup --help` must parse — regression guard so a
+/// future refactor that drops the subcommand gets caught by clap's
+/// exit-2 usage error instead of slipping through.
+#[test]
+fn backend_cleanup_help_succeeds() {
+    let output = agv()
+        .args(["backend", "cleanup", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "agv backend cleanup --help should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Help text must surface the safe-by-default semantics — users
+    // grep for these terms to confirm what gets deleted.
+    assert!(stdout.contains("--dry-run"), "help should mention --dry-run; got:\n{stdout}");
+    assert!(stdout.contains("--json"), "help should mention --json; got:\n{stdout}");
+}
+
+/// `--backend` validation happens during config build, before any
+/// real I/O — so even with a nonexistent image URL, an invalid backend
+/// value should be the visible failure mode and stderr should name
+/// the allowed values.
+#[test]
+fn create_rejects_unknown_backend_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["create", "--backend", "totally-bogus", "_test-bad-backend"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "create with bogus --backend should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown backend") || stderr.contains("bogus"),
+        "stderr should explain the invalid backend; got: {stderr}"
+    );
+}
+
+/// `--backend avf` on a non-macOS host (and `--backend qemu` everywhere)
+/// must parse cleanly — clap should accept the flag itself and surface
+/// the platform-availability check as a runtime error message, not an
+/// argument-parsing one. Mostly here to catch a regression where the
+/// flag gets accidentally renamed or removed from `CreateArgs`.
+#[test]
+fn create_backend_flag_is_registered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["create", "--backend", "qemu", "--help"])
+        .output()
+        .unwrap();
+    // --help short-circuits, exits 0; if `--backend` were unknown to
+    // clap, we'd get exit 2 instead.
+    assert!(
+        output.status.success(),
+        "agv create --backend qemu --help should succeed (clap parses the flag); stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn exit_code_2_for_clap_usage_errors() {
     // Unknown subcommand and missing required arg both go through clap and

@@ -78,25 +78,48 @@ if [ -z "$DEST" ]; then
 fi
 
 BIN="$DEST/agv"
-URL="https://github.com/$REPO/releases/latest/download/agv-$TARGET"
+TARBALL="agv-$TARGET.tar.gz"
+URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
 
 echo "Detected: $OS/$ARCH ($TARGET)"
-echo "Installing to: $BIN"
+echo "Installing to: $DEST"
 echo ""
 
-# Download
-echo "Downloading agv..."
+# Download into a temp dir, extract, then move the binaries into
+# place. Tar rather than raw binary so the macOS release can ship
+# both `agv` and `agv-avf-runner` (the Apple Virtualization
+# supervisor) in one install step — without the latter, the
+# default `avf` backend on macOS Apple Silicon would have nothing
+# to spawn.
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+echo "Downloading $TARBALL..."
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --progress-bar -o "$BIN" "$URL"
+    curl -fsSL --progress-bar -o "$TMP/$TARBALL" "$URL"
 elif command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress -O "$BIN" "$URL"
+    wget -q --show-progress -O "$TMP/$TARBALL" "$URL"
 else
     echo "${RED}error:${RESET} neither curl nor wget found. Please install one and retry." >&2
     exit 1
 fi
 
-chmod +x "$BIN"
-echo "${GREEN}Installed${RESET} agv to $BIN"
+echo "Extracting..."
+tar -xzf "$TMP/$TARBALL" -C "$TMP"
+
+# Move every binary the tarball ships into DEST. The macOS tarball
+# adds `agv-avf-runner` alongside `agv`; the Linux tarballs contain
+# just `agv`.
+SRC_DIR="$TMP/agv-$TARGET"
+if [ ! -d "$SRC_DIR" ]; then
+    echo "${RED}error:${RESET} extracted tarball missing expected directory $SRC_DIR" >&2
+    exit 1
+fi
+for binary in "$SRC_DIR"/*; do
+    name=$(basename "$binary")
+    install -m 0755 "$binary" "$DEST/$name"
+    echo "${GREEN}Installed${RESET} $name to $DEST/$name"
+done
 echo ""
 
 # Verify the binary runs

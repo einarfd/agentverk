@@ -56,8 +56,19 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("SSH timed out waiting for VM '{name}' to become reachable")]
-    SshTimeout { name: String },
+    #[error(
+        "SSH timed out waiting for VM '{name}' to become reachable\n{diagnostic}"
+    )]
+    SshTimeout {
+        name: String,
+        /// Free-form diagnostic line(s) describing the closest the
+        /// poll got to success — e.g. "guest IP never appeared
+        /// (last endpoint error: …)" or "endpoint resolved to
+        /// 192.168.205.4:22 but ssh kept failing". Makes the
+        /// error self-diagnosing instead of pointing the user at
+        /// the runner log.
+        diagnostic: String,
+    },
 
     #[error("SCP transfer failed for VM '{name}'")]
     Scp {

@@ -141,6 +141,13 @@ pub enum Command {
 
     /// Write a starter config file to a given path (use with `agv create --config`).
     Init(InitArgs),
+
+    /// Backend-related commands (currently: migration between QEMU and AVF).
+    ///
+    /// Migrations don't fit the everyday lifecycle namespace — they're a
+    /// one-off, rarely-run thing. Grouped under `agv backend` so the
+    /// top-level command list stays focused.
+    Backend(BackendArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -190,6 +197,16 @@ pub struct CreateArgs {
     /// Disk size, e.g. 20G.
     #[arg(long)]
     pub disk: Option<String>,
+
+    /// Hypervisor backend: `qemu` (default, cross-platform) or `avf`
+    /// (Apple Virtualization; macOS Apple Silicon only).
+    ///
+    /// Defaults to whatever the resolved config says, falling back to
+    /// `qemu`. Pass `--backend avf` to create an AVF-native VM directly
+    /// instead of creating it under QEMU and then migrating with
+    /// `agv backend migrate-to-avf`.
+    #[arg(long, value_name = "BACKEND")]
+    pub backend: Option<String>,
 
     /// Add a mixin to the VM (e.g. devtools, claude, docker, rust, nodejs).
     ///
@@ -489,6 +506,74 @@ pub enum TemplateCommand {
 
     /// Delete a template.
     Rm(TemplateRmArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackendArgs {
+    #[command(subcommand)]
+    pub command: BackendCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackendCommand {
+    /// Migrate a stopped VM from the QEMU backend to Apple Virtualization.
+    ///
+    /// Converts the qcow2 disk to a sparse raw file in place, flips
+    /// `backend = "avf"` in the VM's config, and leaves the original
+    /// disk.qcow2 in place for one-step rollback (delete it manually
+    /// once you've confirmed the AVF boot is healthy).
+    ///
+    /// macOS-only — the AVF backend is unavailable on Linux.
+    MigrateToAvf(BackendMigrateToAvfArgs),
+
+    /// Remove residual files from the VM's previous backend.
+    ///
+    /// After `agv backend migrate-to-avf <name>` without
+    /// `--delete-qcow2`, the original `disk.qcow2` is kept so you can
+    /// roll back. Once you've verified the AVF boot is healthy, this
+    /// reclaims the disk space.
+    ///
+    /// Removes only files belonging to the OTHER backend than the
+    /// one in `config.toml` (so `disk.qcow2` on an AVF VM,
+    /// `disk.raw` + `avf-*` sidecars on a QEMU VM). VM must be
+    /// stopped — refuses to delete anything while the host process
+    /// is alive.
+    Cleanup(BackendCleanupArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackendMigrateToAvfArgs {
+    /// Name of the VM to migrate. The VM must be stopped.
+    pub name: String,
+
+    /// Delete the original `disk.qcow2` after a successful conversion.
+    /// Default is to keep it so you can roll back by setting
+    /// `backend = "qemu"` in the VM's config and removing
+    /// `disk.raw`. The qcow2 is sized roughly like a compressed
+    /// version of the raw, so keeping it costs ~the size of the
+    /// used portion of the disk.
+    #[arg(long)]
+    pub delete_qcow2: bool,
+
+    /// Output the result as a JSON object.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackendCleanupArgs {
+    /// Name of the VM whose previous-backend files should be removed.
+    /// VM must be stopped.
+    pub name: String,
+
+    /// Show what would be removed and the total bytes that would be
+    /// freed, but don't delete anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Output the result as a JSON object.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

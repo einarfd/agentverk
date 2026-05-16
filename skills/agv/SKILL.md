@@ -1,11 +1,11 @@
 ---
 name: agv
-description: Create and manage QEMU/KVM microVMs for sandboxed Linux development on macOS or Linux. Use when the task wants real isolation from the host — running untrusted code, testing risky shell commands, hosting another AI agent (Claude Code / OpenAI Codex / Google Gemini) inside the sandbox, cloning a private repo into a fresh workspace, or handing the user a disposable dev environment. Don't use for single shell commands or read-only file inspection where isolation isn't needed.
+description: Create and manage Linux microVMs (QEMU or Apple Virtualization) for sandboxed development on macOS or Linux. Use when the task wants real isolation from the host — running untrusted code, testing risky shell commands, hosting another AI agent (Claude Code / OpenAI Codex / Google Gemini) inside the sandbox, cloning a private repo into a fresh workspace, or handing the user a disposable dev environment. Don't use for single shell commands or read-only file inspection where isolation isn't needed.
 ---
 
 # agv: sandboxed Linux VMs
 
-`agv` creates and manages QEMU/KVM microVMs on the user's host. Each VM is
+`agv` creates and manages Linux microVMs on the user's host. Each VM is
 a real Linux machine — SSH, Docker, and systemd all work normally inside
 it. Boot takes ~30s on first create; subsequent starts and `suspend`/`resume`
 are much faster.
@@ -28,6 +28,37 @@ Don't reach for it when:
 - You only need to read files (no execution)
 - The user already has the right environment locally
 - Boot latency would dominate the task
+
+## Backends
+
+agv has two hypervisor backends, picked per VM:
+
+| Backend | When picked | Notes |
+|---|---|---|
+| `avf` | Default on macOS Apple Silicon. | Apple Virtualization. Faster cold boot, suspend, and resume. SSH endpoint is the guest's NAT IP on port 22 — `inspect --json` reports `ssh_port: null` and the host/port lives in the managed `~/.local/share/agv/ssh_config` instead. |
+| `qemu` | Default on Linux and Intel macOS; available everywhere as a fallback. | QEMU process. Cross-platform. SSH is a forwarded port on `127.0.0.1` — `inspect --json` reports `ssh_port: <number>`. |
+
+**Most of the time you don't need to think about this.** `agv ssh <name>`,
+`agv cp`, and `agv inspect` work identically on both. The differences only
+matter if you're parsing JSON output (see `ssh_port` note above) or
+explicitly choosing one:
+
+```bash
+agv create --backend qemu <name>     # force QEMU on macOS Apple Silicon
+agv create --backend avf  <name>     # force AVF (macOS Apple Silicon only)
+```
+
+Migrating an existing VM between backends is a separate verb because it
+needs a disk-format conversion:
+
+```bash
+agv backend migrate-to-avf <name>           # converts disk.qcow2 → disk.raw, flips backend
+agv backend cleanup        <name>           # reclaim residual files (e.g. the kept qcow2)
+```
+
+`migrate-to-avf` keeps the original qcow2 by default for one-step rollback;
+run `agv backend cleanup <name>` once you've verified the AVF boot is
+healthy, or pass `--delete-qcow2` to remove it during migration.
 
 ## Pre-flight
 
@@ -149,9 +180,14 @@ whether the VM was newly created or already there:
 
 ```bash
 STATE=$(agv create --if-not-exists --start --json --include devtools agv-session-x)
-echo "$STATE" | jq -r '"Created fresh? \(.created)  status: \(.status)  ssh: 127.0.0.1:\(.ssh_port)"'
-# Created fresh? true   status: running   ssh: 127.0.0.1:50121
+echo "$STATE" | jq -r '"Created fresh? \(.created)  status: \(.status)  backend: \(.backend)"'
+# Created fresh? true   status: running   backend: avf
 ```
+
+Don't read `ssh_port` from the JSON to construct an SSH command yourself —
+it's `null` on AVF VMs (no host-side port; SSH goes to the guest IP). Use
+`agv ssh <name>` instead, which resolves the right endpoint regardless of
+backend.
 
 `--if-not-exists` only affects the `create` decision — it does not
 auto-start an existing stopped VM. If you want both "ensure it
@@ -288,8 +324,11 @@ agv suspend agv-project-x         # save full state to disk, free host RAM
 agv resume agv-project-x          # back to exactly where you left off
 ```
 
-Suspended VMs use only disk (the qcow2 holds RAM + device state).
-`agv resume` is much faster than re-creating.
+Suspended VMs use only disk — the hypervisor is no longer running. On
+QEMU the RAM + device state lives in a `savevm` snapshot inside
+`disk.qcow2`; on AVF it lives in `<inst>/avf-snapshot.bin` (removed
+automatically once `resume` completes). Either way, `agv resume` is much
+faster than re-creating.
 
 ### Auto-suspend for VMs you hand to a user
 
@@ -410,6 +449,7 @@ agv create --include <mixin>          # repeatable; mixins compose
 agv create --image <ubuntu|debian|fedora>
 agv create --spec <small|medium|large|xlarge>
 agv create --memory 4G --cpus 2 --disk 20G
+agv create --backend <qemu|avf>       # override host default (avf on macOS Apple Silicon, qemu elsewhere)
 agv create --env-file <path>          # explicit .env location
 agv create --interactive              # step through provisioning (debugging)
 agv create --if-not-exists            # succeed if the VM is already there
@@ -443,6 +483,12 @@ agv gui --no-launch <name>            # just print the URL; safe to run from a n
 agv suspend <name>
 agv resume <name>
 # auto-suspend is set per-VM in agv.toml as `[vm] idle_suspend_minutes = N`
+
+agv backend migrate-to-avf <name>     # convert a stopped QEMU VM to AVF in place
+agv backend migrate-to-avf <name> --delete-qcow2   # also remove the original qcow2
+agv backend cleanup <name>            # reclaim residual files from the previous backend
+agv backend cleanup <name> --dry-run  # preview what would be removed
+agv backend cleanup <name> --json     # → BackendCleanupReport
 
 agv destroy <name>                    # confirmation prompt
 agv destroy --force <name>            # no prompt; for cleanup scripts
