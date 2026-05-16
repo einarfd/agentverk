@@ -247,6 +247,16 @@ fn config_without_required_path_fails() {
     );
 }
 
+/// Apple Virtualization availability gate. CI environments (GitHub
+/// Actions `macos-latest` runners are themselves virtualized Apple
+/// Silicon VMs) lack the nested-virt entitlement, and any test that
+/// reaches `VZVirtualMachineConfiguration.validate()` fails with
+/// `VZErrorDomain Code=2 "Virtualization is not available on this
+/// hardware"`. Tests that need a working VZ should grep stderr for
+/// this string and skip via the standard `eprintln! + return`
+/// pattern, the same way they skip on a missing fixture.
+const VZ_UNAVAILABLE_NEEDLE: &str = "Virtualization is not available on this hardware";
+
 #[test]
 fn validate_succeeds_for_well_formed_config() {
     let Some(binary) = runner_binary() else {
@@ -268,6 +278,12 @@ fn validate_succeeds_for_well_formed_config() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains(VZ_UNAVAILABLE_NEEDLE) {
+        eprintln!(
+            "AVF unavailable on this host (likely a virtualized CI runner) — skipping validate_succeeds_for_well_formed_config"
+        );
+        return;
+    }
     assert!(
         out.status.success(),
         "validate should succeed for a well-formed config\nstdout: {stdout}\nstderr: {stderr}"
