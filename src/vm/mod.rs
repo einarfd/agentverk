@@ -1268,6 +1268,13 @@ pub async fn rename(old: &str, new: &str) -> anyhow::Result<()> {
     clippy::too_many_lines,
     reason = "Migration is a sequential transactional pipeline (validate → convert disk → bump instance-id → switch backend field → save config → optionally delete qcow2 → emit report). Each step has rollback-on-failure semantics that depend on the surrounding state; pulling them into helpers would scatter the rollback logic and make the failure path harder to verify."
 )]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unused_async,
+        reason = "Non-macOS bodies are a stub `anyhow::bail!`; keeping the `async fn` signature uniform across platforms so the dispatch site doesn't need a cfg-cascade. The macOS body uses `.await`."
+    )
+)]
 pub async fn migrate_to_avf(
     name: &str,
     delete_qcow2: bool,
