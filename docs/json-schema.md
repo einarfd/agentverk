@@ -343,16 +343,26 @@ Object with the dependency check results. Always emits the same keys (no omissio
     {"name": "scp",                 "found": true},
     {"name": "hdiutil",             "found": false}
   ],
-  "ssh_include_installed": true
+  "ssh_include_installed": true,
+  "runner_protocol_version": {"status": "match", "version": 1}
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `ok` | bool | `true` iff every check passed (i.e. `issues == 0`) |
-| `issues` | uint32 | Count of failed dependency checks. Does not factor in `ssh_include_installed` — the include is best-effort, not required |
+| `issues` | uint32 | Count of failed dependency checks, plus 1 for a `runner_protocol_version` mismatch. Does not factor in `ssh_include_installed` (best-effort) or `runner_protocol_version.status == "unreadable"` (soft warning) |
 | `checks` | object[] | One entry per dependency, in display order. Each has `{name: string, found: bool}` |
 | `ssh_include_installed` | bool \| null | `true` if the agv-managed Include line is present in `~/.ssh/config`; `null` when the host config could not be read |
+| `runner_protocol_version` | object \| null | Protocol-version check against the installed `agv-avf-runner`. `null` when the runner isn't installed or the host doesn't ship it (non-macOS). When present, a tagged object — `status` is the discriminator |
+
+`runner_protocol_version` shape per `status`:
+
+| `status` | Other fields | Meaning |
+|---|---|---|
+| `"match"` | `version: uint32` | Runner reports the version agv expects. Healthy. |
+| `"mismatch"` | `found: uint32`, `expected: uint32` | Runner reports a different version. Counts as an issue. Reinstall fix. |
+| `"unreadable"` | `reason: string` | Could run the runner but couldn't parse a version. Soft warning, doesn't count as an issue. |
 
 The check `name` field is human-oriented and may be a slash-joined alternates list (e.g. `"mkisofs / genisoimage"` on Linux); don't pattern-match on it as if it were a stable identifier.
 

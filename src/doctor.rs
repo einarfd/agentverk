@@ -168,22 +168,54 @@ pub struct CheckJson {
     pub found: bool,
 }
 
+/// Result of checking the AVF runner's wire-protocol version against
+/// what agv expects. Serializes as a tagged object so the shape is
+/// self-describing in `--json` output.
+///
+/// Stable across the 0.x series — additions OK, removals/renames need
+/// a major bump.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum RunnerProtocolCheck {
+    /// Runner reports the version agv expects.
+    Match { version: u32 },
+    /// Runner reports a version different from agv's. The user needs
+    /// to reinstall so both come from the same build — typically a
+    /// partial install (`cargo install agv` upgraded the Rust side
+    /// but the runner is still from an older tarball).
+    Mismatch { found: u32, expected: u32 },
+    /// Could read the runner but couldn't determine its version
+    /// (unexpected output, non-zero exit, etc.). Surface as a soft
+    /// warning rather than a hard fail — `found` already gates the
+    /// hard fail.
+    Unreadable { reason: String },
+}
+
 /// Aggregate doctor report for `agv doctor --json`.
 ///
 /// Stable across the 0.x series — additions OK, removals/renames need
 /// a major bump.
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorReport {
-    /// `true` iff every dependency check passed.
+    /// `true` iff every dependency check passed AND the runner's
+    /// protocol version matches (when applicable).
     pub ok: bool,
-    /// Number of failed dependency checks. Does not include
-    /// `ssh_include_installed` — the include is best-effort.
+    /// Number of failed dependency checks, plus 1 if the runner's
+    /// protocol version is a [`RunnerProtocolCheck::Mismatch`]. Does
+    /// not include `ssh_include_installed` (the include is
+    /// best-effort) or `RunnerProtocolCheck::Unreadable` (a soft
+    /// warning).
     pub issues: u32,
     /// One entry per dependency, in the same order as the human output.
     pub checks: Vec<CheckJson>,
     /// `true` if the agv-managed Include line is present in
     /// `~/.ssh/config`. `null` if the host config could not be read.
     pub ssh_include_installed: Option<bool>,
+    /// Protocol-version check against the installed
+    /// `agv-avf-runner`. `null` when the runner isn't installed or
+    /// the host can't run it (non-macOS, etc.) — in those cases the
+    /// `agv-avf-runner` entry in `checks` already conveys the issue.
+    pub runner_protocol_version: Option<RunnerProtocolCheck>,
 }
 
 fn build_report() -> DoctorReport {
@@ -201,12 +233,77 @@ fn build_report() -> DoctorReport {
         });
     }
     let ssh_include_installed = crate::ssh_config::is_include_installed().ok();
+    let runner_protocol_version = check_runner_protocol_version();
+    // Bump the issue count for a hard mismatch — same severity as a
+    // missing dep: the runner is installed but speaks the wrong wire.
+    // `Unreadable` is a soft warning (doesn't increment).
+    if let Some(RunnerProtocolCheck::Mismatch { .. }) = runner_protocol_version {
+        issues += 1;
+    }
     DoctorReport {
         ok: issues == 0,
         issues,
         checks: entries,
         ssh_include_installed,
+        runner_protocol_version,
     }
+}
+
+/// Probe `agv-avf-runner --version` and compare its reported
+/// protocol version against what agv expects.
+///
+/// Returns `None` when the runner can't be located or we're on a
+/// host that doesn't ship the runner — in either case the
+/// `agv-avf-runner` dependency-check entry already surfaces the
+/// situation, no point double-reporting.
+///
+/// The runner's `--version` output is `agv-avf-runner protocol <N>`
+/// — see [`crate::vm::backend::RUNNER_PROTOCOL_VERSION`] for the
+/// reasoning behind printing protocol-only.
+#[cfg(target_os = "macos")]
+fn check_runner_protocol_version() -> Option<RunnerProtocolCheck> {
+    let runner = crate::vm::backend::locate_avf_runner().ok()?;
+    let expected = crate::vm::backend::RUNNER_PROTOCOL_VERSION;
+    let output = match std::process::Command::new(&runner).arg("--version").output() {
+        Ok(o) => o,
+        Err(e) => {
+            return Some(RunnerProtocolCheck::Unreadable {
+                reason: format!("running --version: {e}"),
+            });
+        }
+    };
+    if !output.status.success() {
+        return Some(RunnerProtocolCheck::Unreadable {
+            reason: format!("--version exited with {}", output.status),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim();
+    // Expected shape: `agv-avf-runner protocol <N>`. Anything else
+    // is "unreadable" — likely a different binary masquerading
+    // under the same name, or a runner from before protocol
+    // versioning was wired (which we still want to surface so the
+    // user knows to reinstall).
+    let Some(suffix) = stdout.strip_prefix("agv-avf-runner protocol ") else {
+        return Some(RunnerProtocolCheck::Unreadable {
+            reason: format!("unrecognised --version output: {stdout:?}"),
+        });
+    };
+    match suffix.parse::<u32>() {
+        Ok(v) if v == expected => Some(RunnerProtocolCheck::Match { version: v }),
+        Ok(v) => Some(RunnerProtocolCheck::Mismatch {
+            found: v,
+            expected,
+        }),
+        Err(e) => Some(RunnerProtocolCheck::Unreadable {
+            reason: format!("parsing version {suffix:?}: {e}"),
+        }),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_runner_protocol_version() -> Option<RunnerProtocolCheck> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -231,9 +328,21 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
+    // Runner protocol-version check: only meaningful when the runner
+    // itself is present. Surfaced as a sibling status line below the
+    // main check list, and a mismatch counts as an issue (same
+    // severity as a missing dep — install-skew has the same fix:
+    // reinstall to get both binaries from the same build).
+    let runner_proto = check_runner_protocol_version();
+    let runner_mismatch = matches!(runner_proto, Some(RunnerProtocolCheck::Mismatch { .. }));
+    if runner_mismatch {
+        issues += 1;
+    }
+
     if issues == 0 {
         anstream::println!();
         anstream::println!("  {GREEN}All dependencies found.{GREEN:#}");
+        print_runner_protocol_status(runner_proto.as_ref());
         print_ssh_include_status();
         return Ok(());
     }
@@ -257,6 +366,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let noun = if issues == 1 { "issue" } else { "issues" };
     anstream::println!("  {YELLOW}{issues} {noun} found.{YELLOW:#}");
+    print_runner_protocol_status(runner_proto.as_ref());
     print_ssh_include_status();
 
     Ok(())
@@ -267,6 +377,37 @@ pub fn run_json() -> anyhow::Result<()> {
     let report = build_report();
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// Append the AVF runner protocol-version status line, when relevant.
+///
+/// Silent when the check is `None` (runner not installed on this host,
+/// or not macOS) — the missing-dep line in the main check list
+/// already surfaces "you need to install agv-avf-runner."
+fn print_runner_protocol_status(check: Option<&RunnerProtocolCheck>) {
+    let Some(check) = check else { return };
+    anstream::println!();
+    match check {
+        RunnerProtocolCheck::Match { version } => {
+            anstream::println!(
+                "  Runner protocol: {GREEN}✓ v{version}{GREEN:#}"
+            );
+        }
+        RunnerProtocolCheck::Mismatch { found, expected } => {
+            anstream::println!(
+                "  Runner protocol: {RED}✗ runner v{found}, agv expects v{expected}{RED:#}"
+            );
+            anstream::println!("    Reinstall so both binaries come from the same build:");
+            anstream::println!("      From a clone: `just install`");
+            anstream::println!("      From release: grab the matching tarball; the install script handles both");
+        }
+        RunnerProtocolCheck::Unreadable { reason } => {
+            anstream::println!(
+                "  Runner protocol: {YELLOW}⚠ unreadable{YELLOW:#}"
+            );
+            anstream::println!("    {reason}");
+        }
+    }
 }
 
 /// Append the SSH-config-Include status line to the dependency report.
@@ -309,15 +450,21 @@ mod tests {
                 found: true,
             }],
             ssh_include_installed: Some(true),
+            runner_protocol_version: Some(RunnerProtocolCheck::Match { version: 1 }),
         };
         let json = serde_json::to_value(&report).unwrap();
         let obj = json.as_object().expect("DoctorReport must serialize as an object");
         let actual: std::collections::BTreeSet<&str> =
             obj.keys().map(String::as_str).collect();
-        let expected: std::collections::BTreeSet<&str> =
-            ["checks", "issues", "ok", "ssh_include_installed"]
-                .into_iter()
-                .collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "checks",
+            "issues",
+            "ok",
+            "ssh_include_installed",
+            "runner_protocol_version",
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(actual, expected, "DoctorReport JSON keys drifted");
     }
 
@@ -330,6 +477,7 @@ mod tests {
             issues: 0,
             checks: vec![],
             ssh_include_installed: None,
+            runner_protocol_version: None,
         };
         let json = serde_json::to_value(&report).unwrap();
         let obj = json.as_object().unwrap();
@@ -338,6 +486,33 @@ mod tests {
             obj.get("ssh_include_installed"),
             Some(&serde_json::Value::Null),
         );
+        assert_eq!(
+            obj.get("runner_protocol_version"),
+            Some(&serde_json::Value::Null),
+        );
+    }
+
+    /// Schema pin for the `runner_protocol_version` variants. Each
+    /// variant must serialize as `{"status": "...", ...}` with a
+    /// stable shape per status.
+    #[test]
+    fn runner_protocol_check_json_shapes() {
+        let m = serde_json::to_value(RunnerProtocolCheck::Match { version: 1 }).unwrap();
+        assert_eq!(m["status"], "match");
+        assert_eq!(m["version"], 1);
+
+        let mismatch =
+            serde_json::to_value(RunnerProtocolCheck::Mismatch { found: 0, expected: 1 }).unwrap();
+        assert_eq!(mismatch["status"], "mismatch");
+        assert_eq!(mismatch["found"], 0);
+        assert_eq!(mismatch["expected"], 1);
+
+        let unreadable = serde_json::to_value(RunnerProtocolCheck::Unreadable {
+            reason: "x".to_string(),
+        })
+        .unwrap();
+        assert_eq!(unreadable["status"], "unreadable");
+        assert_eq!(unreadable["reason"], "x");
     }
 
     #[test]
