@@ -430,8 +430,18 @@ async fn apply_and_report_forwards(
 /// just doesn't get auto-suspend until the next start. Mirrors how
 /// forward-supervisor failures are handled in
 /// [`apply_and_report_forwards`].
+///
+/// Defence-in-depth check against the AVF backend: `vm::suspend`
+/// refuses on AVF (Apple's framework doesn't support save/restore
+/// for Linux guests), so a watcher there would just retry-and-fail
+/// every interval forever. `build_from_cli` and `config_set` both
+/// reject `idle_suspend_minutes > 0` on AVF at the write boundary,
+/// but `migrate_to_avf` historically didn't clear the field, and
+/// hand-edited saved configs can introduce the bad combo too. Skip
+/// silently rather than print a misleading "Auto-suspend after N
+/// minutes" banner the watcher won't honour.
 async fn maybe_spawn_idle_watcher(inst: &Instance, config: &ResolvedConfig, spinner: &ProgressBar) {
-    if config.idle_suspend_minutes == 0 {
+    if !should_spawn_idle_watcher(config) {
         return;
     }
     idle_watcher::spawn(
@@ -448,6 +458,20 @@ async fn maybe_spawn_idle_watcher(inst: &Instance, config: &ResolvedConfig, spin
             if config.idle_suspend_minutes == 1 { "" } else { "s" }
         ),
     );
+}
+
+/// Pure decision: should `agv start` spawn the idle watcher for
+/// this config? Extracted from [`maybe_spawn_idle_watcher`] so the
+/// gate is unit-testable without needing to actually fork a
+/// supervisor process. Returns `false` for two cases:
+/// 1. `idle_suspend_minutes == 0` — auto-suspend disabled (default).
+/// 2. `backend == "avf"` — `vm::suspend` refuses on AVF, so a
+///    watcher there would just retry-and-fail forever. The
+///    write-boundary gates in `build_from_cli` and `config_set`
+///    already reject the combo, but `migrate_to_avf` and
+///    hand-edited configs can still introduce it.
+fn should_spawn_idle_watcher(config: &ResolvedConfig) -> bool {
+    config.idle_suspend_minutes > 0 && config.backend != "avf"
 }
 
 /// Resolve and pin the QEMU machine type if the instance config doesn't
@@ -1596,6 +1620,73 @@ pub async fn list() -> anyhow::Result<Vec<Instance>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal `ResolvedConfig` fixture for unit tests that don't
+    /// care about most fields — only `backend`,
+    /// `idle_suspend_minutes`, and `idle_load_threshold` need to be
+    /// distinct per case.
+    fn minimal_resolved_config(
+        backend: &str,
+        idle_suspend_minutes: u32,
+    ) -> ResolvedConfig {
+        ResolvedConfig {
+            base_url: String::new(),
+            base_checksum: String::new(),
+            skip_checksum: false,
+            memory: "2G".to_string(),
+            cpus: 2,
+            disk: "20G".to_string(),
+            user: "agent".to_string(),
+            os_family: "debian".to_string(),
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards: vec![],
+            auto_forwards: std::collections::BTreeMap::new(),
+            template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
+            labels: std::collections::BTreeMap::new(),
+            idle_suspend_minutes,
+            idle_load_threshold: 0.2,
+            machine_type: None,
+            backend: backend.to_string(),
+        }
+    }
+
+    /// QEMU + non-zero idle minutes: spawn (the original case the
+    /// feature was built for).
+    #[test]
+    fn spawn_watcher_when_qemu_and_idle_minutes_set() {
+        let cfg = minimal_resolved_config("qemu", 30);
+        assert!(should_spawn_idle_watcher(&cfg));
+    }
+
+    /// `idle_suspend_minutes` = 0 (the default): never spawn,
+    /// regardless of backend.
+    #[test]
+    fn skip_watcher_when_idle_minutes_zero() {
+        let cfg = minimal_resolved_config("qemu", 0);
+        assert!(!should_spawn_idle_watcher(&cfg));
+        let cfg = minimal_resolved_config("avf", 0);
+        assert!(!should_spawn_idle_watcher(&cfg));
+    }
+
+    /// AVF + non-zero idle minutes (the post-migrate-to-avf bad
+    /// combo): refuse to spawn even though the config has the field
+    /// set. `vm::suspend` refuses on AVF, so a watcher there would
+    /// retry-and-fail every interval forever. This is defence in
+    /// depth — `build_from_cli` and `config_set` reject the combo
+    /// at the write boundary, but `migrate_to_avf` historically let
+    /// it through, and hand-edited saved configs can introduce it.
+    #[test]
+    fn skip_watcher_on_avf_even_when_idle_minutes_set() {
+        let cfg = minimal_resolved_config("avf", 30);
+        assert!(!should_spawn_idle_watcher(&cfg));
+    }
 
     #[tokio::test]
     async fn config_set_requires_at_least_one_flag() {
