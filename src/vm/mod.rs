@@ -1418,6 +1418,25 @@ pub async fn migrate_to_avf(
         // config persistence path so the on-disk TOML is rewritten
         // through the same code that handles any other field.
         cfg.backend = "avf".to_string();
+
+        // Clear idle_suspend_minutes if it was set — AVF doesn't
+        // support save/restore for Linux guests, so the watcher
+        // there would just retry-and-fail forever. `agv create`
+        // and `agv config set` already refuse the combo at the
+        // write boundary, but the migrate path is the third entry
+        // point and needs the same hygiene. Notify the user via
+        // the spinner so the silent reset isn't a surprise.
+        if cfg.idle_suspend_minutes > 0 {
+            let previous = cfg.idle_suspend_minutes;
+            cfg.idle_suspend_minutes = 0;
+            step_done(
+                &spinner,
+                &format!(
+                    "Cleared idle_suspend_minutes (was {previous}) — auto-suspend isn't supported on AVF"
+                ),
+            );
+        }
+
         crate::config::save(&cfg, &inst.config_path())
             .await
             .with_context(|| format!("writing {}", inst.config_path().display()))?;
