@@ -86,6 +86,20 @@ pub trait VmBackend: Send + Sync {
         size: &str,
     ) -> anyhow::Result<()>;
 
+    /// Grow this VM's disk to a new (larger) virtual size. Each
+    /// backend resizes its own on-disk format at its own path:
+    /// QEMU runs `qemu-img resize` on `inst.disk_path()` (qcow2),
+    /// AVF sparse-truncate-extends `inst.avf_disk_path()` (raw).
+    /// Callers must validate `new_size > current` and that the VM
+    /// is stopped before calling. The guest filesystem isn't
+    /// resized; the user runs `growpart` / `resize2fs` after next
+    /// start.
+    async fn resize_disk(
+        &self,
+        inst: &Instance,
+        new_size: &str,
+    ) -> anyhow::Result<()>;
+
     /// Boot the VM. If `loadvm` is `Some(name)`, restore from that
     /// snapshot rather than cold-booting.
     async fn start(
@@ -170,6 +184,14 @@ impl VmBackend for LocalQemuBackend {
         size: &str,
     ) -> anyhow::Result<()> {
         crate::image::create_overlay(base_image, &inst.disk_path(), size).await
+    }
+
+    async fn resize_disk(
+        &self,
+        inst: &Instance,
+        new_size: &str,
+    ) -> anyhow::Result<()> {
+        crate::image::resize_disk(&inst.disk_path(), new_size).await
     }
 
     async fn start(
@@ -279,6 +301,36 @@ impl VmBackend for LocalAvfBackend {
         f.set_len(target_bytes)
             .await
             .with_context(|| format!("growing {} to {} bytes", dest.display(), target_bytes))?;
+        Ok(())
+    }
+
+    /// Sparse-truncate-extend the raw disk to the new size. Raw
+    /// images have no header to update — the extension creates
+    /// holes the guest filesystem fills on `growpart`/`resize2fs`
+    /// after the next start. Same primitive `provision_disk` uses
+    /// to grow the cloned cache copy at create time.
+    ///
+    /// Caller in `vm::config_set` already validates that the new
+    /// size is larger than the current `config.disk` and that the
+    /// VM is stopped. We don't re-check here; the trait contract
+    /// is "the caller knows what they're asking for."
+    async fn resize_disk(
+        &self,
+        inst: &Instance,
+        new_size: &str,
+    ) -> anyhow::Result<()> {
+        let dest = inst.avf_disk_path();
+        let target_bytes = crate::image::parse_disk_size(new_size)?;
+        let f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&dest)
+            .await
+            .with_context(|| format!("opening {} for resize", dest.display()))?;
+        f.set_len(target_bytes)
+            .await
+            .with_context(|| {
+                format!("growing {} to {} bytes", dest.display(), target_bytes)
+            })?;
         Ok(())
     }
 
@@ -1197,6 +1249,88 @@ mod tests {
              and the test isn't actually exercising the escalation path"
         );
         let _ = child.wait();
+    }
+
+    /// AVF `resize_disk` sparse-extends the raw file. Verify the
+    /// reported size grows to the requested bytes, the file still
+    /// occupies near-zero on-disk bytes (sparse — no actual write
+    /// of zero blocks), and the existing content at the front of
+    /// the file is preserved.
+    ///
+    /// Regression: the old `config_set` resize path hard-coded
+    /// `inst.disk_path()` (qcow2) and shelled out to `qemu-img`,
+    /// so `agv config set --disk` on an AVF VM either errored
+    /// (clean AVF VM, no qcow2) or silently resized the wrong
+    /// file (migrated VM with an orphan qcow2 still present, leaving
+    /// the live `disk.raw` at the old size).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn avf_resize_disk_grows_sparse_raw_preserving_head() {
+        use std::os::unix::fs::MetadataExt as _;
+        use tokio::io::AsyncReadExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let inst = Instance {
+            name: "avf-resize-test".to_string(),
+            dir: dir.path().to_path_buf(),
+        };
+        // Lay down a small initial raw with a known prefix at byte 0
+        // so we can verify the grow preserves the head of the file.
+        let initial_path = inst.avf_disk_path();
+        let initial_bytes: u64 = 4 * 1024 * 1024; // 4 MiB
+        let f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&initial_path)
+            .await
+            .unwrap();
+        f.set_len(initial_bytes).await.unwrap();
+        drop(f);
+        let head = b"avf-resize-canary\n";
+        tokio::fs::write(&initial_path, head).await.unwrap();
+        // `tokio::fs::write` truncates to the payload size; re-grow
+        // to the initial-bytes mark so the head→sparse-tail layout
+        // matches what a real provisioned disk looks like.
+        let f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&initial_path)
+            .await
+            .unwrap();
+        f.set_len(initial_bytes).await.unwrap();
+        drop(f);
+
+        let backend = LocalAvfBackend;
+        backend.resize_disk(&inst, "16M").await.expect("resize");
+
+        let meta = tokio::fs::metadata(&initial_path).await.unwrap();
+        assert_eq!(
+            meta.len(),
+            16 * 1024 * 1024,
+            "raw should report the new virtual size after resize_disk"
+        );
+
+        // Sparseness check: APFS reports block-level usage via the
+        // `blocks` stat field. A 16 MiB file with only a few-byte
+        // header written should occupy far less than its virtual
+        // size — we ceiling at half the file size as a generous
+        // "definitely sparse" bound that won't false-fail on
+        // filesystems with quirky allocation.
+        let allocated_bytes = meta.blocks() * 512;
+        assert!(
+            allocated_bytes < meta.len() / 2,
+            "raw should stay sparse after grow — virtual size {} bytes, \
+             allocated {} bytes",
+            meta.len(),
+            allocated_bytes
+        );
+
+        // Head preservation: read the first `head.len()` bytes and
+        // confirm our canary survived the truncate-extend.
+        let mut buf = vec![0u8; head.len()];
+        let mut rf = tokio::fs::File::open(&initial_path).await.unwrap();
+        rf.read_exact(&mut buf).await.unwrap();
+        assert_eq!(buf, head, "head of file must be preserved after resize");
     }
 
     /// `read_avf_runner_pid` is forgiving — missing or malformed

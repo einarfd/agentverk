@@ -780,9 +780,16 @@ pub async fn config_set(
 
     inst.write_status(Status::Configuring).await?;
 
-    // Resize disk first — qemu-img is atomic; on failure the disk is unchanged.
+    // Resize disk first — both backends resize atomically (qemu-img
+    // for qcow2, sparse truncate-extend for raw), so a failure here
+    // leaves the disk unchanged. Dispatch through the backend trait
+    // so we pick the right path AND the right resize primitive for
+    // each backend — pre-trait code hardcoded `inst.disk_path()`
+    // (qcow2) + qemu-img, which silently no-op'd on AVF VMs whose
+    // live disk is `disk.raw` at `inst.avf_disk_path()`.
     if let Some(new_disk) = disk {
-        if let Err(e) = image::resize_disk(&inst.disk_path(), new_disk).await {
+        let backend = backend::for_instance(&inst)?;
+        if let Err(e) = backend.resize_disk(&inst, new_disk).await {
             let _ = inst.write_status(status).await;
             return Err(e);
         }
