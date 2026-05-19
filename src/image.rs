@@ -5,6 +5,7 @@
 //! keeping disk usage low.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context as _};
 use futures_util::StreamExt as _;
@@ -354,10 +355,27 @@ async fn sha512_file(path: &Path) -> anyhow::Result<String> {
 )]
 async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     const LOG_INTERVAL: u64 = 50 * 1024 * 1024; // 50 MiB
+    /// Max time to establish the TCP+TLS connection. Distinct from
+    /// the per-chunk stall timeout below — a slow handshake under a
+    /// flaky network shouldn't take more than a few seconds, but
+    /// any healthy connection completes much faster.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+    /// Max time to wait for the next chunk of bytes mid-stream. If
+    /// no data arrives in this window the connection has stalled
+    /// (TCP keep-alives haven't noticed yet, or the upstream just
+    /// stopped sending) — bail rather than hang forever. The
+    /// previous code had no per-chunk timeout, which let a stalled
+    /// connection hold its cache lock indefinitely (verified during
+    /// a test investigation: 47 minutes parked with a 135 MiB
+    /// .part file holding the lock).
+    const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
     info!(url = url, dest = %dest.display(), "downloading image");
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .context("building reqwest client")?;
     let response = client
         .get(url)
         .send()
@@ -377,8 +395,26 @@ async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     let mut downloaded: u64 = 0;
     let mut last_logged: u64 = 0;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| Error::ImageDownload {
+    loop {
+        // Wrap each chunk read in a timeout: a stalled connection
+        // (the actual failure mode that motivated this timeout) won't
+        // surface as a reqwest error on its own — the futures just
+        // sit idle. `tokio::time::timeout` turns that idle into a
+        // clear error.
+        let next = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "no data received from {url} within {}s — connection stalled \
+                     (the network may be flaky; retry, or check connectivity \
+                     to the image host)",
+                    CHUNK_STALL_TIMEOUT.as_secs(),
+                )
+            })?;
+        let Some(chunk_result) = next else {
+            break; // stream ended normally
+        };
+        let chunk = chunk_result.map_err(|e| Error::ImageDownload {
             url: url.to_string(),
             source: e,
         })?;
