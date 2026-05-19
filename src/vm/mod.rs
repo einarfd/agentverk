@@ -490,6 +490,15 @@ pub(super) async fn ensure_machine_type(
     inst: &Instance,
     config: &mut ResolvedConfig,
 ) -> anyhow::Result<String> {
+    // QEMU-only concept. AVF uses Apple Virtualization's implicit
+    // machine model (an aarch64 "virt"-equivalent baked into VZ) —
+    // there's no `-machine` flag to pin, and `LocalAvfBackend::start`
+    // ignores the value passed to it. Return an empty placeholder
+    // and skip the `qemu-system-* -machine help` shellout, which
+    // would fail on AVF-only hosts that don't have QEMU installed.
+    if config.backend == "avf" {
+        return Ok(String::new());
+    }
     if let Some(existing) = config.machine_type.clone() {
         return Ok(existing);
     }
@@ -1712,6 +1721,62 @@ mod tests {
     fn skip_watcher_on_avf_even_when_idle_minutes_set() {
         let cfg = minimal_resolved_config("avf", 30);
         assert!(!should_spawn_idle_watcher(&cfg));
+    }
+
+    /// `ensure_machine_type` for an AVF VM must not shell out to
+    /// `qemu-system-*` — that auto-pin call resolves QEMU's
+    /// `-machine` default, which AVF has no analogue for. Without
+    /// this gate, AVF-only hosts (Apple Silicon Macs without QEMU)
+    /// hit the `qemu-system-aarch64` exec at `agv create`/
+    /// `agv start`/template clone time and fail before the AVF
+    /// code path runs.
+    ///
+    /// Observable effects of the gate without manipulating PATH:
+    /// - The function returns `Ok("")` (the empty placeholder).
+    /// - `config.machine_type` stays `None` (the QEMU path would
+    ///   set it to whatever `qemu-system-* -machine help` reports).
+    /// - No `<inst>/config.toml` is written (the save-config call
+    ///   only runs on the QEMU branch).
+    /// If the gate breaks and the dev's host has QEMU installed,
+    /// the function would write a `machine_type` into the config and
+    /// touch the file on disk — both observable here.
+    #[tokio::test]
+    async fn ensure_machine_type_skips_qemu_shellout_for_avf() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = crate::vm::instance::Instance {
+            name: "ensure-mt-avf-test".to_string(),
+            dir: dir.path().to_path_buf(),
+        };
+
+        let mut config = minimal_resolved_config("avf", 0);
+        // No saved machine_type — the QEMU path would resolve and
+        // persist one. If we observe the field still None after the
+        // call, the AVF gate fired.
+        config.machine_type = None;
+
+        let result = super::ensure_machine_type(&inst, &mut config).await;
+
+        assert!(
+            result.is_ok(),
+            "AVF ensure_machine_type should not error — got {result:?}"
+        );
+        assert_eq!(
+            result.unwrap(),
+            "",
+            "AVF returns an empty placeholder; the value is unused by LocalAvfBackend::start"
+        );
+        assert!(
+            config.machine_type.is_none(),
+            "AVF should not persist a machine_type into the saved config — the QEMU \
+             auto-pin path would set this to Some(<value>) if the gate didn't fire"
+        );
+        // No config.toml should have been written — only the QEMU
+        // branch saves. Use the instance's config_path helper for
+        // parity with production.
+        assert!(
+            !inst.config_path().exists(),
+            "AVF gate must not write the instance config.toml — that save is QEMU-only"
+        );
     }
 
     #[tokio::test]
