@@ -139,7 +139,7 @@ fn make_empty_raw(dir: &std::path::Path) -> PathBuf {
 /// constant — the runner is a black box from the test's
 /// perspective, and the protocol version is part of its public
 /// contract.
-const RUNNER_PROTOCOL_VERSION: u32 = 1;
+const RUNNER_PROTOCOL_VERSION: u32 = 2;
 
 /// Write a runner config JSON pointing at the supplied disk + seed paths.
 fn write_config(
@@ -465,6 +465,71 @@ fn boot_and_sigterm_exits_cleanly() {
     );
 }
 
+/// Boot the runner, delete its config file from under it, and
+/// assert it self-exits within the watcher's polling window. This
+/// is the safety net for the "test harness cleaned up its tempdir
+/// without sending `stop`" case (and any other surprise removal of
+/// the instance dir).
+///
+/// Timing: the watcher polls every 30 s, so worst-case detection
+/// is ~30 s after removal. Force-stop + cleanup runs in another
+/// few seconds. 90 s ceiling gives generous margin on a contended
+/// host without being so long that a real hang would go unnoticed.
+#[test]
+#[ignore = "boots a real Apple Virtualization VM — slow"]
+#[serial]
+fn boot_then_config_disappear_exits_cleanly() {
+    let Some(binary) = runner_binary() else {
+        eprintln!("agv-avf-runner not built — skipping boot_then_config_disappear_exits_cleanly");
+        return;
+    };
+    let Some(cached_raw) = bootable_raw_fixture() else {
+        eprintln!(
+            "no bootable raw fixture available — skipping boot_then_config_disappear_exits_cleanly \
+             (run any `agv create --backend avf` to populate the raw cache)"
+        );
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let disk = dir.path().join("disk.raw");
+    std::fs::copy(&cached_raw, &disk).unwrap();
+    let seed = make_seed_iso(dir.path(), "avf-config-watcher-test");
+    let cfg = write_config(dir.path(), "avf-config-watcher-test", &disk, &seed);
+
+    let mut child = Command::new(&binary)
+        .arg("--config")
+        .arg(&cfg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let socket_path = dir.path().join("control.sock");
+    wait_for_socket_bound(&socket_path);
+    wait_for_state_running(&socket_path);
+
+    // Now delete the config file out from under the runner — same
+    // shape as `tempfile::TempDir::drop` does when a test panics
+    // before its cleanup code runs.
+    std::fs::remove_file(&cfg).expect("removing config file");
+
+    // Watcher polls at 30 s; allow a comfortable margin for the
+    // force-stop callback + process exit. If this deadline expires,
+    // the watcher didn't fire — that's the regression this test
+    // catches.
+    let status = wait_for_child_exit(
+        &mut child,
+        "agv-avf-runner exit on config-file disappear",
+        CONFIG_DISAPPEAR_EXIT_DEADLINE,
+    );
+    assert!(
+        status.success() || status.code() == Some(1),
+        "runner should exit (force_stop maps to either 0 or 1 depending on \
+         where in the boot the watcher fires), got {status:?}"
+    );
+}
+
 /// Slow boot test: drive the runner via the JSON-RPC control socket.
 /// Boots, queries `status` (asserts state == "running"), then sends
 /// `stop`, asserts the response is `{ok: true}`, and finally waits for
@@ -787,6 +852,14 @@ const SIGTERM_EXIT_DEADLINE: Duration = Duration::from_secs(60);
 /// within a couple of seconds regardless of guest state. 30s is the
 /// "something's deeply wrong" ceiling, not the expected wait.
 const FORCE_STOP_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Ceiling for the config-disappear watcher to fire and the runner
+/// to exit. The watcher polls every 30 s, so the worst-case wait
+/// from "config file removed" to "watcher notices" is 30 s, plus a
+/// few more seconds for `force_stop` + process exit. 90 s gives a
+/// generous margin without masking a real regression — if the
+/// watcher truly doesn't fire, we want to know.
+const CONFIG_DISAPPEAR_EXIT_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Brief grace period for the guest kernel to reach the point where
 /// its ACPI subsystem is wired up. The runner reports `state=running`

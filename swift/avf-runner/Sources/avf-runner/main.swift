@@ -48,7 +48,7 @@ import Darwin
 /// the change in `AGENTS.md` under
 /// "Runner ↔ agv wire-protocol versioning" if the rationale isn't
 /// obvious from the commit message.
-let RUNNER_PROTOCOL_VERSION: UInt32 = 1
+let RUNNER_PROTOCOL_VERSION: UInt32 = 2
 
 // ---------------------------------------------------------------------------
 // JSON config sent by the Rust side
@@ -402,6 +402,40 @@ func printHelp(to handle: FileHandle = FileHandle.standardOutput) {
 func die(_ msg: String) -> Never {
     FileHandle.standardError.write(Data("agv-avf-runner: \(msg)\n".utf8))
     exit(2)
+}
+
+/// Watch the runner config file and force-stop the VM if it
+/// disappears. The runner is spawned by agv (or by a test harness)
+/// with `--config <path>`; if that file goes away while the runner
+/// is alive, no one is going to send a `stop` RPC and the runner
+/// would otherwise sit there holding fds to deleted inodes
+/// forever. 30s poll interval balances "user notices the VM didn't
+/// stop with the test that owns it" against "the file is briefly
+/// missing during an atomic rewrite" (which we never do, but
+/// hypothetically).
+///
+/// Force-stop, not graceful: the config being gone means the
+/// instance dir is being torn down — there's no point waiting for
+/// the guest's ACPI shutdown to make it to a vanishing disk file.
+/// Just terminate.
+func installConfigDisappearWatcher(
+    configPath: String,
+    runner: VMRunner
+) -> DispatchSourceTimer {
+    let timer = DispatchSource.makeTimerSource(
+        queue: DispatchQueue.global(qos: .background)
+    )
+    timer.schedule(deadline: .now() + .seconds(30), repeating: .seconds(30))
+    timer.setEventHandler {
+        if !FileManager.default.fileExists(atPath: configPath) {
+            FileHandle.standardError.write(Data(
+                "agv-avf-runner: config file \(configPath) disappeared — force-stopping VM and exiting\n".utf8
+            ))
+            runner.forceStop()
+        }
+    }
+    timer.resume()
+    return timer
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1031,23 @@ do {
     die("failed to bind control socket at \(config.controlSocketPath): \(error)")
 }
 
+// Background watcher: if the config file disappears at runtime, the
+// runner has no parent expecting it to keep running. Polls every 30s
+// and force-stops the VM + exits if the file is gone. Covers:
+//   - Test harnesses that delete their tempdir without first sending
+//     `stop` (e.g. cargo test on Ctrl-C, where the agv subprocess
+//     dies and the test's TempDir::drop sweeps the instance dir while
+//     the runner is still alive holding fds to deleted inodes).
+//   - Users `rm -rf`'ing an instance dir while the VM is up.
+// Production `agv stop` / `agv destroy` already tear the runner down
+// cleanly before touching the instance dir, so this watcher never
+// fires there — it's a safety net for unexpected deletion.
+let configDisappearWatcher = installConfigDisappearWatcher(
+    configPath: configPath,
+    runner: runner
+)
+
 let exitCode = runner.runUntilStopped()
+configDisappearWatcher.cancel()
 controlServer.stop()
 exit(exitCode)

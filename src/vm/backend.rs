@@ -59,7 +59,7 @@ use tracing::{debug, info, warn};
 /// reason in the commit message. See `AGENTS.md` →
 /// "Runner ↔ agv wire-protocol versioning".
 #[cfg(target_os = "macos")]
-pub const RUNNER_PROTOCOL_VERSION: u32 = 1;
+pub const RUNNER_PROTOCOL_VERSION: u32 = 2;
 
 /// Backends own VM lifecycle: boot, stop, suspend/resume, and the SSH
 /// endpoint of the guest.
