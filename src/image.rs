@@ -355,11 +355,17 @@ async fn sha512_file(path: &Path) -> anyhow::Result<String> {
 )]
 async fn download(url: &str, dest: &Path) -> anyhow::Result<()> {
     const LOG_INTERVAL: u64 = 50 * 1024 * 1024; // 50 MiB
-    /// Max time to establish the TCP+TLS connection. Distinct from
-    /// the per-chunk stall timeout below — a slow handshake under a
-    /// flaky network shouldn't take more than a few seconds, but
-    /// any healthy connection completes much faster.
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+    /// Max time to establish the TCP+TLS connection. A healthy
+    /// connect completes in well under a second, but Wi-Fi packet
+    /// loss, IPv6→IPv4 fallback, and DNS hiccups can legitimately
+    /// stretch it. 60s is the failure ceiling — long enough to ride
+    /// out the OS TCP retry rounds without burning down on a
+    /// transient blip, short enough that the user notices when the
+    /// route to the image host is actually broken. An earlier 15s
+    /// value tripped on a healthy net that just had a momentary
+    /// slow handshake; 60s gives more headroom while still bounding
+    /// the worst case.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
     /// Max time to wait for the next chunk of bytes mid-stream. If
     /// no data arrives in this window the connection has stalled
     /// (TCP keep-alives haven't noticed yet, or the upstream just
