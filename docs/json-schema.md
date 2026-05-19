@@ -336,12 +336,12 @@ Object with the dependency check results. Always emits the same keys (no omissio
   "ok": false,
   "issues": 1,
   "checks": [
-    {"name": "qemu-system-aarch64", "found": true},
-    {"name": "qemu-img",            "found": true},
-    {"name": "ssh",                 "found": true},
-    {"name": "ssh-keygen",          "found": true},
-    {"name": "scp",                 "found": true},
-    {"name": "hdiutil",             "found": false}
+    {"name": "qemu-system-aarch64", "found": true,  "required": false},
+    {"name": "qemu-img",            "found": false, "required": false},
+    {"name": "ssh",                 "found": true,  "required": true},
+    {"name": "ssh-keygen",          "found": true,  "required": true},
+    {"name": "scp",                 "found": true,  "required": true},
+    {"name": "hdiutil",             "found": false, "required": true}
   ],
   "ssh_include_installed": true,
   "runner_protocol_version": {"status": "match", "version": 1}
@@ -350,9 +350,9 @@ Object with the dependency check results. Always emits the same keys (no omissio
 
 | Field | Type | Notes |
 |---|---|---|
-| `ok` | bool | `true` iff every check passed (i.e. `issues == 0`) |
-| `issues` | uint32 | Count of failed dependency checks, plus 1 for a `runner_protocol_version` mismatch. Does not factor in `ssh_include_installed` (best-effort) or `runner_protocol_version.status == "unreadable"` (soft warning) |
-| `checks` | object[] | One entry per dependency, in display order. Each has `{name: string, found: bool}` |
+| `ok` | bool | `true` iff every required check passed (i.e. `issues == 0`) |
+| `issues` | uint32 | Count of failed *required* dependency checks, plus 1 for a `runner_protocol_version` mismatch. Optional missing tools (e.g. QEMU tools on a macOS Apple Silicon AVF-default host) do NOT count. Does not factor in `ssh_include_installed` (best-effort) or `runner_protocol_version.status == "unreadable"` (soft warning) |
+| `checks` | object[] | One entry per dependency, in display order. Each has `{name: string, found: bool, required: bool}`. `required: false` entries are tools that only matter for one backend — e.g. `qemu-system-*` and `qemu-img` are `required: false` on macOS Apple Silicon (AVF is the default; QEMU only needed for `--backend qemu`), `required: true` everywhere else |
 | `ssh_include_installed` | bool \| null | `true` if the agv-managed Include line is present in `~/.ssh/config`; `null` when the host config could not be read |
 | `runner_protocol_version` | object \| null | Protocol-version check against the installed `agv-avf-runner`. `null` when the runner isn't installed or the host doesn't ship it (non-macOS). When present, a tagged object — `status` is the discriminator |
 

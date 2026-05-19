@@ -15,6 +15,13 @@ struct Check {
     /// Binary names to search — the check passes if *any* candidate is found.
     candidates: Vec<&'static str>,
     install_hint: &'static str,
+    /// When `true`, a missing tool counts toward the `issues` total
+    /// and surfaces as a red ✗. When `false`, it's a soft "you might
+    /// want this" — yellow `~`, doesn't fail the run. Used on macOS
+    /// Apple Silicon, where the default backend is `avf` and QEMU
+    /// tools (`qemu-system-*`, `qemu-img`) are only needed if the
+    /// user explicitly opts into the qemu backend.
+    required: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,37 +80,51 @@ fn all_checks() -> Vec<Check> {
         "qemu-system-aarch64"
     };
 
+    // On macOS Apple Silicon, AVF is the default backend
+    // (`config::default_backend()` returns `"avf"`). QEMU is still
+    // selectable via `--backend qemu`, but a user who only uses AVF
+    // legitimately doesn't need any QEMU tooling — `agv doctor`
+    // shouldn't fail on them. Everywhere else, QEMU is the default
+    // and these tools are genuinely required.
+    let qemu_required = !cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
     vec![
         Check {
             label: qemu_bin,
             candidates: vec![qemu_bin],
             install_hint: QEMU_HINT,
+            required: qemu_required,
         },
         Check {
             label: "qemu-img",
             candidates: vec!["qemu-img"],
             install_hint: QEMU_HINT,
+            required: qemu_required,
         },
         Check {
             label: "ssh",
             candidates: vec!["ssh"],
             install_hint: OPENSSH_HINT,
+            required: true,
         },
         Check {
             label: "ssh-keygen",
             candidates: vec!["ssh-keygen"],
             install_hint: OPENSSH_HINT,
+            required: true,
         },
         Check {
             label: "scp",
             candidates: vec!["scp"],
             install_hint: OPENSSH_HINT,
+            required: true,
         },
         #[cfg(target_os = "macos")]
         Check {
             label: "hdiutil",
             candidates: vec!["hdiutil"],
             install_hint: "hdiutil is built into macOS — check your installation",
+            required: true,
         },
         #[cfg(target_os = "macos")]
         Check {
@@ -115,12 +136,14 @@ fn all_checks() -> Vec<Check> {
             // PATH; PATH search would always come up empty.
             candidates: vec![],
             install_hint: AVF_RUNNER_HINT,
+            required: true,
         },
         #[cfg(not(target_os = "macos"))]
         Check {
             label: "mkisofs / genisoimage",
             candidates: vec!["mkisofs", "genisoimage"],
             install_hint: ISO_HINT,
+            required: true,
         },
     ]
 }
@@ -166,6 +189,13 @@ pub struct CheckJson {
     pub name: String,
     /// `true` when at least one of the candidate binaries was found on PATH.
     pub found: bool,
+    /// `true` when this tool is mandatory on the current host. `false`
+    /// for tools that only matter for one of the backends — e.g. on
+    /// macOS Apple Silicon, AVF is the default and the QEMU tools
+    /// (`qemu-system-*`, `qemu-img`) are only needed if the user
+    /// opts into `--backend qemu`. Missing optional tools surface as
+    /// a soft warning and do NOT increment `issues`.
+    pub required: bool,
 }
 
 /// Result of checking the AVF runner's wire-protocol version against
@@ -224,12 +254,17 @@ fn build_report() -> DoctorReport {
     let mut issues: u32 = 0;
     for check in &checks {
         let found = check_present(check);
-        if !found {
+        // Only required-and-missing counts as an issue. An optional
+        // tool that's absent (e.g. qemu-img on a macOS Apple Silicon
+        // AVF-default host where the user never installed QEMU)
+        // surfaces as a soft warning instead.
+        if !found && check.required {
             issues += 1;
         }
         entries.push(CheckJson {
             name: check.label.to_string(),
             found,
+            required: check.required,
         });
     }
     let ssh_include_installed = crate::ssh_config::is_include_installed().ok();
@@ -316,15 +351,25 @@ pub fn run() -> anyhow::Result<()> {
     let col = checks.iter().map(|c| c.label.len()).max().unwrap_or(0);
 
     let mut issues: u32 = 0;
-    let mut missing_indices: Vec<usize> = Vec::new();
+    let mut missing_required: Vec<usize> = Vec::new();
+    let mut missing_optional: Vec<usize> = Vec::new();
 
     for (i, check) in checks.iter().enumerate() {
         if check_present(check) {
             anstream::println!("  {:<col$}  {GREEN}✓{GREEN:#}", check.label);
-        } else {
+        } else if check.required {
             anstream::println!("  {:<col$}  {RED}✗{RED:#}", check.label);
             issues += 1;
-            missing_indices.push(i);
+            missing_required.push(i);
+        } else {
+            // Soft warning — tool is absent but not strictly needed
+            // on this host (e.g. qemu-img on a macOS Apple Silicon
+            // AVF-default install). Yellow `~` instead of red ✗.
+            anstream::println!(
+                "  {:<col$}  {YELLOW}~ (optional){YELLOW:#}",
+                check.label
+            );
+            missing_optional.push(i);
         }
     }
 
@@ -341,7 +386,8 @@ pub fn run() -> anyhow::Result<()> {
 
     if issues == 0 {
         anstream::println!();
-        anstream::println!("  {GREEN}All dependencies found.{GREEN:#}");
+        anstream::println!("  {GREEN}All required dependencies found.{GREEN:#}");
+        print_optional_missing_note(&checks, &missing_optional);
         print_runner_protocol_status(runner_proto.as_ref());
         print_ssh_include_status();
         return Ok(());
@@ -349,10 +395,11 @@ pub fn run() -> anyhow::Result<()> {
 
     anstream::println!();
 
-    // Print install hints, deduplicating when multiple missing tools share
-    // the same hint (e.g. qemu-system-* and qemu-img both come from QEMU).
+    // Print install hints for required-missing, deduplicating when
+    // multiple missing tools share the same hint (e.g. qemu-system-*
+    // and qemu-img both come from QEMU).
     let mut printed: Vec<&str> = Vec::new();
-    for &i in &missing_indices {
+    for &i in &missing_required {
         let hint = checks[i].install_hint;
         if !printed.contains(&hint) {
             printed.push(hint);
@@ -366,6 +413,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let noun = if issues == 1 { "issue" } else { "issues" };
     anstream::println!("  {YELLOW}{issues} {noun} found.{YELLOW:#}");
+    print_optional_missing_note(&checks, &missing_optional);
     print_runner_protocol_status(runner_proto.as_ref());
     print_ssh_include_status();
 
@@ -377,6 +425,28 @@ pub fn run_json() -> anyhow::Result<()> {
     let report = build_report();
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// Print a one-line summary listing optional tools that are missing,
+/// along with the why ("only needed if you use the qemu backend").
+/// Skips entirely when nothing optional is missing.
+fn print_optional_missing_note(checks: &[Check], missing_optional: &[usize]) {
+    if missing_optional.is_empty() {
+        return;
+    }
+    let names: Vec<&str> = missing_optional.iter().map(|&i| checks[i].label).collect();
+    anstream::println!();
+    anstream::println!(
+        "  {YELLOW}Note:{YELLOW:#} optional tool{plural} not found: {names}",
+        plural = if names.len() == 1 { "" } else { "s" },
+        names = names.join(", "),
+    );
+    anstream::println!(
+        "    Only needed if you create VMs with `--backend qemu`. AVF is the"
+    );
+    anstream::println!(
+        "    default backend on macOS Apple Silicon and doesn't use these tools."
+    );
 }
 
 /// Append the AVF runner protocol-version status line, when relevant.
@@ -448,6 +518,7 @@ mod tests {
             checks: vec![CheckJson {
                 name: "qemu-img".to_string(),
                 found: true,
+                required: true,
             }],
             ssh_include_installed: Some(true),
             runner_protocol_version: Some(RunnerProtocolCheck::Match { version: 1 }),
@@ -520,13 +591,14 @@ mod tests {
         let entry = CheckJson {
             name: "ssh".to_string(),
             found: true,
+            required: true,
         };
         let json = serde_json::to_value(&entry).unwrap();
         let obj = json.as_object().unwrap();
         let actual: std::collections::BTreeSet<&str> =
             obj.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> =
-            ["found", "name"].into_iter().collect();
+            ["found", "name", "required"].into_iter().collect();
         assert_eq!(actual, expected, "CheckJson keys drifted");
     }
 
