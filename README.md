@@ -235,6 +235,8 @@ agv template ls                        # list templates
 agv create --from mytemplate newvm     # create thin clone
 ```
 
+Templates are currently QEMU-only — `agv template create` refuses on AVF VMs, and clones from a template always land on the `qemu` backend even on macOS Apple Silicon where the default for `agv create` is AVF. If you want a clone on AVF, run `agv backend migrate-to-avf <name>` after the clone boots.
+
 ## Building from source
 
 **Build dependencies:**

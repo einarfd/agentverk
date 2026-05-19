@@ -87,6 +87,26 @@ pub async fn create_template(
     let mut status = inst.reconcile_status().await?;
     let mut config = crate::config::load_resolved(&inst.config_path())?;
 
+    // Templates are qcow2-only today — `convert_to_template` shells
+    // out to `qemu-img convert` against `inst.disk_path()`, and the
+    // on-disk template format is named `<name>.qcow2`. AVF VMs have
+    // no qcow2 to convert (the live disk is `disk.raw`), so refuse
+    // up front rather than fail mid-flow with a confusing
+    // "could not open `disk.qcow2`" error. Picking up AVF support
+    // here is a real feature (raw-shaped templates, format-aware
+    // clone path) — tracked separately.
+    if config.backend == "avf" {
+        bail!(
+            "`agv template create` is not supported for VMs on the avf backend — \
+             templates are currently qcow2-only. Templating an AVF VM would need \
+             a raw-shaped template format that isn't wired yet. Workarounds: \
+             (1) create the template from a QEMU VM and migrate clones to AVF \
+             afterwards with `agv backend migrate-to-avf`, or (2) clone the \
+             VM by hand (`agv config view`, then `agv create` with matching \
+             settings)."
+        );
+    }
+
     let templates_dir = dirs::templates_dir()?;
     tokio::fs::create_dir_all(&templates_dir).await.with_context(|| {
         format!("failed to create templates directory {}", templates_dir.display())
@@ -421,8 +441,16 @@ async fn create_from_template_inner(
 
     // Build the clone's resolved config first so we can dispatch
     // disk provisioning through the right backend. Template clones
-    // pick the host's default backend today (QEMU); migrating a
-    // clone to AVF goes through the migrate-to-avf flow later.
+    // are always QEMU today — templates are stored as qcow2 and
+    // converted via `qemu-img`; there's no AVF-shaped template
+    // format yet. On a macOS Apple Silicon host (where the default
+    // for `agv create` is AVF), the clone still lands on QEMU
+    // deliberately — that's the workaround: clone to QEMU, then
+    // `agv backend migrate-to-avf` if the user wants the VM on
+    // AVF afterwards. Don't change to `default_backend()` here
+    // without first wiring raw-shaped templates and an AVF
+    // `convert_to_template` path; the hardcoded "qemu" is the
+    // refusal-flavored interim, not an oversight.
     let mut clone_config = ResolvedConfig {
         base_url: String::new(),
         base_checksum: String::new(),
