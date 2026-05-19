@@ -93,8 +93,13 @@ disk   = "40G"  # e.g. 10G, 40G, 100G
 
 CLI equivalents: `--memory 8G`, `--cpus 4`, `--disk 40G`
 
-Disk can only be grown after creation, not shrunk. After resizing with `agv config set`,
-run `growpart` and `resize2fs` inside the VM to use the extra space.
+Disk can only be grown after creation, not shrunk. On the stock Ubuntu / Debian /
+Fedora cloud images agv ships with, cloud-init's `growpart` and `resize2fs`
+modules run on every boot, so the partition and filesystem grow to fill the new
+virtual disk automatically on the next `agv start` — no manual step needed. On
+custom images without cloud-init's per-boot disk modules enabled, run
+`sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1` inside the VM after
+starting it.
 
 ### `idle_suspend_minutes`
 

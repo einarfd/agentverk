@@ -980,8 +980,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 if let Some(ref d) = s.disk {
                     println!("  disk:    {old_disk} → {d}");
                     println!(
-                        "  Note: guest filesystem not resized — run growpart/resize2fs \
-                         inside the VM to use the extra space."
+                        "  Note: cloud-init grows the partition + filesystem on next boot \
+                         on stock cloud images. For custom images run \
+                         `sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1` inside the VM."
                     );
                 }
                 if s.forwards.is_some() {
