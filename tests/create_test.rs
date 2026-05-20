@@ -20,6 +20,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serial_test::serial;
 
+mod common;
+use common::test_data_dir;
+
 /// Counter to generate unique filenames across concurrent tests so the
 /// fake-image filenames never collide.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -208,7 +211,7 @@ async fn create_without_start() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let image_url = make_fake_base_image(data_dir.path()).await;
@@ -277,7 +280,7 @@ async fn create_duplicate_name_fails() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let image_url = make_fake_base_image(data_dir.path()).await;
@@ -321,7 +324,7 @@ async fn create_duplicate_name_fails() {
 
 #[tokio::test]
 async fn create_marks_broken_on_failure() {
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     // Point at an unreachable URL so the image download fails. This
@@ -390,7 +393,7 @@ async fn create_backend_flag_persists_to_saved_config() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     let image_url = make_fake_base_image(data_dir.path()).await;
     let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
@@ -444,7 +447,7 @@ async fn backend_cleanup_removes_residual_qcow2_after_flip() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     let image_url = make_fake_base_image(data_dir.path()).await;
     let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
@@ -582,7 +585,7 @@ async fn destroy_kills_live_process_for_broken_vm() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     let image_url = make_fake_base_image(data_dir.path()).await;
     let toml_path = write_config(host_tmp.path(), &synthetic_config_toml(&image_url)).await;
@@ -700,7 +703,7 @@ async fn create_with_start_and_provision() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let test_file = host_tmp.path().join("agv-test-inject.txt");
@@ -824,7 +827,7 @@ async fn fedora_base_boots_and_provisions() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     // Inject a marker file to confirm file copy works on a non-debian guest.
@@ -933,7 +936,7 @@ async fn auto_forwards_end_to_end() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     // Drop a test mixin into the test data dir's images/ so the
@@ -1121,7 +1124,7 @@ async fn suspend_and_resume_preserves_state() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let config_toml = r#"
@@ -1256,7 +1259,7 @@ async fn provision_failure_then_retry_resumes() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     // Three provision steps:
@@ -1393,7 +1396,7 @@ async fn auto_suspend_idle_vm_suspends() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let config_toml = r#"
@@ -1467,7 +1470,7 @@ async fn auto_suspend_active_session_keeps_vm_running() {
         return;
     }
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
 
     let config_toml = r#"

@@ -38,6 +38,9 @@ use std::path::{Path, PathBuf};
 
 use serial_test::serial;
 
+mod common;
+use common::test_data_dir;
+
 /// Locate the release build of the Swift runner. Returns None if it
 /// hasn't been built — the e2e test then skips.
 fn runner_binary() -> Option<PathBuf> {
@@ -152,7 +155,7 @@ async fn agv_create_start_ssh_suspend_refused_destroy() {
     };
     ensure_runner_alongside_agv(&runner);
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     // Per-run unique name. Two constraints:
     //   1. RFC-1123 hostname — no leading underscore. AVF's lease

@@ -35,6 +35,9 @@ use std::path::{Path, PathBuf};
 
 use serial_test::serial;
 
+mod common;
+use common::test_data_dir;
+
 fn runner_binary() -> Option<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let path =
@@ -155,7 +158,7 @@ async fn migrate_qemu_vm_to_avf_backend() {
     }
     ensure_runner_alongside_agv(&runner);
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -353,7 +356,7 @@ async fn migrate_refuses_running_vm() {
     }
     ensure_runner_alongside_agv(&runner);
 
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
