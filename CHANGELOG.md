@@ -6,6 +6,162 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-21
+
+### Added
+
+- **AVF backend (Apple Virtualization).** A second hypervisor backend
+  alongside `qemu`, using Apple's `Virtualization.framework` via a
+  small Swift helper binary (`agv-avf-runner`). macOS Apple Silicon
+  only. Faster cold boot than QEMU on macOS, uses raw disk images
+  (sparse, with APFS clone-on-write per instance), and avoids the
+  qcow2 overhead the QEMU path has on macOS. Each VM picks its
+  backend independently — `qemu` keeps working everywhere it did
+  before.
+- **Default backend flips by host shape.** On macOS Apple Silicon
+  the default for new VMs is now `avf`; on Linux (x86_64 and
+  aarch64) it stays `qemu`. Existing VMs are unaffected — their
+  saved instance config records the backend they were created
+  under.
+- **`--backend qemu|avf` flag on `agv create`** to override the
+  host default per VM, plus `backend = "..."` in `agv.toml`.
+- **`agv backend migrate-to-avf <name>`** to flip an existing
+  stopped QEMU VM onto AVF in place. Converts the qcow2 to a sparse
+  raw, bumps the cloud-init instance-id so the new NAT/NIC takes
+  effect on next boot, and updates the saved backend field. Keeps
+  the original qcow2 by default for one-step rollback;
+  `--delete-qcow2` removes it during migration.
+- **`agv backend cleanup <name>`** to sweep previous-backend residue
+  on a stopped VM. Bidirectional (direction implied by the recorded
+  backend), refuses while the VM is running.
+- **`agv ls` shows a backend column** so it's obvious which VMs
+  belong to which hypervisor, and uses the right disk path per
+  backend in the size column.
+- **Runner ↔ agv wire-protocol versioning.** Every spawn-time JSON
+  config the runner reads carries a `runner_protocol_version`
+  field; the runner refuses to boot on mismatch with a clear
+  reinstall hint. `agv-avf-runner --version` now prints the
+  protocol version, and `agv doctor` probes it and surfaces drift
+  as an issue. Catches the partial-install case where
+  `cargo install agv` upgraded the Rust binary but the runner is
+  still from an older tarball.
+- **`just install` recipe** for source installs that need both
+  binaries. Runs `cargo install --path .` and, on macOS, builds
+  and installs `agv-avf-runner` alongside it. Honors cargo's
+  install-location lookup (`CARGO_INSTALL_ROOT` → `CARGO_HOME` →
+  `$HOME/.cargo`).
+- **macOS CI job** running clippy with `-D warnings`, lib unit
+  tests, fast AVF integration tests, and the Swift runner's unit
+  tests. Without this the AVF code path (most of
+  `src/vm/backend.rs`, the doctor protocol probe, the runner
+  config validation) goes uncompiled and unlinted in CI — Ubuntu
+  alone can't see it via `#[cfg(target_os = "macos")]`.
+- **Image download timeouts.** Two distinct bounds wrapping the
+  reqwest stream: `CONNECT_TIMEOUT = 60s` for the TCP+TLS
+  handshake, and `CHUNK_STALL_TIMEOUT = 30s` between successive
+  chunks mid-stream. The mid-stream guard is the important one —
+  reqwest itself doesn't surface "no data has arrived in 30s" as
+  an error, so without this the download future could park
+  indefinitely while still holding the image-cache lock.
+- **Hidden `__idle-watcher` subcommand** auto-suspends idle QEMU
+  VMs when `idle_suspend_minutes > 0` (existed in 0.2.5 — but the
+  AVF rollout added matrix coverage and three layers of refusal
+  for the unsupported combination on AVF).
+
+### Changed
+
+- **Release tarballs ship `agv-avf-runner` alongside `agv` on
+  macOS Apple Silicon.** `install.sh` now downloads
+  `agv-<target>.tar.gz` and lays down every binary inside. Linux
+  tarballs still contain just `agv`; macOS contains both. Single
+  install step gets the AVF default working out of the box.
+- **`agv doctor` treats `qemu-system-*` and `qemu-img` as
+  optional on macOS Apple Silicon.** AVF is the default backend
+  there and an AVF-only user doesn't need QEMU. Missing optional
+  tools surface as a yellow `~` rather than a red `✗` and don't
+  count toward `issues` in the JSON shape.
+- **`agv stop` SIGKILL-escalates AVF runners that ignore
+  SIGTERM.** Recovery path for the wedged-VM case (e.g. guest
+  issued `sudo halt` so ACPI shutdown never resolves). Matches
+  QEMU's `force_stop` semantics — SIGKILL can't be caught,
+  blocked, or ignored.
+- **AVF runner self-exits when its config file disappears.**
+  Polled every 30 s. Force-stops the VM and exits cleanly when
+  the instance dir is removed out from under the runner — covers
+  test harnesses that clean up tempdirs without sending `stop`
+  RPCs first (e.g. cargo-test on Ctrl-C), and users `rm -rf`-ing
+  an instance dir manually. Bumps runner protocol version 1 → 2.
+- **AVF disk attachment uses `.cached` + `.full`** (instead of
+  the framework's `.automatic` default) to prevent ext4 corruption
+  under sustained small-file I/O. Same workaround Lima, Tart, and
+  UTM converged on.
+- **AVF backend reads guest IP from `/var/db/dhcpd_leases`** and
+  picks the freshest matching entry by timestamp, not by file
+  order. Survives hostname reuse across VM incarnations cleanly.
+
+### Fixed
+
+- **Existing QEMU VMs no longer misread as AVF after the upgrade.**
+  Saved instance configs predating the `backend` field deserialize
+  as `qemu` (the only backend that existed then), regardless of
+  the host's current default for new VMs. Affected only this
+  upgrade window; new installs are fine.
+- **`agv config set --disk` resizes the right disk on AVF.** The
+  previous path hard-coded `inst.disk_path()` (qcow2) and shelled
+  out to `qemu-img resize`. On an AVF VM with a kept-rollback
+  qcow2 from migration, that silently resized the orphan qcow2
+  while the live `disk.raw` stayed at the original size. Now
+  dispatches through the backend trait — qcow2 path stays as
+  before, AVF uses sparse truncate-extend on the raw.
+- **`agv backend migrate-to-avf` clears `idle_suspend_minutes`**
+  when the source VM had it set. AVF doesn't support the
+  auto-suspend the watcher would trigger; leaving the field set
+  caused a watcher to spawn on next start and retry-fail-loop
+  every interval.
+- **Idle watcher refuses to spawn on AVF VMs** even if a saved
+  config has `idle_suspend_minutes > 0` (defence in depth — the
+  write-side gates at create / config-set / migrate all reject
+  the combo, but hand-edited configs can still introduce it).
+- **`agv destroy` no longer orphans the host process on broken
+  VMs.** The destroy path now matches the stop path in killing
+  whatever's left.
+- **`agv start --retry` works on broken VMs whose first-boot
+  provisioning completed.** Previously the retry path tripped on
+  the same "VM is broken" guard that prevented the start.
+- **Better self-diagnosis on SSH-ready timeouts during VM start.**
+  Tells the user what we tried and what the failure shape looked
+  like, instead of a generic timeout.
+- **AVF `agv start` for new arm-default machine types.** Pinning
+  `machine_type` on first start is a QEMU-only concept; on AVF
+  the auto-pin used to shell out to `qemu-system-*` regardless.
+  That broke first-boot on AVF-only hosts (no QEMU installed).
+  Now gated on backend.
+- **AVF runner doesn't carry `virtio-rng`** — the framework's
+  entropy device was incompatible with the save/restore path the
+  runner attempts and tripped device-list validation. The guest
+  has plenty of other entropy sources (timer interrupts, virtio
+  activity, RDRAND emulation). FIPS users should keep using QEMU.
+
+### AVF backend limitations (called out explicitly)
+
+These are framework constraints, not agv bugs — Apple's
+`Virtualization.framework` doesn't support them for Linux guests
+as of macOS 26 (Tahoe and earlier):
+
+- **`agv suspend` / `agv resume`** refused. Verified via direct
+  reproduction (`saveMachineStateTo` succeeds but
+  `restoreMachineStateFrom` fails with `VZErrorDomain Code=12`
+  regardless of process boundary or device list). Use
+  `agv stop` + `agv start` instead, or switch the VM to the
+  `qemu` backend.
+- **`idle_suspend_minutes`** refused — same underlying reason
+  (auto-suspend has nothing to call into).
+- **`agv template create`** refused on AVF VMs — templates are
+  qcow2-only today; templating an AVF VM would need a raw-shaped
+  template format that isn't wired yet. `agv create --from
+  <template>` still works and produces a QEMU clone, which you
+  can `migrate-to-avf` afterwards.
+
 ## [0.2.6] - 2026-05-08
 
 ### Added
@@ -508,7 +664,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/einarfd/agentverk/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/einarfd/agentverk/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/einarfd/agentverk/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/einarfd/agentverk/compare/v0.2.3...v0.2.4
