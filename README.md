@@ -169,13 +169,14 @@ Commands:
   cp        Copy files between the host and a running VM
   forward   Add, list, or remove host-to-guest port forwards on a running VM
   ls        List all VMs
-  images    List available base images and mixins
   inspect   Show runtime status of a VM
   config    View or change VM configuration
-  template  Create and manage VM templates
+  images    List available base images and mixins
   specs     List available hardware size presets
   resources Show host capacity and what agv has allocated
   cache     Manage the image download cache
+  template  Create and manage VM templates
+  backend   Migrate a VM between the QEMU and AVF backends
   init      Write a starter agv.toml to the current directory
   doctor    Check dependencies and set up SSH config integration
 

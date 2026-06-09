@@ -25,8 +25,13 @@ pub struct Cli {
     pub command: Command,
 }
 
+// Variants are declared in role order — clap renders `agv --help` in
+// declaration order, so this is also the on-screen grouping: lifecycle,
+// then interaction, then introspection, then catalogue/host, then
+// admin/setup, then hidden internals. Keep new commands in their group.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    // --- Lifecycle: create / destroy and state transitions ---
     /// Create a new VM.
     Create(Box<CreateArgs>),
 
@@ -48,6 +53,7 @@ pub enum Command {
     /// Rename a VM. The VM must be stopped or suspended.
     Rename(RenameArgs),
 
+    // --- Interaction: talk to a running VM ---
     /// Open an SSH session to a running VM.
     Ssh(SshArgs),
 
@@ -61,33 +67,17 @@ pub enum Command {
     /// ever hits the URL or browser history.
     Gui(GuiArgs),
 
-    /// List all VMs.
-    Ls(LsArgs),
-
-    /// List available images.
-    Images(ImagesArgs),
-
-    /// Show detailed information about a VM.
-    Inspect(InspectArgs),
-
-    /// Create and manage VM templates.
-    Template(Box<TemplateArgs>),
-
-    /// Manage the image download cache.
-    Cache(CacheArgs),
-
-    /// List available VM hardware specs.
-    Specs(SpecsArgs),
-
-    /// Show host capacity (RAM, CPUs, disk) and what agv has allocated.
+    /// Copy files between the host and a running VM.
     ///
-    /// Useful before creating a VM to confirm the host has the headroom
-    /// for the requested spec, especially when running multiple VMs.
-    /// Pass `--json` for machine-readable output.
-    Resources(ResourcesArgs),
-
-    /// View or change VM configuration.
-    Config(Box<ConfigArgs>),
+    /// Prefix paths with : to indicate a path inside the VM.
+    ///
+    /// Examples:
+    ///   agv cp myvm :~/file.txt ./              # download from VM
+    ///   agv cp myvm ./file.txt :~/              # upload to VM
+    ///   agv cp myvm -r :~/project/ ./local/     # recursive download
+    ///   agv cp myvm -r ./local/dir/ :~/remote/  # recursive upload
+    #[command(verbatim_doc_comment)]
+    Cp(CpArgs),
 
     /// Add, list, or remove host-to-guest port forwards on a running VM.
     ///
@@ -106,21 +96,51 @@ pub enum Command {
     #[command(verbatim_doc_comment)]
     Forward(ForwardArgs),
 
-    /// Copy files between the host and a running VM.
+    // --- Introspection: read a VM ---
+    /// List all VMs.
+    Ls(LsArgs),
+
+    /// Show detailed information about a VM.
+    Inspect(InspectArgs),
+
+    /// View or change VM configuration.
+    Config(Box<ConfigArgs>),
+
+    // --- Catalogue / host: not scoped to a single VM ---
+    /// List available images.
+    Images(ImagesArgs),
+
+    /// List available VM hardware specs.
+    Specs(SpecsArgs),
+
+    /// Show host capacity (RAM, CPUs, disk) and what agv has allocated.
     ///
-    /// Prefix paths with : to indicate a path inside the VM.
+    /// Useful before creating a VM to confirm the host has the headroom
+    /// for the requested spec, especially when running multiple VMs.
+    /// Pass `--json` for machine-readable output.
+    Resources(ResourcesArgs),
+
+    /// Manage the image download cache.
+    Cache(CacheArgs),
+
+    // --- Admin / setup: rarely-run management ---
+    /// Create and manage VM templates.
+    Template(Box<TemplateArgs>),
+
+    /// Backend-related commands (currently: migration between QEMU and AVF).
     ///
-    /// Examples:
-    ///   agv cp myvm :~/file.txt ./              # download from VM
-    ///   agv cp myvm ./file.txt :~/              # upload to VM
-    ///   agv cp myvm -r :~/project/ ./local/     # recursive download
-    ///   agv cp myvm -r ./local/dir/ :~/remote/  # recursive upload
-    #[command(verbatim_doc_comment)]
-    Cp(CpArgs),
+    /// Migrations don't fit the everyday lifecycle namespace — they're a
+    /// one-off, rarely-run thing. Grouped under `agv backend` so the
+    /// top-level command list stays focused.
+    Backend(BackendArgs),
+
+    /// Write a starter config file to a given path (use with `agv create --config`).
+    Init(InitArgs),
 
     /// Check that all required external tools are installed.
     Doctor(DoctorArgs),
 
+    // --- Hidden internals: spawned by agv, not for end users ---
     /// Internal: supervisor loop for a single port forward.
     ///
     /// Not meant for end users — spawned by `agv forward` and by
@@ -138,16 +158,6 @@ pub enum Command {
     /// auto-suspend.
     #[command(name = "__idle-watcher", hide = true)]
     IdleWatcher(IdleWatcherArgs),
-
-    /// Write a starter config file to a given path (use with `agv create --config`).
-    Init(InitArgs),
-
-    /// Backend-related commands (currently: migration between QEMU and AVF).
-    ///
-    /// Migrations don't fit the everyday lifecycle namespace — they're a
-    /// one-off, rarely-run thing. Grouped under `agv backend` so the
-    /// top-level command list stays focused.
-    Backend(BackendArgs),
 }
 
 #[derive(Debug, clap::Args)]
