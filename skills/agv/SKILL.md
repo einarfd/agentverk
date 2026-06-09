@@ -7,8 +7,9 @@ description: Create and manage Linux microVMs (QEMU or Apple Virtualization) for
 
 `agv` creates and manages Linux microVMs on the user's host. Each VM is
 a real Linux machine — SSH, Docker, and systemd all work normally inside
-it. Boot takes ~30s on first create; subsequent starts and `suspend`/`resume`
-are much faster.
+it. Boot takes ~30s on first create; subsequent starts are much faster. On
+the QEMU backend, `suspend`/`resume` snapshots the whole VM and is faster
+still (AVF doesn't support it — see Backends).
 
 ## When to reach for agv
 
@@ -35,8 +36,8 @@ agv has two hypervisor backends, picked per VM:
 
 | Backend | When picked | Notes |
 |---|---|---|
-| `avf` | Default on macOS Apple Silicon. | Apple Virtualization. Faster cold boot, suspend, and resume. SSH endpoint is the guest's NAT IP on port 22 — `inspect --json` reports `ssh_port: null` and the host/port lives in the managed `~/.local/share/agv/ssh_config` instead. |
-| `qemu` | Default on Linux and Intel macOS; available everywhere as a fallback. | QEMU process. Cross-platform. SSH is a forwarded port on `127.0.0.1` — `inspect --json` reports `ssh_port: <number>`. |
+| `avf` | Default on macOS Apple Silicon. | Apple Virtualization. Faster cold boot than QEMU. Does **not** support `agv suspend`/`agv resume` or `idle_suspend_minutes` — Apple's framework can't restore Linux guests; use `agv stop` + `agv start` instead. SSH endpoint is the guest's NAT IP on port 22 — `inspect --json` reports `ssh_port: null` and the host/port lives in the managed `~/.local/share/agv/ssh_config` instead. |
+| `qemu` | Default on Linux; available everywhere as a fallback. | QEMU process. Cross-platform. Supports `suspend`/`resume` and `idle_suspend_minutes` auto-suspend. SSH is a forwarded port on `127.0.0.1` — `inspect --json` reports `ssh_port: <number>`. |
 
 **Most of the time you don't need to think about this.** `agv ssh <name>`,
 `agv cp`, and `agv inspect` work identically on both. The differences only
@@ -314,25 +315,37 @@ If neither of those fits, the GUI mixin is for the user, not for you.
 
 ### Long-running, multi-step work
 
-If the task spans more than one session:
+If the task spans more than one session **and the VM is on the QEMU
+backend**, `suspend`/`resume` saves its full state to disk and frees host
+RAM:
 
 ```bash
-agv create --include devtools --include claude --spec large --start agv-project-x
+agv create --backend qemu --include devtools --include claude --spec large --start agv-project-x
 # … work in the VM …
 agv suspend agv-project-x         # save full state to disk, free host RAM
 # later:
 agv resume agv-project-x          # back to exactly where you left off
 ```
 
-Suspended VMs use only disk — the hypervisor is no longer running. On
-QEMU the RAM + device state lives in a `savevm` snapshot inside
-`disk.qcow2`; on AVF it lives in `<inst>/avf-snapshot.bin` (removed
-automatically once `resume` completes). Either way, `agv resume` is much
-faster than re-creating.
+Suspended VMs use only disk — the hypervisor is no longer running; the RAM
++ device state lives in a `savevm` snapshot inside `disk.qcow2`. `agv resume`
+is much faster than re-creating.
+
+**AVF VMs can't suspend/resume** (Apple's framework can't restore Linux
+guests, so agv refuses it). On AVF — the default backend on macOS Apple
+Silicon — use `agv stop` + `agv start` instead; the disk persists across
+the stop, you just lose in-memory state and pay a cold boot. If preserving
+in-memory state across sessions matters, create the VM with
+`--backend qemu`.
 
 ### Auto-suspend for VMs you hand to a user
 
-When you create a VM the user will own afterwards, set
+**QEMU backend only** — auto-suspend rides on `suspend`/`resume`, which
+AVF doesn't support, so agv refuses `idle_suspend_minutes` on AVF VMs at
+create and config-set time. On macOS Apple Silicon (AVF default) you must
+pass `--backend qemu` for this to be accepted.
+
+When you create a QEMU VM the user will own afterwards, set
 `idle_suspend_minutes` in the `[vm]` section so it doesn't sit
 running forever consuming RAM if they don't get back to it
 immediately:
@@ -480,9 +493,10 @@ agv forward <name> --stop 8080
 agv gui <name>                        # USER-FACING: opens host browser at the VM's noVNC URL
 agv gui --no-launch <name>            # just print the URL; safe to run from a non-TTY context
 
-agv suspend <name>
-agv resume <name>
+agv suspend <name>                    # QEMU backend only (AVF refuses)
+agv resume <name>                     # QEMU backend only (AVF refuses)
 # auto-suspend is set per-VM in agv.toml as `[vm] idle_suspend_minutes = N`
+# (also QEMU-only — refused on AVF VMs)
 
 agv backend migrate-to-avf <name>     # convert a stopped QEMU VM to AVF in place
 agv backend migrate-to-avf <name> --delete-qcow2   # also remove the original qcow2
