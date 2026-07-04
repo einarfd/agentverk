@@ -446,6 +446,18 @@ async fn backend_cleanup_removes_residual_qcow2_after_flip() {
         eprintln!("required tools missing — skipping backend_cleanup_removes_residual_qcow2_after_flip");
         return;
     }
+    // The test flips the instance config to `backend = "avf"` to simulate a
+    // migrate-to-avf, then cleans up the residual qcow2. Loading an AVF-backed
+    // config is refused off macOS ("avf is macOS-only"), and the whole
+    // flip-then-clean workflow only exists on macOS Apple Silicon anyway, so
+    // there's nothing to exercise on other platforms.
+    if !cfg!(target_os = "macos") {
+        eprintln!(
+            "AVF-flip cleanup is a macOS-only workflow — skipping \
+             backend_cleanup_removes_residual_qcow2_after_flip"
+        );
+        return;
+    }
 
     let data_dir = test_data_dir();
     let host_tmp = tempfile::tempdir().unwrap();
