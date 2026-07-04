@@ -1449,16 +1449,24 @@ idle_load_threshold = 2.0
     let report = parse_json("agv create", &create_output.stdout);
     assert_eq!(report["status"], "running");
 
-    // Watcher probes every 60s; with idle_suspend_minutes=1 the first
-    // idle probe (≈60s after spawn) will trigger a savevm + QEMU exit.
-    // 100s gives the suspend RPC and status-file write time to land.
-    tokio::time::sleep(std::time::Duration::from_secs(100)).await;
-
-    let report = inspect(data_dir.path(), name).await;
+    // The watcher probes every 60s; with idle_suspend_minutes=1 the first
+    // idle probe (~60s after spawn) triggers a savevm + QEMU exit. Poll for
+    // the `suspended` status rather than sleeping a single fixed window —
+    // that window is fragile on slow or loaded machines, where savevm
+    // latency or a watcher tick stretched past 2× the probe interval (which
+    // trips the host-wake heuristic and resets the idle timer) can push the
+    // suspend past the deadline. A genuine "never suspends" bug still fails
+    // here, just after a fair wait instead of an arbitrary 100s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut report = inspect(data_dir.path(), name).await;
+    while report["status"].as_str() != Some("suspended") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        report = inspect(data_dir.path(), name).await;
+    }
     let status = report["status"].as_str().unwrap_or("");
     if status != "suspended" {
         destroy(data_dir.path(), name).await;
-        panic!("expected VM to auto-suspend, got status={status:?}: {report:?}");
+        panic!("expected VM to auto-suspend within 240s, got status={status:?}: {report:?}");
     }
 
     destroy(data_dir.path(), name).await;
