@@ -42,10 +42,15 @@ pub struct Config {
 
     /// Host-to-guest port forwards, applied on start/resume.
     ///
-    /// Each entry is `HOST[:GUEST]` (e.g. `"8080"`, `"5433:5432"`). TCP
-    /// is implicit — the underlying `ssh -L` tunnel is TCP-only.
-    /// Parsed and validated during [`resolve()`].
-    #[serde(default)]
+    /// Accepts two interchangeable forms, both normalized to the short
+    /// `HOST[:GUEST]` string here: an inline string list
+    /// (`forwards = ["8080", "5433:5432"]`) or an array-of-tables
+    /// (`[[forwards]]` with `host` / `guest`). The table form is a root-level
+    /// header, so — unlike the bare string list — it can sit anywhere in the
+    /// file without TOML scoping it into a preceding `[table]`. TCP is
+    /// implicit (the underlying `ssh -L` tunnel is TCP-only). Parsed and
+    /// validated during [`resolve()`].
+    #[serde(default, deserialize_with = "deserialize_forwards")]
     pub forwards: Vec<String>,
 
     /// Explicit allowlist of OS families this mixin supports.
@@ -397,6 +402,83 @@ where
     Ok(out)
 }
 
+/// Raw table shape for the `[[forwards]]` array-of-tables form.
+///
+/// `guest` defaults to `host` when omitted. TCP is implicit (the underlying
+/// `ssh -L` tunnel is TCP-only), so there is deliberately no `proto` field —
+/// see [`crate::forward::ForwardSpec`], which rejects `/proto` suffixes.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForwardTable {
+    host: u16,
+    #[serde(default)]
+    guest: Option<u16>,
+}
+
+/// One `forwards` entry: either a `"HOST[:GUEST]"` string or a
+/// `{ host, guest }` table. Both normalize to the canonical short string
+/// (`"HOST"` when host == guest, else `"HOST:GUEST"`), which is validated
+/// against [`crate::forward::ForwardSpec`] during [`resolve()`].
+///
+/// A hand-written visitor is used rather than `#[serde(untagged)]` so the
+/// table branch keeps `deny_unknown_fields`' precise "unknown field" errors —
+/// untagged deserialization degrades a field typo to the useless "data did not
+/// match any variant".
+struct ForwardEntry(String);
+
+impl<'de> Deserialize<'de> for ForwardEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct EntryVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
+            type Value = ForwardEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(
+                    "a port forward as a \"HOST[:GUEST]\" string or a { host, guest } table",
+                )
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<ForwardEntry, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ForwardEntry(v.to_string()))
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<ForwardEntry, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let table =
+                    ForwardTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                let short = match table.guest {
+                    Some(guest) if guest != table.host => format!("{}:{}", table.host, guest),
+                    _ => table.host.to_string(),
+                };
+                Ok(ForwardEntry(short))
+            }
+        }
+
+        deserializer.deserialize_any(EntryVisitor)
+    }
+}
+
+/// Deserialize the `forwards` list, accepting both the inline string form
+/// (`forwards = ["8080", "5433:5432"]`) and the array-of-tables form
+/// (`[[forwards]]` with `host` / `guest`). Both normalize to short strings
+/// here; range and duplicate validation happen later in [`resolve()`].
+fn deserialize_forwards<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries = Vec::<ForwardEntry>::deserialize(deserializer)?;
+    Ok(entries.into_iter().map(|e| e.0).collect())
+}
+
 // ---------------------------------------------------------------------------
 // Resolved config — fully flattened, no Options
 // ---------------------------------------------------------------------------
@@ -454,7 +536,9 @@ pub struct ResolvedConfig {
     ///
     /// Each entry is validated against [`crate::forward::ForwardSpec`] during
     /// resolution, so downstream code can treat the list as well-formed.
-    #[serde(default)]
+    /// Accepts the same string-or-`[[forwards]]`-table input as
+    /// [`Config::forwards`] (see [`deserialize_forwards`]).
+    #[serde(default, deserialize_with = "deserialize_forwards")]
     pub forwards: Vec<String>,
 
     /// Named auto-allocated forwards (accumulated from full chain).
@@ -2848,6 +2932,148 @@ proto = "tcp"
         for good in ["rdp", "vnc", "claude_control", "port9000"] {
             validate_auto_forward_name(good).unwrap();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // forwards: string list and [[forwards]] table forms
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn forwards_string_form_parses() {
+        let cfg: Config = toml::from_str(
+            r#"
+forwards = ["3000", "8080:80"]
+[base]
+from = "ubuntu-24.04"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.forwards, vec!["3000", "8080:80"]);
+    }
+
+    #[test]
+    fn forwards_table_form_parses_and_normalizes() {
+        let cfg: Config = toml::from_str(
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[[forwards]]
+host = 8080
+guest = 80
+
+[[forwards]]
+host = 3000
+"#,
+        )
+        .unwrap();
+        // Order preserved; guest omitted defaults to host → short form.
+        assert_eq!(cfg.forwards, vec!["8080:80", "3000"]);
+    }
+
+    #[test]
+    fn forwards_table_guest_equal_to_host_collapses() {
+        let cfg: Config = toml::from_str(
+            r"
+[[forwards]]
+host = 9000
+guest = 9000
+",
+        )
+        .unwrap();
+        assert_eq!(cfg.forwards, vec!["9000"]);
+    }
+
+    #[test]
+    fn forwards_table_form_survives_after_a_table_header() {
+        // The whole point of the table form: a `[[forwards]]` header is
+        // root-qualified, so it parses even when it follows `[vm]` — the exact
+        // spot where a bare `forwards = [...]` string list gets scoped into the
+        // preceding table and rejected.
+        let cfg: Config = toml::from_str(
+            r#"
+[base]
+from = "ubuntu-24.04"
+
+[vm]
+memory = "4G"
+
+[[forwards]]
+host = 3000
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.forwards, vec!["3000"]);
+        assert_eq!(cfg.vm.unwrap().memory.as_deref(), Some("4G"));
+    }
+
+    #[test]
+    fn forwards_bare_string_list_after_table_is_scoped_and_rejected() {
+        // Documents the footgun the table form exists to avoid: a bare
+        // `forwards = [...]` after `[base]` is read by TOML as `base.forwards`
+        // and rejected by `deny_unknown_fields`.
+        let err = toml::from_str::<Config>(
+            r#"
+[base]
+from = "ubuntu-24.04"
+forwards = ["3000"]
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field") && msg.contains("forwards"),
+            "expected base-scoped forwards rejection, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn forwards_table_unknown_field_errors_clearly() {
+        // The hand-rolled visitor (not `#[serde(untagged)]`) preserves
+        // `deny_unknown_fields`' precise error instead of the useless
+        // "data did not match any variant".
+        let err = toml::from_str::<Config>(
+            r"
+[[forwards]]
+hostt = 3000
+",
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field") && msg.contains("hostt"),
+            "expected clean unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn forwards_table_missing_host_errors() {
+        let err = toml::from_str::<Config>(
+            r"
+[[forwards]]
+guest = 80
+",
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("host"),
+            "expected missing-host error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn forwards_inline_mixed_array_is_tolerated() {
+        // Not a documented shape, but the per-element deserializer accepts a
+        // heterogeneous inline array — guards against a regression that would
+        // reject one form when the two are mixed.
+        let cfg: Config = toml::from_str(
+            r#"
+forwards = [{ host = 8080, guest = 80 }, "3000"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.forwards, vec!["8080:80", "3000"]);
     }
 
     #[test]

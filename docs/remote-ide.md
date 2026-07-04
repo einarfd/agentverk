@@ -98,12 +98,20 @@ agv forward myvm --stop            # remove every active forward
 For forwards you want every time the VM starts, declare them in `agv.toml`:
 
 ```toml
-forwards = ["8080", "3000:8080", "5433:5432"]
+[[forwards]]
+host = 8080
+
+[[forwards]]
+host = 3000
+guest = 8080
 ```
 
-Runtime `agv forward` changes are ephemeral — the next `agv start`/`agv resume`
-resets to exactly what the config declares. See `docs/config.md` for the full
-syntax and `agv forward --help` for more options.
+A compact `forwards = ["8080", "3000:8080"]` string list works too, but it must
+sit above the first `[section]` in the file — `[[forwards]]` blocks can go
+anywhere. Runtime `agv forward` changes are ephemeral — the next `agv
+start`/`agv resume` resets to exactly what the config declares. See
+`docs/config.md#forwards` for the full syntax and `agv forward --help` for more
+options.
 
 ## Copying files
 

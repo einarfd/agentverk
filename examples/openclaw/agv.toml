@@ -16,12 +16,20 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # disk = "80G"
 
 # ── Port forwards (host → VM) ────────────────────────────────────────────────
-# Expose VM ports on your host so you can point a browser, db client, or
-# test runner at services running inside the VM. Each entry is HOST[:GUEST];
-# the supervisor reconnects automatically if SSH drops. Runtime changes via
-# `agv forward` are ephemeral — declare here for "every time the VM starts".
+# Expose VM ports on your host so you can point a browser, db client, or test
+# runner at services running inside the VM. `guest` defaults to `host`, and the
+# supervisor reconnects automatically if SSH drops. Runtime `agv forward`
+# changes are ephemeral — declare here for "every time the VM starts". Each
+# `[[forwards]]` block is a root-level table, so it can sit anywhere in the file
+# (a bare `forwards = [...]` list must go above the first [section] — see
+# docs/config.md#forwards).
 #
-# forwards = ["8080", "5173:5173", "5433:5432"]
+# [[forwards]]
+# host = 8080
+#
+# [[forwards]]
+# host = 5433
+# guest = 5432
 
 # ── Repo access ──────────────────────────────────────────────────────────────
 # See docs/repo-access.md for the full picture (PAT via gh, SSH key, deploy

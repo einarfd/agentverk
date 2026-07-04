@@ -122,9 +122,17 @@ other service) inside the VM and reach it from your host browser at
 `http://localhost:PORT`. Declare persistent forwards in `agv.toml`:
 
 ```toml
-forwards = ["8080", "5173:5173", "5433:5432"]   # HOST[:GUEST]
+[[forwards]]
+host = 8080        # host:8080 → VM:8080
+
+[[forwards]]
+host = 5433
+guest = 5432       # host:5433 → VM:5432
 ```
 
+`guest` defaults to `host`. A compact string list works too
+(`forwards = ["8080", "5433:5432"]`), but it must sit above the first
+`[section]` in the file, whereas `[[forwards]]` blocks can go anywhere.
 They are reapplied on every `agv start` / `agv resume`. For one-off
 tunnels, `agv forward myvm 3000:8080` adds an ephemeral forward — wiped
 on the next start/resume. See
@@ -206,8 +214,11 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk
 # memory = "16G"
 # disk = "80G"
 
-# Expose VM ports on your host (host:8080 → VM:8080):
-forwards = ["8080"]
+# Expose VM ports on your host (host:8080 → VM:8080). A `[[forwards]]`
+# table can sit anywhere; a bare `forwards = [...]` list must precede
+# the first [section]:
+[[forwards]]
+host = 8080
 
 # Copy files into the VM (use {{HOME}} not ~/, see docs/config.md):
 [[files]]

@@ -435,21 +435,46 @@ or `agv resume`. Each forward runs as a small supervisor process around
 `ssh -N -L`, so services bound to `127.0.0.1` inside the guest are reachable —
 and the supervisor reconnects on its own if SSH drops temporarily.
 
+There are two interchangeable ways to declare them.
+
+**Table form (recommended)** — each `[[forwards]]` block is a top-level
+array-of-tables entry. `guest` defaults to `host` when omitted:
+
 ```toml
-forwards = [
-  "8080",         # host:8080 → VM:8080
-  "5433:5432",    # host:5433 → VM:5432
-  "9000:9000",    # host:9000 → VM:9000 (same port, explicit)
-]
+[[forwards]]
+host = 8080        # host:8080 → VM:8080
+
+[[forwards]]
+host = 5433
+guest = 5432       # host:5433 → VM:5432
 ```
 
-Each entry is `HOST[:GUEST]`. When `GUEST` is omitted it defaults to the same
-value as `HOST`. TCP is implicit — the underlying `ssh -L` tunnel is TCP-only.
+Because `[[forwards]]` is a root-qualified header (like any `[section]`), it can
+appear **anywhere** in the file — before or after `[base]`, `[vm]`, and
+everything else. That's the reason to prefer it.
+
+**String list** — a single `forwards` key holding `HOST[:GUEST]` strings.
+Compact, but with one sharp edge:
+
+```toml
+forwards = ["8080", "5433:5432", "9000:9000"]
+```
+
+> **Placement matters for the string form.** `forwards` is a top-level key, and
+> TOML assigns every bare key to the most recent `[table]` header above it. So a
+> `forwards = [...]` line placed after `[base]` or `[vm]` is read as
+> `base.forwards` / `vm.forwards` and rejected with an *"unknown field
+> `forwards`"* error. Put the string list **above the first `[section]`** in the
+> file — or just use the `[[forwards]]` table form, which has no such
+> restriction.
+
+When `GUEST` is omitted it defaults to the same value as `HOST`. TCP is implicit
+— the underlying `ssh -L` tunnel is TCP-only (a `/proto` suffix is rejected).
 
 Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
 the next start/resume resets the set back to what the config declares. To change the
 persistent set without editing the config file, use `agv config set --forwards "..."`
-(replaces the list wholesale).
+(replaces the list wholesale, comma-separated `HOST[:GUEST]` strings).
 
 ## Desktop / GUI access
 
@@ -507,8 +532,8 @@ unaffected.
 
 Named, auto-allocated port forwards — agv picks a free host port at VM
 start and writes it to `<instance>/<name>_port` for other commands or
-scripts to read. Unlike `forwards = [...]` (which takes explicit
-`HOST[:GUEST][/PROTO]` strings), `auto_forwards` let a mixin declare
+scripts to read. Unlike `forwards` (which takes explicit `HOST[:GUEST]`
+strings or `[[forwards]]` tables), `auto_forwards` let a mixin declare
 "I need a tunnel to guest port X under a stable name" without having to
 pick a host port — so multiple VMs using the same mixin never collide.
 
