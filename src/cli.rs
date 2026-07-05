@@ -682,6 +682,11 @@ pub struct ForwardDaemonArgs {
 
     /// Forward spec in HOST[:GUEST] form.
     pub spec: String,
+
+    /// Host bind address(es) for this forward (repeatable). An IP or `*`;
+    /// omitted means loopback. Internal wire field set by `spawn_supervisor`.
+    #[arg(long)]
+    pub bind: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -705,6 +710,15 @@ pub struct ForwardArgs {
     /// with --stop, each spec is removed. Cannot be combined with --list.
     #[arg(conflicts_with = "list")]
     pub ports: Vec<String>,
+
+    /// Host address(es) to bind the forward on the host side (repeatable):
+    /// an IPv4/IPv6 address, or `*` for all interfaces. Default is loopback
+    /// (127.0.0.1). Binding past loopback (e.g. `--bind 0.0.0.0` or a
+    /// tailnet IP) exposes the guest service to that network — the SSH
+    /// tunnel is no longer the only thing gating access. Applies to every
+    /// spec in this invocation; not valid with `--list`/`--stop`.
+    #[arg(long, value_name = "ADDR", conflicts_with_all = ["list", "stop"])]
+    pub bind: Vec<String>,
 
     /// Show the active forwards on the VM.
     #[arg(long, conflicts_with = "stop")]

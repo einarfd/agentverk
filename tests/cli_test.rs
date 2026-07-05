@@ -760,6 +760,25 @@ fn forward_invalid_port_fails() {
         .stderr(contains("not a valid port"));
 }
 
+#[test]
+fn forward_help_mentions_bind() {
+    agv()
+        .args(["forward", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--bind"));
+}
+
+#[test]
+fn forward_invalid_bind_fails() {
+    // A bad --bind address is rejected before any VM lookup.
+    agv()
+        .args(["forward", "novm", "8642", "--bind", "not-an-ip"])
+        .assert()
+        .failure()
+        .stderr(contains("bind address"));
+}
+
 // ── Cp ────────────────────────────────────────────────────────────────────────
 
 #[test]

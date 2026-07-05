@@ -41,13 +41,18 @@ async fn open_running(name: &str) -> anyhow::Result<Instance> {
 /// The supervisor is detached: stdio is redirected to /dev/null, it runs
 /// in its own process group so we can group-kill it later, and the parent
 /// does not wait on it (the OS reaps the zombie when agv exits).
-fn spawn_supervisor(vm: &str, spec: ForwardSpec) -> anyhow::Result<u32> {
+fn spawn_supervisor(vm: &str, spec: &ForwardSpec) -> anyhow::Result<u32> {
     let exe = std::env::current_exe().context("failed to locate agv binary")?;
     let mut cmd = std::process::Command::new(&exe);
+    // Wire the port mapping as the short `host[:guest]` string, and each bind
+    // address as its own `--bind` flag — the string form can't encode binds.
     cmd.arg("__forward-daemon")
         .arg(vm)
-        .arg(spec.to_string())
-        .stdin(Stdio::null())
+        .arg(spec.to_short_string());
+    for bind in &spec.binds {
+        cmd.arg("--bind").arg(bind.to_string());
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // Put the supervisor in its own process group so we can later send a
@@ -109,9 +114,9 @@ pub async fn apply_config_forwards(
     let mut applied: Vec<ActiveForward> = Vec::with_capacity(specs.len());
     let mut failures: Vec<(ForwardSpec, String)> = Vec::new();
     for spec in specs {
-        match spawn_supervisor(&inst.name, *spec) {
-            Ok(pid) => applied.push(ActiveForward::new(*spec, Origin::Config, pid)),
-            Err(e) => failures.push((*spec, format!("{e:#}"))),
+        match spawn_supervisor(&inst.name, spec) {
+            Ok(pid) => applied.push(ActiveForward::new(spec.clone(), Origin::Config, pid)),
+            Err(e) => failures.push((spec.clone(), format!("{e:#}"))),
         }
     }
     forward::write_active(&inst.forwards_path(), &applied).await?;
@@ -131,23 +136,31 @@ pub async fn add(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<Active
 
     let inst = open_running(name).await?;
     let mut active = sweep_dead(&inst).await?;
-    let existing: HashSet<u16> = active.iter().map(|a| a.host).collect();
+    // Key on (bind-address, host-port): the same host port on distinct bind
+    // addresses is allowed, so a plain host-port clash isn't enough.
+    let existing: HashSet<(String, u16)> = active
+        .iter()
+        .flat_map(|a| forward::bind_keys(&a.spec()))
+        .collect();
 
     for spec in specs {
-        if existing.contains(&spec.host) {
-            bail!(
-                "forward for host port {} is already active — use `agv forward {name} --stop {}` first",
-                spec.host,
-                spec,
-            );
+        for key in forward::bind_keys(spec) {
+            if existing.contains(&key) {
+                bail!(
+                    "forward for host port {} on bind {} is already active — use `agv forward {name} --stop {}` first",
+                    spec.host,
+                    key.0,
+                    spec.to_short_string(),
+                );
+            }
         }
     }
 
     let mut added: Vec<ActiveForward> = Vec::with_capacity(specs.len());
     for spec in specs {
-        let pid = spawn_supervisor(name, *spec)?;
-        let entry = ActiveForward::new(*spec, Origin::Adhoc, pid);
-        active.push(entry);
+        let pid = spawn_supervisor(name, spec)?;
+        let entry = ActiveForward::new(spec.clone(), Origin::Adhoc, pid);
+        active.push(entry.clone());
         added.push(entry);
         // Persist after each successful add so a mid-list spawn failure
         // still leaves a consistent state file.
@@ -172,15 +185,21 @@ pub async fn stop(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<Activ
     let mut removed: Vec<ActiveForward> = Vec::new();
 
     for spec in specs {
-        match active.iter().position(|a| a.host == spec.host) {
-            Some(idx) => {
-                let entry = active.remove(idx);
-                forward::kill_supervisor(entry.pid);
-                removed.push(entry);
-                forward::write_active(&inst.forwards_path(), &active).await?;
-            }
-            None => unknown.push(format!("{}", spec.host)),
+        // A host port may now carry several forwards (same port, different
+        // bind addresses), so remove *all* of them — stopping by port must not
+        // leave a sibling (e.g. a `0.0.0.0`-exposed one) running.
+        let matches: Vec<ActiveForward> =
+            active.iter().filter(|a| a.host == spec.host).cloned().collect();
+        if matches.is_empty() {
+            unknown.push(format!("{}", spec.host));
+            continue;
         }
+        active.retain(|a| a.host != spec.host);
+        for entry in matches {
+            forward::kill_supervisor(entry.pid);
+            removed.push(entry);
+        }
+        forward::write_active(&inst.forwards_path(), &active).await?;
     }
 
     if !unknown.is_empty() {
@@ -272,7 +291,7 @@ pub async fn apply_auto_forwards(
         };
 
         let spec = ForwardSpec::new(host_port, af.guest_port);
-        let pid = match spawn_supervisor(&inst.name, spec) {
+        let pid = match spawn_supervisor(&inst.name, &spec) {
             Ok(pid) => pid,
             Err(e) => {
                 outcome
@@ -283,7 +302,7 @@ pub async fn apply_auto_forwards(
         };
 
         let entry = ActiveForward::new(spec, Origin::Auto, pid);
-        active.push(entry);
+        active.push(entry.clone());
         forward::write_active(&inst.forwards_path(), &active).await?;
 
         // Publish the allocated host port for consumers (`agv gui`, scripts).

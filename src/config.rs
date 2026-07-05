@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::cli::CreateArgs;
 use crate::dirs;
 use crate::error::Error;
+use crate::forward::{BindTarget, ForwardSpec};
 
 // ---------------------------------------------------------------------------
 // Raw config structs (parsed from TOML)
@@ -50,8 +51,13 @@ pub struct Config {
     /// file without TOML scoping it into a preceding `[table]`. TCP is
     /// implicit (the underlying `ssh -L` tunnel is TCP-only). Parsed and
     /// validated during [`resolve()`].
-    #[serde(default, deserialize_with = "deserialize_forwards")]
-    pub forwards: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_forwards",
+        serialize_with = "serialize_forwards",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub forwards: Vec<ForwardSpec>,
 
     /// Explicit allowlist of OS families this mixin supports.
     ///
@@ -402,29 +408,87 @@ where
     Ok(out)
 }
 
+/// A `bind` value in the `[[forwards]]` table form: a single address or a
+/// list. `bind = "0.0.0.0"` and `bind = ["192.168.1.5", "::1"]` both work.
+///
+/// Hand-rolled (not `#[serde(untagged)]`) so a bad address keeps
+/// `BindTarget`'s "invalid bind address …" message instead of degrading to
+/// "data did not match any variant".
+#[derive(Debug)]
+enum BindField {
+    One(BindTarget),
+    Many(Vec<BindTarget>),
+}
+
+impl BindField {
+    fn into_vec(self) -> Vec<BindTarget> {
+        match self {
+            Self::One(b) => vec![b],
+            Self::Many(v) => v,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BindField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct BindVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BindVisitor {
+            type Value = BindField;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a bind address string (an IP or '*') or a list of them")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<BindField, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<BindTarget>().map(BindField::One).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<BindField, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let v = Vec::<BindTarget>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )?;
+                Ok(BindField::Many(v))
+            }
+        }
+
+        deserializer.deserialize_any(BindVisitor)
+    }
+}
+
 /// Raw table shape for the `[[forwards]]` array-of-tables form.
 ///
-/// `guest` defaults to `host` when omitted. TCP is implicit (the underlying
-/// `ssh -L` tunnel is TCP-only), so there is deliberately no `proto` field —
-/// see [`crate::forward::ForwardSpec`], which rejects `/proto` suffixes.
+/// `guest` defaults to `host` when omitted. `bind` (address or list; an IP
+/// or `*`) defaults to loopback. TCP is implicit (the underlying `ssh -L`
+/// tunnel is TCP-only), so there is deliberately no `proto` field — see
+/// [`crate::forward::ForwardSpec`], which rejects `/proto` suffixes.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForwardTable {
     host: u16,
     #[serde(default)]
     guest: Option<u16>,
+    #[serde(default)]
+    bind: Option<BindField>,
 }
 
-/// One `forwards` entry: either a `"HOST[:GUEST]"` string or a
-/// `{ host, guest }` table. Both normalize to the canonical short string
-/// (`"HOST"` when host == guest, else `"HOST:GUEST"`), which is validated
-/// against [`crate::forward::ForwardSpec`] during [`resolve()`].
+/// One `forwards` entry: either a `"HOST[:GUEST]"` string (always loopback)
+/// or a `{ host, guest, bind }` table. Both resolve to a [`ForwardSpec`].
 ///
 /// A hand-written visitor is used rather than `#[serde(untagged)]` so the
 /// table branch keeps `deny_unknown_fields`' precise "unknown field" errors —
 /// untagged deserialization degrades a field typo to the useless "data did not
 /// match any variant".
-struct ForwardEntry(String);
+struct ForwardEntry(ForwardSpec);
 
 impl<'de> Deserialize<'de> for ForwardEntry {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -438,7 +502,7 @@ impl<'de> Deserialize<'de> for ForwardEntry {
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str(
-                    "a port forward as a \"HOST[:GUEST]\" string or a { host, guest } table",
+                    "a port forward as a \"HOST[:GUEST]\" string or a { host, guest, bind } table",
                 )
             }
 
@@ -446,7 +510,10 @@ impl<'de> Deserialize<'de> for ForwardEntry {
             where
                 E: serde::de::Error,
             {
-                Ok(ForwardEntry(v.to_string()))
+                // Reuse ForwardSpec's string parser (port range, /proto
+                // rejection). String specs are always loopback.
+                let spec: ForwardSpec = v.parse().map_err(E::custom)?;
+                Ok(ForwardEntry(spec))
             }
 
             fn visit_map<A>(self, map: A) -> Result<ForwardEntry, A::Error>
@@ -455,11 +522,9 @@ impl<'de> Deserialize<'de> for ForwardEntry {
             {
                 let table =
                     ForwardTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                let short = match table.guest {
-                    Some(guest) if guest != table.host => format!("{}:{}", table.host, guest),
-                    _ => table.host.to_string(),
-                };
-                Ok(ForwardEntry(short))
+                let guest = table.guest.unwrap_or(table.host);
+                let binds = table.bind.map(BindField::into_vec).unwrap_or_default();
+                Ok(ForwardEntry(ForwardSpec::with_binds(table.host, guest, binds)))
             }
         }
 
@@ -467,16 +532,40 @@ impl<'de> Deserialize<'de> for ForwardEntry {
     }
 }
 
-/// Deserialize the `forwards` list, accepting both the inline string form
-/// (`forwards = ["8080", "5433:5432"]`) and the array-of-tables form
-/// (`[[forwards]]` with `host` / `guest`). Both normalize to short strings
-/// here; range and duplicate validation happen later in [`resolve()`].
-fn deserialize_forwards<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+/// Deserialize the `forwards` list into [`ForwardSpec`]s, accepting both the
+/// inline string form (`forwards = ["8080", "5433:5432"]`, loopback) and the
+/// array-of-tables form (`[[forwards]]` with `host` / `guest` / `bind`).
+/// Duplicate detection happens later in [`resolve()`].
+fn deserialize_forwards<'de, D>(deserializer: D) -> Result<Vec<ForwardSpec>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let entries = Vec::<ForwardEntry>::deserialize(deserializer)?;
     Ok(entries.into_iter().map(|e| e.0).collect())
+}
+
+/// Serialize `forwards` as an array-of-tables so binds round-trip through the
+/// saved instance config. Paired with [`deserialize_forwards`].
+fn serialize_forwards<S>(forwards: &[ForwardSpec], s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    #[derive(Serialize)]
+    struct Out {
+        host: u16,
+        guest: u16,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        bind: Vec<String>,
+    }
+    let out: Vec<Out> = forwards
+        .iter()
+        .map(|f| Out {
+            host: f.host,
+            guest: f.guest,
+            bind: f.binds.iter().map(ToString::to_string).collect(),
+        })
+        .collect();
+    out.serialize(s)
 }
 
 // ---------------------------------------------------------------------------
@@ -538,8 +627,13 @@ pub struct ResolvedConfig {
     /// resolution, so downstream code can treat the list as well-formed.
     /// Accepts the same string-or-`[[forwards]]`-table input as
     /// [`Config::forwards`] (see [`deserialize_forwards`]).
-    #[serde(default, deserialize_with = "deserialize_forwards")]
-    pub forwards: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_forwards",
+        serialize_with = "serialize_forwards",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub forwards: Vec<ForwardSpec>,
 
     /// Named auto-allocated forwards (accumulated from full chain).
     ///
@@ -781,12 +875,10 @@ pub fn resolve(config: Config) -> anyhow::Result<ResolvedConfig> {
 
     // Validate forwards once at the end so parent + child + include conflicts
     // all surface together, rather than reporting them piecemeal per layer.
-    let parsed = crate::forward::parse_specs(resolved.forwards.iter())
-        .context("invalid port forward in config")?;
-    crate::forward::validate_unique(&parsed).context("invalid port forward set in config")?;
-    // Normalize each entry to its canonical string form so the saved
-    // ResolvedConfig round-trips via load_resolved.
-    resolved.forwards = parsed.iter().map(ToString::to_string).collect();
+    // Individual specs were already parsed/validated at deserialize time; this
+    // catches duplicate (bind, host-port) pairs across the merged set.
+    crate::forward::validate_unique(&resolved.forwards)
+        .context("invalid port forward set in config")?;
 
     Ok(resolved)
 }
@@ -1891,9 +1983,9 @@ labels = {}
             setup: vec![],
             provision: vec![],
             forwards: vec![
-                "8080".to_string(),
-                "  5433:5432  ".to_string(),
-                "9000:3000".to_string(),
+                ForwardSpec::new(8080, 8080),
+                ForwardSpec::new(5433, 5432),
+                ForwardSpec::new(9000, 3000),
             ],
             os_families: None,
         supports: None,
@@ -1903,42 +1995,29 @@ labels = {}
             labels: BTreeMap::new(),
         };
         let resolved = resolve(config).unwrap();
-        assert_eq!(resolved.forwards, vec!["8080", "5433:5432", "9000:3000"]);
+        assert_eq!(
+            resolved.forwards,
+            vec![
+                ForwardSpec::new(8080, 8080),
+                ForwardSpec::new(5433, 5432),
+                ForwardSpec::new(9000, 3000),
+            ]
+        );
     }
 
     #[test]
-    fn resolve_rejects_invalid_forward() {
-        let config = Config {
-            base: Some(BaseConfig {
-                from: None,
-                include: vec![],
-                spec: None,
-                os_family: Some("debian".to_string()),
-                user: None,
-                aarch64: Some(ArchImage {
-                    url: "https://example.com/arm64.img".to_string(),
-                    checksum: "sha256:aaa".to_string(),
-                }),
-                x86_64: Some(ArchImage {
-                    url: "https://example.com/amd64.img".to_string(),
-                    checksum: "sha256:bbb".to_string(),
-                }),
-            }),
-            vm: None,
-            files: vec![],
-            setup: vec![],
-            provision: vec![],
-            forwards: vec!["not-a-port".to_string()],
-            os_families: None,
-        supports: None,
-        auto_forwards: None,
-            notes: vec![],
-            manual_steps: vec![],
-            labels: BTreeMap::new(),
-        };
-        let err = resolve(config).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("port"), "unexpected error: {msg}");
+    fn forwards_reject_invalid_port_at_parse_time() {
+        // Individual specs are validated when the config is parsed, not at
+        // resolve — a bad port fails `toml::from_str` outright.
+        let err = toml::from_str::<Config>(
+            r#"
+forwards = ["not-a-port"]
+[base]
+from = "ubuntu-24.04"
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("port"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1963,7 +2042,7 @@ labels = {}
             files: vec![],
             setup: vec![],
             provision: vec![],
-            forwards: vec!["8080".to_string(), "8080:3000".to_string()],
+            forwards: vec![ForwardSpec::new(8080, 8080), ForwardSpec::new(8080, 3000)],
             os_families: None,
         supports: None,
         auto_forwards: None,
@@ -1987,7 +2066,7 @@ labels = {}
             files: vec![],
             setup: vec![],
             provision: vec![],
-            forwards: vec!["9000:9000".to_string()],
+            forwards: vec![ForwardSpec::new(9000, 9000)],
             os_families: None,
         supports: None,
         auto_forwards: None,
@@ -1996,7 +2075,7 @@ labels = {}
             labels: BTreeMap::new(),
         };
         let resolved = resolve(child).unwrap();
-        assert_eq!(resolved.forwards, vec!["9000"]);
+        assert_eq!(resolved.forwards, vec![ForwardSpec::new(9000, 9000)]);
     }
 
     #[test]
@@ -2013,7 +2092,7 @@ labels = {}
             files: vec![],
             setup: vec![],
             provision: vec![],
-            forwards: vec!["8080".to_string()],
+            forwards: vec![ForwardSpec::new(8080, 8080)],
             auto_forwards: std::collections::BTreeMap::new(),
             template_name: None,
             mixins_applied: vec![],
@@ -2033,7 +2112,7 @@ labels = {}
             files: vec![],
             setup: vec![],
             provision: vec![],
-            forwards: vec!["9090".to_string()],
+            forwards: vec![ForwardSpec::new(9090, 9090)],
             os_families: None,
         supports: None,
         auto_forwards: None,
@@ -2042,7 +2121,10 @@ labels = {}
             labels: BTreeMap::new(),
         };
         let result = merge(parent, child);
-        assert_eq!(result.forwards, vec!["8080", "9090"]);
+        assert_eq!(
+            result.forwards,
+            vec![ForwardSpec::new(8080, 8080), ForwardSpec::new(9090, 9090)]
+        );
     }
 
     #[test]
@@ -2948,7 +3030,10 @@ from = "ubuntu-24.04"
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.forwards, vec!["3000", "8080:80"]);
+        assert_eq!(
+            cfg.forwards,
+            vec![ForwardSpec::new(3000, 3000), ForwardSpec::new(8080, 80)]
+        );
     }
 
     #[test]
@@ -2967,8 +3052,11 @@ host = 3000
 "#,
         )
         .unwrap();
-        // Order preserved; guest omitted defaults to host → short form.
-        assert_eq!(cfg.forwards, vec!["8080:80", "3000"]);
+        // Order preserved; guest omitted defaults to host.
+        assert_eq!(
+            cfg.forwards,
+            vec![ForwardSpec::new(8080, 80), ForwardSpec::new(3000, 3000)]
+        );
     }
 
     #[test]
@@ -2981,7 +3069,7 @@ guest = 9000
 ",
         )
         .unwrap();
-        assert_eq!(cfg.forwards, vec!["9000"]);
+        assert_eq!(cfg.forwards, vec![ForwardSpec::new(9000, 9000)]);
     }
 
     #[test]
@@ -3003,7 +3091,7 @@ host = 3000
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.forwards, vec!["3000"]);
+        assert_eq!(cfg.forwards, vec![ForwardSpec::new(3000, 3000)]);
         assert_eq!(cfg.vm.unwrap().memory.as_deref(), Some("4G"));
     }
 
@@ -3073,7 +3161,82 @@ forwards = [{ host = 8080, guest = 80 }, "3000"]
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.forwards, vec!["8080:80", "3000"]);
+        assert_eq!(
+            cfg.forwards,
+            vec![ForwardSpec::new(8080, 80), ForwardSpec::new(3000, 3000)]
+        );
+    }
+
+    // --- bind field on the [[forwards]] table ---
+
+    #[test]
+    fn forwards_table_bind_scalar_and_list() {
+        let cfg: Config = toml::from_str(
+            r#"
+[[forwards]]
+host = 8642
+bind = "0.0.0.0"
+
+[[forwards]]
+host = 3000
+bind = ["192.168.1.5", "2001:db8::5", "*"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.forwards.len(), 2);
+        assert_eq!(cfg.forwards[0].binds, vec!["0.0.0.0".parse().unwrap()]);
+        assert_eq!(
+            cfg.forwards[1].binds,
+            vec![
+                "192.168.1.5".parse().unwrap(),
+                "2001:db8::5".parse().unwrap(),
+                BindTarget::All,
+            ]
+        );
+    }
+
+    #[test]
+    fn forwards_string_form_has_no_binds() {
+        let cfg: Config = toml::from_str("forwards = [\"8642\"]").unwrap();
+        assert!(cfg.forwards[0].binds.is_empty());
+    }
+
+    #[test]
+    fn forwards_bind_rejects_bad_address() {
+        let err = toml::from_str::<Config>(
+            r#"
+[[forwards]]
+host = 8642
+bind = "not-an-ip"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("bind address"),
+            "expected bind-address error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn forwards_bind_round_trips_through_resolved_serialize() {
+        // A bound forward must survive serialize → deserialize so the saved
+        // instance config reapplies binds on the next start.
+        #[derive(Serialize, Deserialize)]
+        struct Wrap {
+            #[serde(
+                deserialize_with = "deserialize_forwards",
+                serialize_with = "serialize_forwards"
+            )]
+            forwards: Vec<ForwardSpec>,
+        }
+        let spec = ForwardSpec::with_binds(
+            8642,
+            80,
+            vec![BindTarget::All, "192.168.1.5".parse().unwrap()],
+        );
+        let toml_str = toml::to_string(&Wrap { forwards: vec![spec.clone()] }).unwrap();
+        let back: Wrap = toml::from_str(&toml_str).unwrap();
+        assert_eq!(back.forwards, vec![spec]);
     }
 
     #[test]

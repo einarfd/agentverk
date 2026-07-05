@@ -135,8 +135,14 @@ guest = 5432       # host:5433 → VM:5432
 `[section]` in the file, whereas `[[forwards]]` blocks can go anywhere.
 They are reapplied on every `agv start` / `agv resume`. For one-off
 tunnels, `agv forward myvm 3000:8080` adds an ephemeral forward — wiped
-on the next start/resume. See
-[`docs/config.md#forwards`](docs/config.md#forwards) for the full
+on the next start/resume.
+
+Forwards listen on `127.0.0.1` by default. Add `bind = "0.0.0.0"` (or a
+specific IP such as your tailnet address, a list, or `*`) to a
+`[[forwards]]` block — or `agv forward myvm 8642 --bind 0.0.0.0` — to
+expose the port on other host interfaces. That drops agv's tunnel-as-
+auth-boundary, so agv warns; prefer a specific address over `0.0.0.0`.
+See [`docs/config.md#forwards`](docs/config.md#forwards) for the full
 reference.
 
 **What the agent sees** — at first boot, agv writes `~/.agv/system.md`

@@ -471,10 +471,54 @@ forwards = ["8080", "5433:5432", "9000:9000"]
 When `GUEST` is omitted it defaults to the same value as `HOST`. TCP is implicit
 — the underlying `ssh -L` tunnel is TCP-only (a `/proto` suffix is rejected).
 
+### Binding past loopback (`bind`)
+
+By default a forward listens on `127.0.0.1` only, so the SSH tunnel (gated by
+the VM's unique key) is the sole path to the guest service. The **table form**
+takes an optional `bind` to expose it on other host addresses — a single
+address or a list:
+
+```toml
+[[forwards]]
+host = 8642
+bind = "100.101.102.103"          # e.g. a tailnet IP — reachable only on the tailnet
+
+[[forwards]]
+host = 3000
+bind = ["192.168.1.5", "2001:db8::5"]   # a specific IPv4 and IPv6 (multi-homed host)
+```
+
+Each `bind` value is an IPv4/IPv6 address or `*`:
+
+| `bind` | Listens on |
+|--------|-----------|
+| *(omitted)* | loopback (`127.0.0.1`) — the default |
+| `"0.0.0.0"` | all IPv4 interfaces |
+| `"::"` | all IPv6 interfaces |
+| `"*"` | all interfaces, both families |
+| `"192.168.1.5"` / `"2001:db8::5"` | that specific address |
+
+A forward with binds runs one `ssh -L` per address on a single supervisor, and
+tolerates partial failure — on a multi-homed host, one address being down
+doesn't tear down the others.
+
+> **Binding past loopback removes agv's usual auth boundary.** Anything that can
+> reach the bound address reaches the guest service directly; the SSH tunnel is
+> no longer the only gate. agv prints a warning when a non-loopback bind is
+> applied but does **not** block it — you own the firewalling. Prefer a specific
+> address (e.g. your tailnet IP) over `0.0.0.0` / `*`, which expose on every
+> network the host is attached to.
+
+`bind` is table-form-only: the compact string list (`forwards = ["8642"]`) is
+always loopback (an IPv6 literal's colons would collide with the `HOST:GUEST`
+separator). For an ad-hoc bound forward on a running VM, `agv forward <vm> 8642
+--bind 0.0.0.0` (repeatable `--bind`).
+
 Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
 the next start/resume resets the set back to what the config declares. To change the
 persistent set without editing the config file, use `agv config set --forwards "..."`
-(replaces the list wholesale, comma-separated `HOST[:GUEST]` strings).
+(replaces the list wholesale, comma-separated `HOST[:GUEST]` strings — loopback
+only; declare bound forwards in the config file's `[[forwards]]` table).
 
 ## Desktop / GUI access
 

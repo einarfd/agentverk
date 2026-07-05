@@ -6,41 +6,176 @@
 //! `agv.toml`) and the runtime CLI (`agv forward`).
 
 use std::fmt;
+use std::net::IpAddr;
 use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{bail, Context as _};
 use serde::{Deserialize, Serialize};
 
-/// A single forward specification: `host[:guest]`.
+/// Where a forward's host-side listener binds.
 ///
-/// If `guest` is omitted, it defaults to the same value as `host`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A `ForwardSpec` with an empty `binds` list means loopback — `ssh -L`
+/// with no bind address, i.e. `127.0.0.1` only, the safe default. Any
+/// explicit target exposes the forwarded port more widely; see the
+/// security note on [`ForwardSpec`].
+///
+/// Serialized as a plain string in TOML/JSON: an IP literal, or `*` for
+/// [`BindTarget::All`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindTarget {
+    /// A specific host address (IPv4 or IPv6), e.g. a tailnet IP.
+    Addr(IpAddr),
+    /// All interfaces, both address families — ssh's `*` bind address.
+    All,
+}
+
+impl BindTarget {
+    /// The address string for `ssh -L`'s bind slot. IPv6 literals must be
+    /// bracketed there (`[::1]`); `*` and IPv4 pass through as-is.
+    #[must_use]
+    fn ssh_bind_str(self) -> String {
+        match self {
+            Self::Addr(IpAddr::V6(a)) => format!("[{a}]"),
+            Self::Addr(ip) => ip.to_string(),
+            Self::All => "*".to_string(),
+        }
+    }
+
+    /// Whether this exposes the port beyond loopback — drives the security
+    /// warning and the `GatewayPorts` toggle.
+    #[must_use]
+    pub fn is_non_loopback(self) -> bool {
+        match self {
+            Self::Addr(ip) => !ip.is_loopback(),
+            Self::All => true,
+        }
+    }
+}
+
+impl fmt::Display for BindTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Addr(ip) => write!(f, "{ip}"),
+            Self::All => write!(f, "*"),
+        }
+    }
+}
+
+impl FromStr for BindTarget {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        if t == "*" {
+            return Ok(Self::All);
+        }
+        let ip: IpAddr = t.parse().with_context(|| {
+            format!("invalid bind address '{s}' — expected an IPv4/IPv6 address or '*'")
+        })?;
+        Ok(Self::Addr(ip))
+    }
+}
+
+// Serde as a string ("*", "0.0.0.0", "::1", …) so the `[[forwards]]` table
+// `bind` field and the JSON projection are plain strings.
+impl TryFrom<String> for BindTarget {
+    type Error = anyhow::Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+impl From<BindTarget> for String {
+    fn from(b: BindTarget) -> Self {
+        b.to_string()
+    }
+}
+impl Serialize for BindTarget {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+impl<'de> Deserialize<'de> for BindTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A single forward specification: a host↔guest port mapping plus the
+/// host addresses to bind.
+///
+/// If `guest` is omitted (string form), it defaults to the same value as
+/// `host`. `binds` empty means loopback (`127.0.0.1`) — the default, and
+/// the only form the bare-string spec can express. Non-loopback binds are
+/// declared via the `[[forwards]]` table `bind` field or `agv forward
+/// --bind`, and they punch through agv's usual "the SSH tunnel is the auth
+/// boundary" model, so they warn at apply time.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardSpec {
     pub host: u16,
     pub guest: u16,
+    pub binds: Vec<BindTarget>,
 }
 
 impl ForwardSpec {
     #[must_use]
     pub fn new(host: u16, guest: u16) -> Self {
-        Self { host, guest }
+        Self {
+            host,
+            guest,
+            binds: Vec::new(),
+        }
     }
 
-    /// Render as the short form suitable for CLI/config round-trip.
+    #[must_use]
+    pub fn with_binds(host: u16, guest: u16, binds: Vec<BindTarget>) -> Self {
+        Self { host, guest, binds }
+    }
+
+    /// Render the port mapping as the short `host[:guest]` string. Note this
+    /// deliberately omits `binds` — the bare-string form can't carry them
+    /// (IPv6 literals collide with the `host:guest` colon). Use it for the
+    /// port-only round-trip, not to fully describe a bound forward.
     #[must_use]
     pub fn to_short_string(&self) -> String {
-        self.to_string()
+        if self.host == self.guest {
+            self.host.to_string()
+        } else {
+            format!("{}:{}", self.host, self.guest)
+        }
+    }
+
+    /// Whether any bind exposes the port beyond loopback.
+    #[must_use]
+    pub fn has_non_loopback_bind(&self) -> bool {
+        self.binds.iter().any(|b| b.is_non_loopback())
+    }
+
+    /// The `-L` argument value(s) for `ssh`, one per bind address. With no
+    /// binds, a single loopback forward (ssh's default). The middle
+    /// `localhost` is the guest-side destination resolved by sshd inside
+    /// the guest.
+    #[must_use]
+    pub fn ssh_forward_args(&self) -> Vec<String> {
+        if self.binds.is_empty() {
+            return vec![format!("{}:localhost:{}", self.host, self.guest)];
+        }
+        self.binds
+            .iter()
+            .map(|b| format!("{}:{}:localhost:{}", b.ssh_bind_str(), self.host, self.guest))
+            .collect()
     }
 }
 
 impl fmt::Display for ForwardSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.host == self.guest {
-            write!(f, "{}", self.host)
-        } else {
-            write!(f, "{}:{}", self.host, self.guest)
+        write!(f, "{}", self.to_short_string())?;
+        if !self.binds.is_empty() {
+            let binds: Vec<String> = self.binds.iter().map(ToString::to_string).collect();
+            write!(f, " (bind: {})", binds.join(", "))?;
         }
+        Ok(())
     }
 }
 
@@ -65,7 +200,7 @@ impl FromStr for ForwardSpec {
             );
         }
 
-        // Parse host[:guest].
+        // Parse host[:guest]. The bare-string form is always loopback.
         let (host_str, guest_str) = match s.split_once(':') {
             Some((h, g)) => (h, g),
             None => (s, s),
@@ -74,7 +209,7 @@ impl FromStr for ForwardSpec {
         let host: u16 = parse_port(host_str).with_context(|| format!("host port in '{raw}'"))?;
         let guest: u16 = parse_port(guest_str).with_context(|| format!("guest port in '{raw}'"))?;
 
-        Ok(Self { host, guest })
+        Ok(Self::new(host, guest))
     }
 }
 
@@ -92,7 +227,8 @@ fn parse_port(s: &str) -> anyhow::Result<u16> {
     Ok(n)
 }
 
-/// Parse a list of forward spec strings, reporting the first error.
+/// Parse a list of forward spec strings, reporting the first error. String
+/// specs are always loopback; use the `[[forwards]]` table form for binds.
 pub fn parse_specs<I, S>(raw: I) -> anyhow::Result<Vec<ForwardSpec>>
 where
     I: IntoIterator<Item = S>,
@@ -106,16 +242,68 @@ where
     Ok(out)
 }
 
-/// Validate that a list of forward specs has no duplicate host ports.
+/// The `(bind-address, host-port)` keys a spec occupies, for duplicate
+/// detection. A loopback (default) forward is keyed as `127.0.0.1` — the
+/// address `ssh -L` binds by default — so it collides with an explicit
+/// `bind = "127.0.0.1"` on the same port. Explicit binds are keyed by their
+/// string form (an IP or `*`).
+#[must_use]
+pub fn bind_keys(spec: &ForwardSpec) -> Vec<(String, u16)> {
+    if spec.binds.is_empty() {
+        vec![("127.0.0.1".to_string(), spec.host)]
+    } else {
+        spec.binds
+            .iter()
+            .map(|b| (b.to_string(), spec.host))
+            .collect()
+    }
+}
+
+/// Print a stderr warning for every forward that binds past loopback.
 ///
-/// Two forwards binding the same host port would conflict at runtime;
-/// catching it up front gives a clearer error than letting the supervisor's
-/// ssh fail.
+/// A non-loopback bind exposes the guest service beyond `127.0.0.1`, dropping
+/// agv's "the SSH tunnel is the only gate" guarantee. Always written to stderr
+/// (never suppressed by `--quiet`) because it's a security notice, not status
+/// output. Shared by the ad-hoc `agv forward` path and the start/resume path
+/// so the wording and channel stay identical.
+pub fn warn_non_loopback_binds(specs: &[ForwardSpec]) {
+    for spec in specs {
+        if !spec.has_non_loopback_bind() {
+            continue;
+        }
+        let addrs: Vec<String> = spec
+            .binds
+            .iter()
+            .filter(|b| b.is_non_loopback())
+            .map(ToString::to_string)
+            .collect();
+        eprintln!(
+            "  ⚠ host port {} is bound to {} — reachable beyond localhost; \
+             anything that can reach that address reaches the guest service \
+             (the SSH tunnel is no longer the only gate).",
+            spec.host,
+            addrs.join(", "),
+        );
+    }
+}
+
+/// Validate that no two forwards would bind the same `(address, host port)`.
+///
+/// Keys on the bind address string (loopback default rendered as
+/// `localhost`), so `8642` on `127.0.0.1` and `8642` on `192.168.1.5` are
+/// allowed but the same address twice is not. Genuine wildcard overlaps
+/// (a loopback forward plus a `0.0.0.0` one on the same port) aren't
+/// second-guessed here — they surface as the supervisor's ssh bind error.
 pub fn validate_unique(specs: &[ForwardSpec]) -> anyhow::Result<()> {
-    for (i, a) in specs.iter().enumerate() {
-        for b in &specs[i + 1..] {
-            if a.host == b.host {
-                bail!("duplicate forward for host port {} in list", a.host);
+    let mut seen: std::collections::HashSet<(String, u16)> = std::collections::HashSet::new();
+    for spec in specs {
+        for key in bind_keys(spec) {
+            if !seen.insert(key.clone()) {
+                bail!(
+                    "duplicate forward for host port {} on bind address {} in list",
+                    spec.host,
+                    key.0
+                );
             }
         }
     }
@@ -155,10 +343,14 @@ impl fmt::Display for Origin {
 /// Each active entry is backed by an agv-spawned supervisor process that
 /// runs a respawn loop around `ssh -N -L`. The `pid` is the supervisor's
 /// process group leader, so stopping the forward means group-killing `pid`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveForward {
     pub host: u16,
     pub guest: u16,
+    /// Host bind addresses; empty = loopback. `#[serde(default)]` so
+    /// pre-bind `forwards.toml` files (which had no `binds` key) still load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<BindTarget>,
     pub origin: Origin,
     pub pid: u32,
 }
@@ -169,6 +361,7 @@ impl ActiveForward {
         Self {
             host: spec.host,
             guest: spec.guest,
+            binds: spec.binds,
             origin,
             pid,
         }
@@ -176,10 +369,7 @@ impl ActiveForward {
 
     #[must_use]
     pub fn spec(&self) -> ForwardSpec {
-        ForwardSpec {
-            host: self.host,
-            guest: self.guest,
-        }
+        ForwardSpec::with_binds(self.host, self.guest, self.binds.clone())
     }
 }
 
@@ -193,10 +383,14 @@ impl ActiveForward {
 /// so a stale entry in `forwards.toml` shows up with `alive: false` —
 /// useful diagnostically. Stable across the 0.x series — additions
 /// OK, removals/renames need a major bump.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ForwardJson {
     pub host: u16,
     pub guest: u16,
+    /// Host bind addresses as strings (an IP or `*`). Empty array = the
+    /// default loopback bind. Additive field — agents that predate it keep
+    /// working.
+    pub binds: Vec<String>,
     pub origin: Origin,
     pub alive: bool,
 }
@@ -206,6 +400,7 @@ impl From<ActiveForward> for ForwardJson {
         Self {
             host: a.host,
             guest: a.guest,
+            binds: a.binds.iter().map(ToString::to_string).collect(),
             origin: a.origin,
             alive: is_alive(a.pid),
         }
@@ -575,6 +770,7 @@ mod tests {
         let entry = ForwardJson {
             host: 8080,
             guest: 8080,
+            binds: vec![],
             origin: Origin::Config,
             alive: true,
         };
@@ -583,7 +779,7 @@ mod tests {
         let actual: std::collections::BTreeSet<&str> =
             obj.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> =
-            ["alive", "guest", "host", "origin"].into_iter().collect();
+            ["alive", "binds", "guest", "host", "origin"].into_iter().collect();
         assert_eq!(actual, expected, "ForwardJson keys drifted");
     }
 
@@ -597,12 +793,104 @@ mod tests {
             (Origin::Auto, "auto"),
         ];
         for (origin, expected) in cases {
-            let entry = ForwardJson { host: 1, guest: 1, origin, alive: true };
+            let entry = ForwardJson { host: 1, guest: 1, binds: vec![], origin, alive: true };
             let json = serde_json::to_value(entry).unwrap();
             assert_eq!(
                 json.get("origin"),
                 Some(&serde_json::Value::String(expected.to_string())),
             );
         }
+    }
+
+    // --- BindTarget parsing / rendering ---
+
+    #[test]
+    fn bind_target_parses_ipv4_ipv6_and_star() {
+        assert_eq!("0.0.0.0".parse::<BindTarget>().unwrap(), BindTarget::Addr("0.0.0.0".parse().unwrap()));
+        assert_eq!("::1".parse::<BindTarget>().unwrap(), BindTarget::Addr("::1".parse().unwrap()));
+        assert_eq!("*".parse::<BindTarget>().unwrap(), BindTarget::All);
+        assert!("not-an-ip".parse::<BindTarget>().is_err());
+        assert!("tailscale0".parse::<BindTarget>().is_err()); // interface names rejected
+    }
+
+    #[test]
+    fn bind_target_non_loopback_detection() {
+        assert!(!"127.0.0.1".parse::<BindTarget>().unwrap().is_non_loopback());
+        assert!(!"::1".parse::<BindTarget>().unwrap().is_non_loopback());
+        assert!("0.0.0.0".parse::<BindTarget>().unwrap().is_non_loopback());
+        assert!("192.168.1.5".parse::<BindTarget>().unwrap().is_non_loopback());
+        assert!(BindTarget::All.is_non_loopback());
+    }
+
+    #[test]
+    fn ssh_forward_args_loopback_default() {
+        let spec = ForwardSpec::new(8642, 8642);
+        assert_eq!(spec.ssh_forward_args(), vec!["8642:localhost:8642"]);
+    }
+
+    #[test]
+    fn ssh_forward_args_brackets_ipv6_and_emits_one_per_bind() {
+        let spec = ForwardSpec::with_binds(
+            8642,
+            80,
+            vec![
+                "192.168.1.5".parse().unwrap(),
+                "2001:db8::5".parse().unwrap(),
+                "*".parse().unwrap(),
+            ],
+        );
+        assert_eq!(
+            spec.ssh_forward_args(),
+            vec![
+                "192.168.1.5:8642:localhost:80",
+                "[2001:db8::5]:8642:localhost:80",
+                "*:8642:localhost:80",
+            ]
+        );
+    }
+
+    #[test]
+    fn validate_unique_allows_same_port_on_distinct_binds() {
+        let specs = vec![
+            ForwardSpec::with_binds(8642, 8642, vec!["192.168.1.5".parse().unwrap()]),
+            ForwardSpec::with_binds(8642, 8642, vec!["10.0.0.1".parse().unwrap()]),
+        ];
+        validate_unique(&specs).unwrap();
+    }
+
+    #[test]
+    fn validate_unique_rejects_same_port_same_bind() {
+        let specs = vec![
+            ForwardSpec::with_binds(8642, 8642, vec!["192.168.1.5".parse().unwrap()]),
+            ForwardSpec::with_binds(8642, 3000, vec!["192.168.1.5".parse().unwrap()]),
+        ];
+        let err = validate_unique(&specs).unwrap_err();
+        assert!(format!("{err:#}").contains("192.168.1.5"));
+    }
+
+    #[test]
+    fn validate_unique_rejects_duplicate_loopback_port() {
+        // Two loopback (default) forwards on the same host port still clash.
+        let specs = vec![ForwardSpec::new(8080, 8080), ForwardSpec::new(8080, 3000)];
+        assert!(validate_unique(&specs).is_err());
+    }
+
+    #[test]
+    fn validate_unique_default_bind_collides_with_explicit_loopback() {
+        // A default (empty-binds) forward binds 127.0.0.1, so an explicit
+        // `bind = "127.0.0.1"` on the same port is the same socket.
+        let specs = vec![
+            ForwardSpec::new(8080, 8080),
+            ForwardSpec::with_binds(8080, 3000, vec!["127.0.0.1".parse().unwrap()]),
+        ];
+        assert!(validate_unique(&specs).is_err());
+    }
+
+    #[test]
+    fn active_forward_roundtrips_binds() {
+        let spec = ForwardSpec::with_binds(8642, 80, vec![BindTarget::All, "::1".parse().unwrap()]);
+        let active = ActiveForward::new(spec.clone(), Origin::Adhoc, 42);
+        assert_eq!(active.spec(), spec);
+        assert_eq!(active.binds.len(), 2);
     }
 }

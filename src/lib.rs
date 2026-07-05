@@ -398,7 +398,7 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<
         let active = vm::forwarding::list(&args.name).await?;
         if args.json {
             let entries: Vec<forward::ForwardJson> =
-                active.iter().copied().map(Into::into).collect();
+                active.iter().cloned().map(Into::into).collect();
             println!("{}", serde_json::to_string_pretty(&entries)?);
             return Ok(());
         }
@@ -416,11 +416,12 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<
         for a in &active {
             let arrow = if a.host == a.guest { "↔" } else { "→" };
             println!(
-                "  host:{host:>w$} {arrow} VM:{guest} ({origin})",
+                "  host:{host:>w$} {arrow} VM:{guest} ({origin}){bind}",
                 host = a.host,
                 w = host_width,
                 guest = a.guest,
                 origin = a.origin,
+                bind = bind_note(&a.binds),
             );
         }
         return Ok(());
@@ -464,19 +465,39 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<
             "no ports specified — pass ports to add, or use --list/--stop (see `agv forward --help`)"
         );
     }
-    let specs = forward::parse_specs(&args.ports)?;
+    let binds = parse_bind_targets(&args.bind)?;
+    let mut specs = forward::parse_specs(&args.ports)?;
+    for spec in &mut specs {
+        spec.binds.clone_from(&binds);
+    }
+    forward::warn_non_loopback_binds(&specs);
     let added = vm::forwarding::add(&args.name, &specs).await?;
     if !quiet {
         for entry in &added {
             let arrow = if entry.host == entry.guest { "↔" } else { "→" };
             println!(
-                "  ✓ host:{host} {arrow} VM:{guest}",
+                "  ✓ host:{host} {arrow} VM:{guest}{bind}",
                 host = entry.host,
                 guest = entry.guest,
+                bind = bind_note(&entry.binds),
             );
         }
     }
     Ok(())
+}
+
+/// Parse `--bind` strings into `BindTarget`s, reporting the first bad one.
+fn parse_bind_targets(raw: &[String]) -> anyhow::Result<Vec<forward::BindTarget>> {
+    raw.iter().map(|s| s.parse()).collect()
+}
+
+/// A ` [bind: …]` suffix for display, empty for loopback forwards.
+fn bind_note(binds: &[forward::BindTarget]) -> String {
+    if binds.is_empty() {
+        return String::new();
+    }
+    let addrs: Vec<String> = binds.iter().map(ToString::to_string).collect();
+    format!("  [bind: {}]", addrs.join(", "))
 }
 
 fn config_step_label(step: &config::ProvisionStep) -> String {
@@ -990,16 +1011,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         let inst = vm::instance::Instance::open(&s.name)?;
                         config::load_resolved(&inst.config_path())?.forwards
                     };
-                    let old_fmt = if old_forwards.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        old_forwards.join(", ")
+                    let fmt = |fs: &[forward::ForwardSpec]| {
+                        if fs.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            fs.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                        }
                     };
-                    let new_fmt = if new.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        new.join(", ")
-                    };
+                    let old_fmt = fmt(&old_forwards);
+                    let new_fmt = fmt(&new);
                     println!("  forwards: {old_fmt} → {new_fmt}");
                 }
                 if let Some(m) = s.idle_suspend_minutes {
@@ -1093,7 +1113,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Command::Forward(args) => forward_command(args, quiet).await,
         Command::ForwardDaemon(args) => {
-            let spec: forward::ForwardSpec = args.spec.parse()?;
+            let mut spec: forward::ForwardSpec = args.spec.parse()?;
+            spec.binds = parse_bind_targets(&args.bind)?;
             forward_daemon::run(&args.name, spec).await
         }
         Command::IdleWatcher(args) => {

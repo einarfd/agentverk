@@ -313,15 +313,16 @@ Array of active forwards on a running VM. Empty array when no forwards are activ
 
 ```json
 [
-  {"host": 8080, "guest": 8080, "origin": "config", "alive": true},
-  {"host": 5432, "guest": 5432, "origin": "adhoc",  "alive": true}
+  {"host": 8080, "guest": 8080, "binds": [], "origin": "config", "alive": true},
+  {"host": 8642, "guest": 8642, "binds": ["0.0.0.0"], "origin": "adhoc", "alive": true}
 ]
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `host` | uint16 | Host port on `127.0.0.1` |
+| `host` | uint16 | Host port |
 | `guest` | uint16 | Guest port the forward terminates at |
+| `binds` | string[] | Host addresses the forward is bound to (each an IP or `"*"`). **Empty array** = the default loopback (`127.0.0.1`) bind. Additive field (introduced with `bind` support) — consumers predating it can ignore it |
 | `origin` | string | One of: `"config"` (declared in `agv.toml`), `"adhoc"` (added at runtime via `agv forward`), `"auto"` (provisioned by an `[auto_forwards.<name>]` mixin entry) |
 | `alive` | bool | Whether the supervisor process for this forward is still running. `agv forward --list` sweeps dead entries before serializing, so `--list` always returns `true`. `VmStateReport.forwards` doesn't sweep, so a stale entry surfaces as `false` |
 

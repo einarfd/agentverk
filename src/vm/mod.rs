@@ -362,16 +362,12 @@ async fn apply_and_report_forwards(
             debug!(vm = %inst.name, error = %format!("{e:#}"), "failed to clear stale forwards state");
         }
     } else {
-        let specs = match crate::forward::parse_specs(config.forwards.iter()) {
-            Ok(s) => s,
-            Err(e) => {
-                spinner.println(format!(
-                    "  ! Skipping forwards — failed to parse config: {e:#}"
-                ));
-                return;
-            }
-        };
-        match forwarding::apply_config_forwards(inst, &specs).await {
+        // Config forwards are already parsed/validated ForwardSpecs.
+        let specs = &config.forwards;
+        // Same stderr warning as the ad-hoc path, and via `suspend` so it
+        // still lands under `--quiet` (where the spinner is a hidden no-op).
+        spinner.suspend(|| crate::forward::warn_non_loopback_binds(specs));
+        match forwarding::apply_config_forwards(inst, specs).await {
             Ok(outcome) => {
                 if !outcome.applied.is_empty() {
                     step_done(
@@ -817,11 +813,14 @@ pub async fn config_set(
         } else {
             raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect()
         };
+        // `--forwards` is a comma-separated string list, so these are all
+        // loopback. Bound forwards are declared via the `[[forwards]]` table
+        // in the config file, not this flag.
         let specs = crate::forward::parse_specs(items)
             .context("invalid --forwards value")?;
         crate::forward::validate_unique(&specs)
             .context("invalid --forwards value")?;
-        config.forwards = specs.iter().map(ToString::to_string).collect();
+        config.forwards = specs;
     }
     if let Some(m) = idle_suspend_minutes {
         config.idle_suspend_minutes = m;
@@ -1862,6 +1861,7 @@ mod tests {
             forwards: vec![crate::forward::ForwardJson {
                 host: 8080,
                 guest: 8080,
+                binds: vec![],
                 origin: crate::forward::Origin::Config,
                 alive: true,
             }],
