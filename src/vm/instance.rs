@@ -258,6 +258,19 @@ impl Instance {
         self.dir.join("idle_watcher.pid")
     }
 
+    /// Path to the idle-watcher's log file.
+    ///
+    /// The watcher is a detached background process, so its tracing output
+    /// would otherwise be lost. Redirecting its stderr here keeps a record
+    /// of each probe/idle decision and any suspend attempt — the only way
+    /// to diagnose "why didn't the VM auto-suspend?" after the fact.
+    /// Truncated each time a watcher is spawned, so it reflects the current
+    /// watcher session.
+    #[must_use]
+    pub fn idle_watcher_log_path(&self) -> PathBuf {
+        self.dir.join("idle_watcher.log")
+    }
+
     /// AVF-only — control socket the agv-avf-runner binds to accept
     /// JSON-RPC commands from the parent agv process.
     #[must_use]

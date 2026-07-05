@@ -161,7 +161,7 @@ Forward-compatibility caveat: serde and Swift's `JSONDecoder` both ignore unknow
 
 `~/.local/share/agv/` (XDG-compliant, same on all platforms). Override with `AGV_DATA_DIR`.
 
-Instance state lives in `instances/<name>/`. Files common to both backends: `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `provision_state`, `idle_watcher.pid`, `forwards.toml` (present when forwards are active; lists each forward's spec, origin, and supervisor PID), `<name>_port` files (one per declared `[auto_forwards.<name>]`, holding the auto-allocated host port for the VM's lifetime).
+Instance state lives in `instances/<name>/`. Files common to both backends: `seed.iso`, `id_ed25519`, `id_ed25519.pub`, `config.toml`, `status`, `serial.log`, `provision.log`, `error.log`, `provisioned`, `provision_state`, `idle_watcher.pid`, `idle_watcher.log` (the watcher's redirected stderr — probe/idle decisions and suspend attempts; truncated per watcher spawn), `forwards.toml` (present when forwards are active; lists each forward's spec, origin, and supervisor PID), `<name>_port` files (one per declared `[auto_forwards.<name>]`, holding the auto-allocated host port for the VM's lifetime).
 
 Backend-specific files:
 - **QEMU**: `disk.qcow2`, `pid`, `ssh_port`, `qmp.sock`, `efi-vars.fd` (aarch64 only).

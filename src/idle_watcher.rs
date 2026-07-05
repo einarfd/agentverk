@@ -301,14 +301,31 @@ pub async fn spawn(name: &str, threshold_minutes: u32, load_threshold: f32) {
             return;
         }
     };
+    // Redirect the watcher's stdout AND stderr to a per-instance log file so
+    // its tracing output isn't lost to /dev/null. Both streams are captured
+    // because `tracing_subscriber::fmt()` writes to stdout by default — a
+    // stderr-only redirect leaves the log empty. The watcher has no
+    // user-facing stdout of its own, so this is purely its log. Best-effort:
+    // fall back to /dev/null if the file can't be opened, never fatal. Re-run
+    // with `RUST_LOG=agv=debug` to capture the per-tick probe/idle lines.
+    let (log_out, log_err) = match std::fs::File::create(inst.idle_watcher_log_path()) {
+        Ok(file) => {
+            let err = file
+                .try_clone()
+                .map_or_else(|_| Stdio::null(), Stdio::from);
+            (Stdio::from(file), err)
+        }
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("__idle-watcher")
         .arg(name)
         .arg(threshold_minutes.to_string())
         .arg(load_threshold.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(log_out)
+        .stderr(log_err);
     cmd.process_group(0);
 
     match cmd.spawn() {
