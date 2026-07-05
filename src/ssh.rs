@@ -92,16 +92,14 @@ pub async fn session(
     }
 }
 
-/// Run a command over SSH, capturing stdout and stderr.
-///
-/// Returns the combined output as a string. Fails with context if the
-/// command exits non-zero. Use this instead of `session()` when the
-/// output should be captured rather than forwarded to the terminal.
-pub async fn run_cmd(
+/// Spawn `ssh` for a one-shot command and collect its raw `Output`
+/// (stdout, stderr, and exit status). Shared by [`run_cmd`] and
+/// [`run_cmd_stdout`]; callers decide how to treat the streams.
+async fn ssh_output(
     instance: &Instance,
     user: &str,
     command: &[String],
-) -> anyhow::Result<String> {
+) -> anyhow::Result<std::process::Output> {
     let (host, port) = crate::vm::backend::for_instance(instance)?
         .ssh_endpoint(instance)
         .await?;
@@ -118,19 +116,34 @@ pub async fn run_cmd(
         cmd.args(command);
     }
 
-    let output = match cmd.output().await {
-        Ok(o) => o,
+    match cmd.output().await {
+        Ok(o) => Ok(o),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!("ssh not found — run 'agv doctor' to check all dependencies");
         }
-        Err(source) => {
-            return Err(Error::Ssh {
-                name: instance.name.clone(),
-                source,
-            }
-            .into());
+        Err(source) => Err(Error::Ssh {
+            name: instance.name.clone(),
+            source,
         }
-    };
+        .into()),
+    }
+}
+
+/// Run a command over SSH, capturing stdout and stderr.
+///
+/// Returns the combined output as a string. Fails with context if the
+/// command exits non-zero. Use this instead of `session()` when the
+/// output should be captured rather than forwarded to the terminal.
+///
+/// Because it folds stderr into the returned string, this is for
+/// display/logging — **not** for parsing a command's output. To parse,
+/// use [`run_cmd_stdout`], which keeps stderr out of the result.
+pub async fn run_cmd(
+    instance: &Instance,
+    user: &str,
+    command: &[String],
+) -> anyhow::Result<String> {
+    let output = ssh_output(instance, user, command).await?;
 
     let combined = {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -153,6 +166,33 @@ pub async fn run_cmd(
     }
 
     Ok(combined)
+}
+
+/// Run a command over SSH and return **only stdout** on success.
+///
+/// Unlike [`run_cmd`], stderr is never folded into the result — it's used
+/// solely for the error message on a non-zero exit. Use this whenever the
+/// caller parses the command's output: incidental stderr chatter would
+/// otherwise corrupt the parse.
+///
+/// The motivating case is the idle watcher's `who` probe. When the host's
+/// SSH forwards `LC_*` to a guest that can't set that locale, the guest
+/// shell prints a `setlocale` warning to stderr; folded into an otherwise
+/// empty `who` stdout, it made `who` look non-empty, so the VM was seen as
+/// active and never auto-suspended.
+pub async fn run_cmd_stdout(
+    instance: &Instance,
+    user: &str,
+    command: &[String],
+) -> anyhow::Result<String> {
+    let output = ssh_output(instance, user, command).await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("SSH command exited with {}: {}", output.status, stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Copy a file into the VM using scp.

@@ -179,14 +179,18 @@ pub async fn run(
         match probe(&inst, &user).await {
             Ok((who_count, loadavg)) => match evaluate(who_count, loadavg, load_threshold) {
                 Activity::Active => {
-                    if idle_secs > 0 {
-                        debug!(
-                            vm = vm_name,
-                            who = who_count,
-                            load = loadavg,
-                            "activity detected; resetting idle timer"
-                        );
-                    }
+                    // Log every active tick, not just when idle_secs > 0.
+                    // The old gate meant a VM that was active from the very
+                    // first probe logged nothing at all — which is exactly
+                    // how a stderr-polluted `who` count silently kept a VM
+                    // "active" forever with no trace of why.
+                    debug!(
+                        vm = vm_name,
+                        who = who_count,
+                        load = loadavg,
+                        idle_secs,
+                        "tick active"
+                    );
                     idle_secs = 0;
                 }
                 Activity::Idle => {
@@ -236,13 +240,18 @@ pub async fn run(
 
 /// One probe: SSH in, read `who` and `/proc/loadavg`, return
 /// `(interactive_session_count, 5-min load average)`.
+///
+/// Uses [`ssh::run_cmd_stdout`], not `run_cmd`: both outputs are parsed,
+/// so stderr chatter (e.g. a guest `setlocale` warning when the client
+/// forwards `LC_*`) must be kept out — otherwise it lands in the `who`
+/// result and makes an idle VM look active forever.
 async fn probe(inst: &Instance, user: &str) -> anyhow::Result<(u32, f32)> {
-    let who_out = ssh::run_cmd(inst, user, &["who".to_string()]).await?;
+    let who_out = ssh::run_cmd_stdout(inst, user, &["who".to_string()]).await?;
     let who_count = who_out
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
-    let loadavg_out = ssh::run_cmd(
+    let loadavg_out = ssh::run_cmd_stdout(
         inst,
         user,
         &["cat".to_string(), "/proc/loadavg".to_string()],
@@ -301,14 +310,31 @@ pub async fn spawn(name: &str, threshold_minutes: u32, load_threshold: f32) {
             return;
         }
     };
+    // Redirect the watcher's stdout AND stderr to a per-instance log file so
+    // its tracing output isn't lost to /dev/null. Both streams are captured
+    // because `tracing_subscriber::fmt()` writes to stdout by default — a
+    // stderr-only redirect leaves the log empty. The watcher has no
+    // user-facing stdout of its own, so this is purely its log. Best-effort:
+    // fall back to /dev/null if the file can't be opened, never fatal. Re-run
+    // with `RUST_LOG=agv=debug` to capture the per-tick probe/idle lines.
+    let (log_out, log_err) = match std::fs::File::create(inst.idle_watcher_log_path()) {
+        Ok(file) => {
+            let err = file
+                .try_clone()
+                .map_or_else(|_| Stdio::null(), Stdio::from);
+            (Stdio::from(file), err)
+        }
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("__idle-watcher")
         .arg(name)
         .arg(threshold_minutes.to_string())
         .arg(load_threshold.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(log_out)
+        .stderr(log_err);
     cmd.process_group(0);
 
     match cmd.spawn() {
