@@ -509,16 +509,22 @@ doesn't tear down the others.
 > address (e.g. your tailnet IP) over `0.0.0.0` / `*`, which expose on every
 > network the host is attached to.
 
-`bind` is table-form-only: the compact string list (`forwards = ["8642"]`) is
-always loopback (an IPv6 literal's colons would collide with the `HOST:GUEST`
-separator). For an ad-hoc bound forward on a running VM, `agv forward <vm> 8642
+The string form can also carry a **single** bind via an `@BIND` suffix —
+`"8642@0.0.0.0"`, `"8080:80@192.168.1.5"`, `"3000@2001:db8::5"`, `"9000@*"`.
+The `@` disambiguates the IPv6 colons (everything after it is the bind), so this
+works in `forwards = [...]` and in `agv config set --forwards` alike. The only
+thing it can't express is **multiple** binds on one forward under a single
+supervisor (`bind = ["a", "b"]`) — for that use the table form, or just repeat
+the port (`"8642@10.0.0.1", "8642@::1"`), which serves both addresses as two
+supervisors. For an ad-hoc bound forward on a running VM, `agv forward <vm> 8642
 --bind 0.0.0.0` (repeatable `--bind`).
 
 Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
 the next start/resume resets the set back to what the config declares. To change the
-persistent set without editing the config file, use `agv config set --forwards "..."`
-(replaces the list wholesale, comma-separated `HOST[:GUEST]` strings — loopback
-only; declare bound forwards in the config file's `[[forwards]]` table).
+**persistent** set without editing the config file, use `agv config set --forwards
+"..."` (replaces the list wholesale, comma-separated `HOST[:GUEST][@BIND]` specs —
+so a bound forward like `agv config set <vm> --forwards "8642@0.0.0.0"` persists
+across every start/resume).
 
 ## Desktop / GUI access
 

@@ -3202,6 +3202,16 @@ bind = ["192.168.1.5", "2001:db8::5", "*"]
     }
 
     #[test]
+    fn forwards_string_form_accepts_at_bind() {
+        // The `@BIND` suffix works in the config string list too, not just
+        // `agv config set` — same parser.
+        let cfg: Config =
+            toml::from_str(r#"forwards = ["8642@0.0.0.0", "3000@2001:db8::5"]"#).unwrap();
+        assert_eq!(cfg.forwards[0].binds, vec!["0.0.0.0".parse().unwrap()]);
+        assert_eq!(cfg.forwards[1].binds, vec!["2001:db8::5".parse().unwrap()]);
+    }
+
+    #[test]
     fn forwards_bind_rejects_bad_address() {
         let err = toml::from_str::<Config>(
             r#"

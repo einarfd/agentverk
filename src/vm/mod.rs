@@ -813,13 +813,13 @@ pub async fn config_set(
         } else {
             raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect()
         };
-        // `--forwards` is a comma-separated string list, so these are all
-        // loopback. Bound forwards are declared via the `[[forwards]]` table
-        // in the config file, not this flag.
+        // Each spec is `HOST[:GUEST][@BIND]`; a bind exposes the port past
+        // loopback, so warn about that now rather than only at next start.
         let specs = crate::forward::parse_specs(items)
             .context("invalid --forwards value")?;
         crate::forward::validate_unique(&specs)
             .context("invalid --forwards value")?;
+        crate::forward::warn_non_loopback_binds(&specs);
         config.forwards = specs;
     }
     if let Some(m) = idle_suspend_minutes {

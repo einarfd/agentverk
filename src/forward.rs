@@ -106,11 +106,11 @@ impl<'de> Deserialize<'de> for BindTarget {
 /// host addresses to bind.
 ///
 /// If `guest` is omitted (string form), it defaults to the same value as
-/// `host`. `binds` empty means loopback (`127.0.0.1`) — the default, and
-/// the only form the bare-string spec can express. Non-loopback binds are
-/// declared via the `[[forwards]]` table `bind` field or `agv forward
-/// --bind`, and they punch through agv's usual "the SSH tunnel is the auth
-/// boundary" model, so they warn at apply time.
+/// `host`. `binds` empty means loopback (`127.0.0.1`) — the default. Binds
+/// are declared via the `[[forwards]]` table `bind` field (scalar or list),
+/// a string spec's `@BIND` suffix (single bind — `"8642@0.0.0.0"`), or
+/// `agv forward --bind`. Non-loopback binds punch through agv's usual "the
+/// SSH tunnel is the auth boundary" model, so they warn at apply time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardSpec {
     pub host: u16,
@@ -188,28 +188,45 @@ impl FromStr for ForwardSpec {
             bail!("empty forward spec");
         }
 
+        // Split off an optional `@BIND` suffix. Everything after the first
+        // `@` is a single bind address (an IP or `*`); the mapping is what's
+        // left. `@` can't appear in a port or an IP, so the split is
+        // unambiguous even for IPv6 binds (whose colons all sit after `@`).
+        let (mapping, bind_str) = match s.split_once('@') {
+            Some((m, b)) => (m.trim(), Some(b.trim())),
+            None => (s, None),
+        };
+
         // `/proto` suffixes were accepted in early versions of agv but never
         // did anything — every tunnel was TCP regardless. Reject with a
         // clear message so users with legacy configs know to remove it.
-        if let Some((_, proto_part)) = s.split_once('/') {
+        if let Some((_, proto_part)) = mapping.split_once('/') {
             bail!(
                 "forward spec '{raw}' has a '/{proto_part}' protocol suffix, \
                  which is no longer accepted — TCP is implicit (the underlying \
                  `ssh -L` tunnel is TCP-only). Drop the suffix: '{}'",
-                s.split_once('/').map_or(s, |(p, _)| p)
+                mapping.split_once('/').map_or(mapping, |(p, _)| p)
             );
         }
 
-        // Parse host[:guest]. The bare-string form is always loopback.
-        let (host_str, guest_str) = match s.split_once(':') {
+        // Parse host[:guest].
+        let (host_str, guest_str) = match mapping.split_once(':') {
             Some((h, g)) => (h, g),
-            None => (s, s),
+            None => (mapping, mapping),
         };
 
         let host: u16 = parse_port(host_str).with_context(|| format!("host port in '{raw}'"))?;
         let guest: u16 = parse_port(guest_str).with_context(|| format!("guest port in '{raw}'"))?;
 
-        Ok(Self::new(host, guest))
+        let binds = match bind_str {
+            None => Vec::new(),
+            Some("") => bail!("empty bind address after '@' in '{raw}'"),
+            Some(b) => vec![b
+                .parse::<BindTarget>()
+                .with_context(|| format!("bind address in '{raw}'"))?],
+        };
+
+        Ok(Self::with_binds(host, guest, binds))
     }
 }
 
@@ -227,8 +244,9 @@ fn parse_port(s: &str) -> anyhow::Result<u16> {
     Ok(n)
 }
 
-/// Parse a list of forward spec strings, reporting the first error. String
-/// specs are always loopback; use the `[[forwards]]` table form for binds.
+/// Parse a list of forward spec strings, reporting the first error. Each is
+/// `HOST[:GUEST][@BIND]`; the `@BIND` suffix (an IP or `*`) sets a single
+/// bind. Use the `[[forwards]]` table form for multiple binds per forward.
 pub fn parse_specs<I, S>(raw: I) -> anyhow::Result<Vec<ForwardSpec>>
 where
     I: IntoIterator<Item = S>,
@@ -803,6 +821,57 @@ mod tests {
     }
 
     // --- BindTarget parsing / rendering ---
+
+    // --- string form with an @BIND suffix ---
+
+    #[test]
+    fn parses_at_bind_ipv4() {
+        let s: ForwardSpec = "8642@0.0.0.0".parse().unwrap();
+        assert_eq!(s, ForwardSpec::with_binds(8642, 8642, vec!["0.0.0.0".parse().unwrap()]));
+    }
+
+    #[test]
+    fn parses_host_guest_with_at_bind() {
+        let s: ForwardSpec = "8080:80@192.168.1.5".parse().unwrap();
+        assert_eq!(
+            s,
+            ForwardSpec::with_binds(8080, 80, vec!["192.168.1.5".parse().unwrap()])
+        );
+    }
+
+    #[test]
+    fn parses_at_bind_ipv6_unambiguously() {
+        // The IPv6 literal's colons sit after `@`, so they don't collide with
+        // the host:guest separator.
+        let s: ForwardSpec = "8642@2001:db8::5".parse().unwrap();
+        assert_eq!(
+            s,
+            ForwardSpec::with_binds(8642, 8642, vec!["2001:db8::5".parse().unwrap()])
+        );
+    }
+
+    #[test]
+    fn parses_at_bind_star() {
+        let s: ForwardSpec = "8642@*".parse().unwrap();
+        assert_eq!(s.binds, vec![BindTarget::All]);
+    }
+
+    #[test]
+    fn rejects_bad_and_empty_at_bind() {
+        assert!("8642@not-an-ip".parse::<ForwardSpec>().is_err());
+        assert!("8642@".parse::<ForwardSpec>().is_err());
+        let err = "8642@nope".parse::<ForwardSpec>().unwrap_err();
+        assert!(format!("{err:#}").contains("bind address"), "got: {err:#}");
+    }
+
+    #[test]
+    fn at_bind_parses_through_parse_specs() {
+        let specs = parse_specs(["8642@0.0.0.0", "5433:5432", "3000@*"]).unwrap();
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0].binds, vec!["0.0.0.0".parse().unwrap()]);
+        assert!(specs[1].binds.is_empty());
+        assert_eq!(specs[2].binds, vec![BindTarget::All]);
+    }
 
     #[test]
     fn bind_target_parses_ipv4_ipv6_and_star() {
