@@ -31,10 +31,11 @@ pub enum BindTarget {
 }
 
 impl BindTarget {
-    /// The address string for `ssh -L`'s bind slot. IPv6 literals must be
-    /// bracketed there (`[::1]`); `*` and IPv4 pass through as-is.
+    /// The address as it appears before a `:port` — IPv6 literals bracketed
+    /// (`[::1]`), `*` and IPv4 as-is. Used for both `ssh -L`'s bind slot and
+    /// `host:port` display (`agv inspect`).
     #[must_use]
-    fn ssh_bind_str(self) -> String {
+    pub(crate) fn host_addr(self) -> String {
         match self {
             Self::Addr(IpAddr::V6(a)) => format!("[{a}]"),
             Self::Addr(ip) => ip.to_string(),
@@ -163,7 +164,7 @@ impl ForwardSpec {
         }
         self.binds
             .iter()
-            .map(|b| format!("{}:{}:localhost:{}", b.ssh_bind_str(), self.host, self.guest))
+            .map(|b| format!("{}:{}:localhost:{}", b.host_addr(), self.host, self.guest))
             .collect()
     }
 }

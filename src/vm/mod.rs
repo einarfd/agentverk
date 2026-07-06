@@ -958,6 +958,54 @@ pub async fn start(
     Ok(())
 }
 
+/// Print the `Forwards` section of `agv inspect` — one line per active
+/// forward (per bound host address), reading the runtime `forwards.toml`.
+async fn print_forwards(inst: &Instance, config: &ResolvedConfig) {
+    let active = crate::forward::read_active(&inst.forwards_path())
+        .await
+        .unwrap_or_default();
+    if active.is_empty() {
+        return;
+    }
+    // Map guest_port → declared auto_forward name so we can label auto
+    // entries with their friendly name.
+    let auto_names: std::collections::BTreeMap<u16, &str> = config
+        .auto_forwards
+        .iter()
+        .map(|(n, af)| (af.guest_port, n.as_str()))
+        .collect();
+    println!("  Forwards");
+    for entry in &active {
+        let alive_marker = if crate::forward::is_alive(entry.pid) {
+            ""
+        } else {
+            " [dead]"
+        };
+        let label = match entry.origin {
+            crate::forward::Origin::Auto => auto_names
+                .get(&entry.guest)
+                .map_or_else(|| "auto".to_string(), |n| format!("auto: {n}")),
+            crate::forward::Origin::Config => "config".to_string(),
+            crate::forward::Origin::Adhoc => "adhoc".to_string(),
+        };
+        // One line per bound host address (loopback default when the forward
+        // has no explicit binds), so a `bind = ["0.0.0.0"]` forward shows
+        // `0.0.0.0:...`, not a misleading `127.0.0.1:...`.
+        let host_addrs: Vec<String> = if entry.binds.is_empty() {
+            vec!["127.0.0.1".to_string()]
+        } else {
+            entry.binds.iter().map(|b| b.host_addr()).collect()
+        };
+        for addr in &host_addrs {
+            println!(
+                "    {addr}:{host} → guest:{guest}  ({label}){alive_marker}",
+                host = entry.host,
+                guest = entry.guest,
+            );
+        }
+    }
+}
+
 /// Print detailed information about a VM instance.
 pub async fn inspect(name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(name)?;
@@ -1005,38 +1053,7 @@ pub async fn inspect(name: &str) -> anyhow::Result<()> {
     // and config forwards now show up too instead of needing a separate
     // `agv forward --list` invocation.
     if status == Status::Running {
-        let active = crate::forward::read_active(&inst.forwards_path())
-            .await
-            .unwrap_or_default();
-        if !active.is_empty() {
-            // Map guest_port → declared auto_forward name so we can label
-            // auto entries with their friendly name.
-            let auto_names: std::collections::BTreeMap<u16, &str> = config
-                .auto_forwards
-                .iter()
-                .map(|(n, af)| (af.guest_port, n.as_str()))
-                .collect();
-            println!("  Forwards");
-            for entry in &active {
-                let alive_marker = if crate::forward::is_alive(entry.pid) {
-                    ""
-                } else {
-                    " [dead]"
-                };
-                let label = match entry.origin {
-                    crate::forward::Origin::Auto => auto_names
-                        .get(&entry.guest)
-                        .map_or_else(|| "auto".to_string(), |n| format!("auto: {n}")),
-                    crate::forward::Origin::Config => "config".to_string(),
-                    crate::forward::Origin::Adhoc => "adhoc".to_string(),
-                };
-                println!(
-                    "    127.0.0.1:{host} → guest:{guest}  ({label}){alive_marker}",
-                    host = entry.host,
-                    guest = entry.guest,
-                );
-            }
-        }
+        print_forwards(&inst, &config).await;
     }
 
     let provisioned = if inst.is_provisioned() { "yes" } else { "no" };
