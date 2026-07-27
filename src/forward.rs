@@ -109,8 +109,8 @@ impl<'de> Deserialize<'de> for BindTarget {
 /// If `guest` is omitted (string form), it defaults to the same value as
 /// `host`. `binds` empty means loopback (`127.0.0.1`) — the default. Binds
 /// are declared via the `[[forwards]]` table `bind` field (scalar or list),
-/// a string spec's `@BIND` suffix (single bind — `"8642@0.0.0.0"`), or
-/// `agv forward --bind`. Non-loopback binds punch through agv's usual "the
+/// a string spec's `@BIND` suffixes (`"8642@0.0.0.0"`, `"8642@10.0.0.1@::1"`),
+/// or `agv forward --bind`. Non-loopback binds punch through agv's usual "the
 /// SSH tunnel is the auth boundary" model, so they warn at apply time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardSpec {
@@ -189,14 +189,12 @@ impl FromStr for ForwardSpec {
             bail!("empty forward spec");
         }
 
-        // Split off an optional `@BIND` suffix. Everything after the first
-        // `@` is a single bind address (an IP or `*`); the mapping is what's
-        // left. `@` can't appear in a port or an IP, so the split is
+        // Split off any `@BIND` suffixes. The mapping is everything before
+        // the first `@`; each following segment is one bind address (an IP
+        // or `*`). `@` can't appear in a port or an IP, so the split is
         // unambiguous even for IPv6 binds (whose colons all sit after `@`).
-        let (mapping, bind_str) = match s.split_once('@') {
-            Some((m, b)) => (m.trim(), Some(b.trim())),
-            None => (s, None),
-        };
+        let mut segments = s.split('@');
+        let mapping = segments.next().unwrap_or(s).trim();
 
         // `/proto` suffixes were accepted in early versions of agv but never
         // did anything — every tunnel was TCP regardless. Reject with a
@@ -219,13 +217,17 @@ impl FromStr for ForwardSpec {
         let host: u16 = parse_port(host_str).with_context(|| format!("host port in '{raw}'"))?;
         let guest: u16 = parse_port(guest_str).with_context(|| format!("guest port in '{raw}'"))?;
 
-        let binds = match bind_str {
-            None => Vec::new(),
-            Some("") => bail!("empty bind address after '@' in '{raw}'"),
-            Some(b) => vec![b
-                .parse::<BindTarget>()
-                .with_context(|| format!("bind address in '{raw}'"))?],
-        };
+        let mut binds = Vec::new();
+        for segment in segments {
+            let b = segment.trim();
+            if b.is_empty() {
+                bail!("empty bind address after '@' in '{raw}'");
+            }
+            binds.push(
+                b.parse::<BindTarget>()
+                    .with_context(|| format!("bind address in '{raw}'"))?,
+            );
+        }
 
         Ok(Self::with_binds(host, guest, binds))
     }
@@ -246,8 +248,8 @@ fn parse_port(s: &str) -> anyhow::Result<u16> {
 }
 
 /// Parse a list of forward spec strings, reporting the first error. Each is
-/// `HOST[:GUEST][@BIND]`; the `@BIND` suffix (an IP or `*`) sets a single
-/// bind. Use the `[[forwards]]` table form for multiple binds per forward.
+/// `HOST[:GUEST][@BIND]...`; every `@BIND` suffix (an IP or `*`) adds one
+/// bind address, so `8642@10.0.0.1@::1` binds both.
 pub fn parse_specs<I, S>(raw: I) -> anyhow::Result<Vec<ForwardSpec>>
 where
     I: IntoIterator<Item = S>,
@@ -863,6 +865,55 @@ mod tests {
         assert!("8642@".parse::<ForwardSpec>().is_err());
         let err = "8642@nope".parse::<ForwardSpec>().unwrap_err();
         assert!(format!("{err:#}").contains("bind address"), "got: {err:#}");
+    }
+
+    #[test]
+    fn parses_repeated_at_binds() {
+        let s: ForwardSpec = "8642@10.0.0.1@::1".parse().unwrap();
+        assert_eq!(s.host, 8642);
+        assert_eq!(s.guest, 8642);
+        assert_eq!(
+            s.binds,
+            vec![
+                "10.0.0.1".parse::<BindTarget>().unwrap(),
+                "::1".parse::<BindTarget>().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_at_binds_combine_with_host_guest_mapping() {
+        let s: ForwardSpec = "8080:80@0.0.0.0@192.168.1.5".parse().unwrap();
+        assert_eq!((s.host, s.guest), (8080, 80));
+        assert_eq!(s.binds.len(), 2);
+        assert!(s.has_non_loopback_bind());
+    }
+
+    #[test]
+    fn rejects_empty_segment_among_repeated_at_binds() {
+        // A stray `@@` or trailing `@` must not silently yield fewer binds
+        // than the user wrote.
+        assert!("8642@10.0.0.1@".parse::<ForwardSpec>().is_err());
+        assert!("8642@@::1".parse::<ForwardSpec>().is_err());
+    }
+
+    #[test]
+    fn repeated_at_binds_emit_one_ssh_arg_each() {
+        let s: ForwardSpec = "8642@10.0.0.1@::1".parse().unwrap();
+        assert_eq!(
+            s.ssh_forward_args(),
+            vec![
+                "10.0.0.1:8642:localhost:8642".to_string(),
+                "[::1]:8642:localhost:8642".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_binds_within_one_spec_are_rejected_by_validate_unique() {
+        let s: ForwardSpec = "8642@10.0.0.1@10.0.0.1".parse().unwrap();
+        let err = validate_unique(&[s]).unwrap_err();
+        assert!(format!("{err:#}").contains("duplicate forward"), "got: {err:#}");
     }
 
     #[test]

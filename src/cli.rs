@@ -636,12 +636,12 @@ pub struct ConfigSetArgs {
     pub disk: Option<String>,
 
     /// Replace the persistent forwards list with a comma-separated set of
-    /// specs (`HOST[:GUEST][@BIND]`). `@BIND` binds the host side to an
+    /// specs (`HOST[:GUEST][@BIND]...`). `@BIND` binds the host side to an
     /// address other than loopback — an IP or `*` (e.g. `8642@0.0.0.0`,
-    /// `3000@2001:db8::5`); binding past loopback warns. For several
-    /// addresses on one port, repeat it (`8642@10.0.0.1, 8642@::1`). Pass an
+    /// `3000@2001:db8::5`); binding past loopback warns. Repeat the suffix
+    /// for several addresses on one port (`8642@10.0.0.1@::1`). Pass an
     /// empty string to clear all forwards. Takes effect on the next
-    /// start/resume.
+    /// start/resume; to change forwards on a running VM use `agv forward`.
     #[arg(long, value_name = "SPECS")]
     pub forwards: Option<String>,
 
