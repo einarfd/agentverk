@@ -701,6 +701,35 @@ async fn create_inner(
     Ok(())
 }
 
+/// Enforce `agv config set`'s stopped-only gate.
+///
+/// Every field is offline-only, not just the hardware ones — a uniform rule
+/// is worth more than saving a stop/start on the handful that could
+/// technically apply live, and `agv forward` already covers the running case
+/// for the field people actually hit this with.
+///
+/// The forwards hint is *appended* to the state error rather than replacing
+/// it: `--memory 8G --forwards 8080` on a running VM is blocked by the
+/// memory change too, and a message naming only forwards would send the user
+/// in circles.
+fn ensure_configurable(name: &str, status: Status, forwards: Option<&str>) -> anyhow::Result<()> {
+    if matches!(status, Status::Stopped | Status::Broken) {
+        return Ok(());
+    }
+    let bad_state = Error::VmBadState {
+        name: name.to_string(),
+        status: status.to_string(),
+        expected: "stopped or broken".to_string(),
+    };
+    if forwards.is_some() {
+        anyhow::bail!(
+            "{bad_state}\nTo change forwards on a running VM, use `agv forward {name} ...` \
+             — it writes the same saved config and applies the change immediately."
+        );
+    }
+    anyhow::bail!(bad_state)
+}
+
 /// Change hardware settings of a stopped (or broken) VM.
 ///
 /// Sets the VM to `configuring` status for the duration of the operation so
@@ -760,14 +789,7 @@ pub async fn config_set(
 
     let status = inst.reconcile_status().await?;
 
-    anyhow::ensure!(
-        matches!(status, Status::Stopped | Status::Broken),
-        Error::VmBadState {
-            name: name.to_string(),
-            status: status.to_string(),
-            expected: "stopped or broken".to_string(),
-        }
-    );
+    ensure_configurable(name, status, forwards)?;
 
     let mut config = crate::config::load_resolved(&inst.config_path())?;
 
@@ -1792,6 +1814,31 @@ mod tests {
         assert!(
             !inst.config_path().exists(),
             "AVF gate must not write the instance config.toml — that save is QEMU-only"
+        );
+    }
+
+    #[test]
+    fn ensure_configurable_allows_stopped_and_broken() {
+        ensure_configurable("vm", Status::Stopped, None).unwrap();
+        ensure_configurable("vm", Status::Broken, Some("8080")).unwrap();
+    }
+
+    #[test]
+    fn ensure_configurable_points_forwards_changes_at_agv_forward() {
+        let err = ensure_configurable("vm", Status::Running, Some("8080")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("agv forward vm"), "missing hint: {msg}");
+        // The underlying state error must survive alongside the hint.
+        assert!(msg.contains("running"), "missing status context: {msg}");
+    }
+
+    #[test]
+    fn ensure_configurable_omits_the_hint_without_forwards() {
+        let err = ensure_configurable("vm", Status::Running, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("agv forward"),
+            "hint should only appear when forwards are being set: {msg}"
         );
     }
 
