@@ -36,6 +36,39 @@ async fn open_running(name: &str) -> anyhow::Result<Instance> {
     Ok(inst)
 }
 
+/// Open a VM for a forward change, with its reconciled status.
+///
+/// Looser than [`open_running`]: a stopped or suspended VM is fine, because
+/// a forward change lands in the saved config and takes effect on the next
+/// start. Only the two transient states are refused — editing config out
+/// from under a create or a hardware change would race the writer.
+async fn open_editable(name: &str) -> anyhow::Result<(Instance, Status)> {
+    let inst = Instance::open(name)?;
+    let status = inst.reconcile_status().await?;
+    if matches!(status, Status::Creating | Status::Configuring) {
+        bail!(
+            "VM '{name}' is busy (status: {status}) — \
+             wait for it to settle before changing forwards"
+        );
+    }
+    Ok((inst, status))
+}
+
+/// Refuse `--temporary` when there are no live forwards to act on.
+///
+/// A temporary change is by definition "this boot only", so on a VM that
+/// isn't running it would do precisely nothing. Failing beats a silent no-op.
+fn require_live_for_temporary(name: &str, status: Status, live: bool) -> anyhow::Result<()> {
+    if !live {
+        bail!(
+            "--temporary needs a running VM (status: {status}) — \
+             it changes only this boot's forwards, so there is nothing to change. \
+             Drop --temporary to edit the saved config for '{name}'."
+        );
+    }
+    Ok(())
+}
+
 /// Spawn a forward supervisor for one spec and return its PID.
 ///
 /// The supervisor is detached: stdio is redirected to /dev/null, it runs
@@ -68,6 +101,89 @@ fn spawn_supervisor(vm: &str, spec: &ForwardSpec) -> anyhow::Result<u32> {
     // makes the intent clear: we hand the process off to the OS.
     std::mem::forget(child);
     Ok(pid)
+}
+
+// ---------------------------------------------------------------------------
+// The saved (persistent) forwards list in `<instance>/config.toml`
+// ---------------------------------------------------------------------------
+//
+// `agv forward` writes here by default, so a forward added once survives
+// every later start/resume. These helpers deliberately do **not** touch
+// `<instance>/status`: `vm::config_set` brackets its save with
+// `Configuring`/`Stopped` because it may be resizing a disk, but changing a
+// forward is safe while the VM runs and must leave its status alone.
+
+/// Read the instance's saved forwards.
+pub fn saved_forwards(inst: &Instance) -> anyhow::Result<Vec<ForwardSpec>> {
+    Ok(crate::config::load_resolved(&inst.config_path())?.forwards)
+}
+
+/// [`saved_forwards`] by VM name, for callers that only have one — the
+/// confirmation prompt needs to know what a bare `--rm` would discard
+/// before committing to it.
+pub fn saved_config_forwards(name: &str) -> anyhow::Result<Vec<ForwardSpec>> {
+    saved_forwards(&Instance::open(name)?)
+}
+
+/// Append `specs` to the instance's saved forwards.
+async fn persist_add(inst: &Instance, specs: &[ForwardSpec]) -> anyhow::Result<()> {
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
+    config.forwards.extend(specs.iter().cloned());
+    crate::config::save(&config, &inst.config_path()).await
+}
+
+/// Remove every saved forward whose host port is in `hosts`, returning what
+/// was removed.
+///
+/// Keyed on host port rather than the full spec so removing a port takes all
+/// of its bind addresses with it — the same rule [`rm`] applies to live
+/// supervisors, so the two halves can't drift apart.
+async fn persist_remove(inst: &Instance, hosts: &[u16]) -> anyhow::Result<Vec<ForwardSpec>> {
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
+    let (removed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut config.forwards)
+        .into_iter()
+        .partition(|f| hosts.contains(&f.host));
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    config.forwards = kept;
+    crate::config::save(&config, &inst.config_path()).await?;
+    Ok(removed)
+}
+
+/// Clear the instance's saved forwards, returning what was removed.
+async fn persist_clear(inst: &Instance) -> anyhow::Result<Vec<ForwardSpec>> {
+    let mut config = crate::config::load_resolved(&inst.config_path())?;
+    let removed = std::mem::take(&mut config.forwards);
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    crate::config::save(&config, &inst.config_path()).await?;
+    Ok(removed)
+}
+
+/// Reject `specs` that would collide with an already-claimed
+/// `(bind-address, host-port)`. `what` names the set for the error message.
+fn reject_conflicts(
+    vm: &str,
+    specs: &[ForwardSpec],
+    claimed: &HashSet<(String, u16)>,
+    what: &str,
+) -> anyhow::Result<()> {
+    for spec in specs {
+        for key in forward::bind_keys(spec) {
+            if claimed.contains(&key) {
+                bail!(
+                    "host port {} on bind {} is already {what} — \
+                     remove it first with `agv forward {vm} --rm {}`",
+                    spec.host,
+                    key.0,
+                    spec.host,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Drop entries whose supervisor is no longer running, persisting the
@@ -123,51 +239,89 @@ pub async fn apply_config_forwards(
     Ok(ApplyOutcome { applied, failures })
 }
 
-/// Add one or more ad-hoc forwards to a running VM.
+/// What [`add`] did.
+pub struct AddOutcome {
+    /// Forwards now live. Empty when the VM isn't running.
+    pub applied: Vec<ActiveForward>,
+    /// Specs written to the saved config. Empty for a temporary add.
+    pub persisted: Vec<ForwardSpec>,
+    /// Whether the VM was running, i.e. whether `applied` means anything.
+    pub live: bool,
+}
+
+/// Add one or more forwards to a VM.
 ///
-/// Duplicates of existing (host, proto) pairs are rejected before any
-/// supervisor is spawned, so a partial failure can't leave half the list
-/// applied.
-pub async fn add(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<ActiveForward>> {
+/// Persistent by default: the spec is written to the VM's saved config so it
+/// comes back on every later start, *and* applied immediately if the VM is
+/// running. `temporary` skips the config write, leaving a forward that lives
+/// only until the VM next stops.
+///
+/// Works on a stopped or suspended VM (config-only), so keeping a forward no
+/// longer means stopping the VM to edit its config.
+pub async fn add(
+    name: &str,
+    specs: &[ForwardSpec],
+    temporary: bool,
+) -> anyhow::Result<AddOutcome> {
     if specs.is_empty() {
-        bail!("no ports specified — run `agv forward <name> --list` to see active forwards");
+        bail!("no ports specified — run `agv forward {name} --list` to see active forwards");
     }
     forward::validate_unique(specs)?;
 
-    let inst = open_running(name).await?;
-    let mut active = sweep_dead(&inst).await?;
-    // Key on (bind-address, host-port): the same host port on distinct bind
-    // addresses is allowed, so a plain host-port clash isn't enough.
-    let existing: HashSet<(String, u16)> = active
-        .iter()
-        .flat_map(|a| forward::bind_keys(&a.spec()))
-        .collect();
+    let (inst, status) = open_editable(name).await?;
+    let live = status == Status::Running;
+    if temporary {
+        require_live_for_temporary(name, status, live)?;
+    }
 
-    for spec in specs {
-        for key in forward::bind_keys(spec) {
-            if existing.contains(&key) {
-                bail!(
-                    "forward for host port {} on bind {} is already active — use `agv forward {name} --stop {}` first",
-                    spec.host,
-                    key.0,
-                    spec.to_short_string(),
-                );
-            }
+    // A persistent add must not duplicate what the config already declares,
+    // whether or not that entry happens to be live right now.
+    if !temporary {
+        let claimed: HashSet<(String, u16)> = saved_forwards(&inst)?
+            .iter()
+            .flat_map(forward::bind_keys)
+            .collect();
+        reject_conflicts(name, specs, &claimed, "declared in the saved config")?;
+    }
+
+    // A live clash blocks the spawn regardless of persistence — two ssh
+    // processes can't bind the same (address, port).
+    let mut active = if live { sweep_dead(&inst).await? } else { Vec::new() };
+    if live {
+        let claimed: HashSet<(String, u16)> = active
+            .iter()
+            .flat_map(|a| forward::bind_keys(&a.spec()))
+            .collect();
+        reject_conflicts(name, specs, &claimed, "already forwarded on this VM")?;
+    }
+
+    // Persist before spawning. The saved config is the durable record; a
+    // spawn that fails afterwards is visible immediately and recoverable
+    // with `--reapply`, whereas a tunnel with no config entry would silently
+    // disappear at the next stop.
+    if !temporary {
+        persist_add(&inst, specs).await?;
+    }
+
+    let mut applied: Vec<ActiveForward> = Vec::new();
+    if live {
+        let origin = if temporary { Origin::Adhoc } else { Origin::Config };
+        for spec in specs {
+            let pid = spawn_supervisor(name, spec)?;
+            let entry = ActiveForward::new(spec.clone(), origin, pid);
+            active.push(entry.clone());
+            applied.push(entry);
+            // Persist after each successful add so a mid-list spawn failure
+            // still leaves a consistent state file.
+            forward::write_active(&inst.forwards_path(), &active).await?;
         }
     }
 
-    let mut added: Vec<ActiveForward> = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let pid = spawn_supervisor(name, spec)?;
-        let entry = ActiveForward::new(spec.clone(), Origin::Adhoc, pid);
-        active.push(entry.clone());
-        added.push(entry);
-        // Persist after each successful add so a mid-list spawn failure
-        // still leaves a consistent state file.
-        forward::write_active(&inst.forwards_path(), &active).await?;
-    }
-
-    Ok(added)
+    Ok(AddOutcome {
+        applied,
+        persisted: if temporary { Vec::new() } else { specs.to_vec() },
+        live,
+    })
 }
 
 /// Read the active forwards on a running VM, sweeping dead supervisors first.
@@ -176,51 +330,101 @@ pub async fn list(name: &str) -> anyhow::Result<Vec<ActiveForward>> {
     sweep_dead(&inst).await
 }
 
-/// Stop specific forwards by matching on `(host, proto)`.
-pub async fn stop(name: &str, specs: &[ForwardSpec]) -> anyhow::Result<Vec<ActiveForward>> {
-    let inst = open_running(name).await?;
-    let mut active = forward::read_active(&inst.forwards_path()).await?;
-
-    let mut unknown: Vec<String> = Vec::new();
-    let mut removed: Vec<ActiveForward> = Vec::new();
-
-    for spec in specs {
-        // A host port may now carry several forwards (same port, different
-        // bind addresses), so remove *all* of them — stopping by port must not
-        // leave a sibling (e.g. a `0.0.0.0`-exposed one) running.
-        let matches: Vec<ActiveForward> =
-            active.iter().filter(|a| a.host == spec.host).cloned().collect();
-        if matches.is_empty() {
-            unknown.push(format!("{}", spec.host));
-            continue;
-        }
-        active.retain(|a| a.host != spec.host);
-        for entry in matches {
-            forward::kill_supervisor(entry.pid);
-            removed.push(entry);
-        }
-        forward::write_active(&inst.forwards_path(), &active).await?;
-    }
-
-    if !unknown.is_empty() {
-        bail!(
-            "no active forward for: {} — run `agv forward {name} --list` to see active forwards",
-            unknown.join(", ")
-        );
-    }
-
-    Ok(removed)
+/// What [`rm`] did.
+pub struct RmOutcome {
+    /// Live supervisors that were killed.
+    pub killed: Vec<ActiveForward>,
+    /// Specs dropped from the saved config. Empty for a temporary removal.
+    pub unpersisted: Vec<ForwardSpec>,
+    /// Whether the VM was running.
+    pub live: bool,
 }
 
-/// Stop every active forward on the VM.
-pub async fn stop_all(name: &str) -> anyhow::Result<Vec<ActiveForward>> {
-    let inst = open_running(name).await?;
-    let active = forward::read_active(&inst.forwards_path()).await?;
-    for entry in &active {
-        forward::kill_supervisor(entry.pid);
+/// Remove forwards from a VM. An empty `specs` removes every one.
+///
+/// The mirror image of [`add`]: persistent by default, so removing a forward
+/// drops it from the saved config *and* kills its tunnel. `temporary` kills
+/// the tunnel only, leaving the config entry to come back on the next start.
+///
+/// Matching is by host port, so a port with several bind addresses goes as a
+/// unit — removing `8080` must not leave a `0.0.0.0`-exposed sibling behind.
+pub async fn rm(
+    name: &str,
+    specs: &[ForwardSpec],
+    temporary: bool,
+) -> anyhow::Result<RmOutcome> {
+    let (inst, status) = open_editable(name).await?;
+    let live = status == Status::Running;
+    if temporary {
+        require_live_for_temporary(name, status, live)?;
     }
-    forward::clear_active(&inst.forwards_path()).await?;
-    Ok(active)
+    let all = specs.is_empty();
+
+    let mut active = if live {
+        forward::read_active(&inst.forwards_path()).await?
+    } else {
+        Vec::new()
+    };
+
+    // Resolve every named port against both the live set and the saved
+    // config *before* touching anything, so one typo can't leave the rest
+    // half-removed.
+    if !all {
+        let saved = saved_forwards(&inst)?;
+        let unknown: Vec<String> = specs
+            .iter()
+            .filter(|spec| {
+                let in_live = active.iter().any(|a| a.host == spec.host);
+                let in_config = !temporary && saved.iter().any(|f| f.host == spec.host);
+                !in_live && !in_config
+            })
+            .map(|spec| spec.host.to_string())
+            .collect();
+        if !unknown.is_empty() {
+            bail!(
+                "no forward for: {} on '{name}' — \
+                 run `agv forward {name} --list` to see what is active",
+                unknown.join(", ")
+            );
+        }
+    }
+
+    let mut killed: Vec<ActiveForward> = Vec::new();
+    if live {
+        if all {
+            for entry in &active {
+                forward::kill_supervisor(entry.pid);
+            }
+            killed = std::mem::take(&mut active);
+            forward::clear_active(&inst.forwards_path()).await?;
+        } else {
+            for spec in specs {
+                let matches: Vec<ActiveForward> =
+                    active.iter().filter(|a| a.host == spec.host).cloned().collect();
+                active.retain(|a| a.host != spec.host);
+                for entry in matches {
+                    forward::kill_supervisor(entry.pid);
+                    killed.push(entry);
+                }
+            }
+            forward::write_active(&inst.forwards_path(), &active).await?;
+        }
+    }
+
+    let unpersisted = if temporary {
+        Vec::new()
+    } else if all {
+        persist_clear(&inst).await?
+    } else {
+        let hosts: Vec<u16> = specs.iter().map(|s| s.host).collect();
+        persist_remove(&inst, &hosts).await?
+    };
+
+    Ok(RmOutcome {
+        killed,
+        unpersisted,
+        live,
+    })
 }
 
 /// Best-effort: tear down every supervisor known for a given instance and
@@ -331,6 +535,128 @@ mod tests {
             name: "test-fwd".to_string(),
             dir: dir.to_path_buf(),
         }
+    }
+
+    /// An instance whose `config.toml` declares `forwards`, for exercising
+    /// the persistence helpers without a real VM.
+    async fn instance_with_saved_forwards(
+        dir: &std::path::Path,
+        forwards: Vec<ForwardSpec>,
+    ) -> Instance {
+        let inst = test_instance(dir);
+        let config = crate::config::ResolvedConfig {
+            base_url: String::new(),
+            base_checksum: String::new(),
+            skip_checksum: false,
+            memory: "2G".to_string(),
+            cpus: 2,
+            disk: "20G".to_string(),
+            user: "agent".to_string(),
+            os_family: "debian".to_string(),
+            files: vec![],
+            setup: vec![],
+            provision: vec![],
+            forwards,
+            auto_forwards: BTreeMap::new(),
+            template_name: None,
+            mixins_applied: vec![],
+            mixin_notes: vec![],
+            config_notes: vec![],
+            mixin_manual_steps: vec![],
+            config_manual_steps: vec![],
+            labels: BTreeMap::new(),
+            idle_suspend_minutes: 0,
+            idle_load_threshold: 0.2,
+            machine_type: None,
+            backend: "qemu".to_string(),
+        };
+        crate::config::save(&config, &inst.config_path()).await.unwrap();
+        inst
+    }
+
+    #[tokio::test]
+    async fn persist_add_appends_and_preserves_binds() {
+        let dir = tempdir().unwrap();
+        let inst = instance_with_saved_forwards(dir.path(), vec![ForwardSpec::new(8080, 8080)]).await;
+
+        let added: ForwardSpec = "5432@0.0.0.0@::1".parse().unwrap();
+        persist_add(&inst, std::slice::from_ref(&added)).await.unwrap();
+
+        let saved = saved_forwards(&inst).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[1], added, "binds must survive the save/load round-trip");
+    }
+
+    #[tokio::test]
+    async fn persist_remove_takes_every_bind_on_the_port() {
+        let dir = tempdir().unwrap();
+        let inst = instance_with_saved_forwards(
+            dir.path(),
+            vec![
+                "8080@0.0.0.0".parse().unwrap(),
+                "8080@10.0.0.1".parse().unwrap(),
+                ForwardSpec::new(5432, 5432),
+            ],
+        )
+        .await;
+
+        let removed = persist_remove(&inst, &[8080]).await.unwrap();
+        assert_eq!(removed.len(), 2, "both binds on 8080 should go");
+
+        let saved = saved_forwards(&inst).unwrap();
+        assert_eq!(saved, vec![ForwardSpec::new(5432, 5432)]);
+    }
+
+    #[tokio::test]
+    async fn persist_remove_of_absent_port_is_a_no_op() {
+        let dir = tempdir().unwrap();
+        let inst = instance_with_saved_forwards(dir.path(), vec![ForwardSpec::new(8080, 8080)]).await;
+
+        let removed = persist_remove(&inst, &[9999]).await.unwrap();
+        assert!(removed.is_empty());
+        assert_eq!(saved_forwards(&inst).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persist_clear_empties_the_list() {
+        let dir = tempdir().unwrap();
+        let inst = instance_with_saved_forwards(
+            dir.path(),
+            vec![ForwardSpec::new(8080, 8080), ForwardSpec::new(5432, 5432)],
+        )
+        .await;
+
+        let removed = persist_clear(&inst).await.unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(saved_forwards(&inst).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn persist_helpers_leave_other_config_fields_alone() {
+        let dir = tempdir().unwrap();
+        let inst = instance_with_saved_forwards(dir.path(), vec![]).await;
+
+        persist_add(&inst, &[ForwardSpec::new(8080, 8080)]).await.unwrap();
+
+        let config = crate::config::load_resolved(&inst.config_path()).unwrap();
+        assert_eq!(config.memory, "2G");
+        assert_eq!(config.cpus, 2);
+        assert_eq!(config.backend, "qemu");
+    }
+
+    #[test]
+    fn reject_conflicts_flags_a_claimed_bind_and_port() {
+        let claimed: HashSet<(String, u16)> =
+            forward::bind_keys(&ForwardSpec::new(8080, 8080)).into_iter().collect();
+
+        // Same port on the default loopback bind collides...
+        let err = reject_conflicts("vm", &[ForwardSpec::new(8080, 3000)], &claimed, "in use")
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("already in use"), "got: {err:#}");
+
+        // ...but the same port on a different address does not.
+        let elsewhere: ForwardSpec = "8080@10.0.0.1".parse().unwrap();
+        reject_conflicts("vm", &[elsewhere], &claimed, "in use").unwrap();
     }
 
     #[tokio::test]

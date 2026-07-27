@@ -384,96 +384,167 @@ async fn print_resources(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn forward_command(args: cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
+async fn forward_command(args: cli::ForwardArgs, quiet: bool, yes: bool) -> anyhow::Result<()> {
     if args.list {
-        let active = vm::forwarding::list(&args.name).await?;
-        if args.json {
-            let entries: Vec<forward::ForwardJson> =
-                active.iter().cloned().map(Into::into).collect();
-            println!("{}", serde_json::to_string_pretty(&entries)?);
-            return Ok(());
-        }
-        if active.is_empty() {
-            if !quiet {
-                println!("No active forwards on '{}'.", args.name);
-            }
-            return Ok(());
-        }
-        let host_width = active
-            .iter()
-            .map(|a| a.host.to_string().len())
-            .max()
-            .unwrap_or(0);
-        for a in &active {
-            let arrow = if a.host == a.guest { "↔" } else { "→" };
-            println!(
-                "  host:{host:>w$} {arrow} VM:{guest} ({origin}){bind}",
-                host = a.host,
-                w = host_width,
-                guest = a.guest,
-                origin = a.origin,
-                bind = bind_note(&a.binds),
-            );
-        }
+        return forward_list(&args).await;
+    }
+    if args.rm {
+        return forward_rm(&args, quiet, yes).await;
+    }
+    forward_add(&args, quiet).await
+}
+
+async fn forward_list(args: &cli::ForwardArgs) -> anyhow::Result<()> {
+    let active = vm::forwarding::list(&args.name).await?;
+    if args.json {
+        return print_forward_json(&active);
+    }
+    if active.is_empty() {
+        println!("No active forwards on '{}'.", args.name);
         return Ok(());
     }
-
-    if args.stop {
-        if args.ports.is_empty() {
-            let removed = vm::forwarding::stop_all(&args.name).await?;
-            if !quiet {
-                if removed.is_empty() {
-                    println!("No active forwards to stop on '{}'.", args.name);
-                } else {
-                    println!(
-                        "  ✓ Stopped {} forward{} on '{}'",
-                        removed.len(),
-                        if removed.len() == 1 { "" } else { "s" },
-                        args.name
-                    );
-                }
-            }
-        } else {
-            let specs = forward::parse_specs(&args.ports)?;
-            let removed = vm::forwarding::stop(&args.name, &specs).await?;
-            if !quiet {
-                for entry in &removed {
-                    println!(
-                        "  ✓ Removed host:{host} (was {spec}, {origin})",
-                        host = entry.host,
-                        spec = entry.spec(),
-                        origin = entry.origin,
-                    );
-                }
-            }
-        }
-        return Ok(());
+    let host_width = active
+        .iter()
+        .map(|a| a.host.to_string().len())
+        .max()
+        .unwrap_or(0);
+    for a in &active {
+        let arrow = if a.host == a.guest { "↔" } else { "→" };
+        println!(
+            "  host:{host:>w$} {arrow} VM:{guest} ({origin}){bind}",
+            host = a.host,
+            w = host_width,
+            guest = a.guest,
+            origin = a.origin,
+            bind = bind_note(&a.binds),
+        );
     }
+    Ok(())
+}
 
-    // Add path.
+async fn forward_add(args: &cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
     if args.ports.is_empty() {
         anyhow::bail!(
-            "no ports specified — pass ports to add, or use --list/--stop (see `agv forward --help`)"
+            "no ports specified — pass ports to add, or use --list/--rm (see `agv forward --help`)"
         );
     }
     let binds = parse_bind_targets(&args.bind)?;
     let mut specs = forward::parse_specs(&args.ports)?;
-    for spec in &mut specs {
-        spec.binds.clone_from(&binds);
-    }
-    forward::warn_non_loopback_binds(&specs);
-    let added = vm::forwarding::add(&args.name, &specs).await?;
-    if !quiet {
-        for entry in &added {
-            let arrow = if entry.host == entry.guest { "↔" } else { "→" };
-            println!(
-                "  ✓ host:{host} {arrow} VM:{guest}{bind}",
-                host = entry.host,
-                guest = entry.guest,
-                bind = bind_note(&entry.binds),
+    if !binds.is_empty() {
+        // `--bind` and `@BIND` are two spellings of one thing. Applying both
+        // would mean silently picking a winner, so say so instead.
+        if let Some(spec) = specs.iter().find(|s| !s.binds.is_empty()) {
+            anyhow::bail!(
+                "'{}' already carries a bind via '@' — use either the @BIND suffix \
+                 or --bind, not both",
+                spec.to_short_string(),
             );
         }
+        for spec in &mut specs {
+            spec.binds.clone_from(&binds);
+        }
     }
+    forward::warn_non_loopback_binds(&specs);
+
+    let outcome = vm::forwarding::add(&args.name, &specs, args.temporary).await?;
+    if args.json {
+        return print_forward_json(&outcome.applied);
+    }
+    if quiet {
+        return Ok(());
+    }
+    for spec in &specs {
+        let arrow = if spec.host == spec.guest { "↔" } else { "→" };
+        println!(
+            "  ✓ host:{host} {arrow} VM:{guest}{bind}",
+            host = spec.host,
+            guest = spec.guest,
+            bind = bind_note(&spec.binds),
+        );
+    }
+    println!("{}", forward_scope_note(outcome.live, args.temporary, &args.name));
+    Ok(())
+}
+
+async fn forward_rm(args: &cli::ForwardArgs, quiet: bool, yes: bool) -> anyhow::Result<()> {
+    let specs = forward::parse_specs(&args.ports)?;
+
+    // Removing everything rewrites the saved config, so confirm first —
+    // unless the removal is temporary (the config is untouched and the next
+    // start puts it all back), or there is nothing persistent to lose.
+    if specs.is_empty() && !args.temporary {
+        let saved = vm::forwarding::saved_config_forwards(&args.name)?;
+        if !saved.is_empty() {
+            let mut summary = vec![format!(
+                "Will remove {} forward(s) from the saved config of '{}':",
+                saved.len(),
+                args.name
+            )];
+            for f in &saved {
+                summary.push(format!("  - {f}"));
+            }
+            summary.push(String::new());
+            summary.push(
+                "They will not come back on the next start. \
+                 Use --temporary to drop them for this boot only."
+                    .to_string(),
+            );
+            if !interactive::confirm(&summary, yes || args.json)? {
+                return Ok(());
+            }
+        }
+    }
+
+    let outcome = vm::forwarding::rm(&args.name, &specs, args.temporary).await?;
+    if args.json {
+        return print_forward_json(&outcome.killed);
+    }
+    if quiet {
+        return Ok(());
+    }
+
+    if outcome.killed.is_empty() && outcome.unpersisted.is_empty() {
+        println!("No forwards to remove on '{}'.", args.name);
+        return Ok(());
+    }
+    for entry in &outcome.killed {
+        println!(
+            "  ✓ Stopped host:{host} (was {spec}, {origin})",
+            host = entry.host,
+            spec = entry.spec(),
+            origin = entry.origin,
+        );
+    }
+    for spec in &outcome.unpersisted {
+        // Only worth a line of its own when nothing live matched it —
+        // otherwise it just repeats the ✓ above with different wording.
+        if !outcome.killed.iter().any(|e| e.host == spec.host) {
+            println!("  ✓ Removed {spec} from the saved config");
+        }
+    }
+    if args.temporary {
+        println!("  Config unchanged — these return on the next start.");
+    } else if !outcome.unpersisted.is_empty() {
+        println!("  Removed from the saved config — these will not return.");
+    }
+    Ok(())
+}
+
+/// One line explaining how far an add reached: live now, saved for later,
+/// or both.
+fn forward_scope_note(live: bool, temporary: bool, name: &str) -> String {
+    match (live, temporary) {
+        (true, false) => "  Active now and saved to the config for future starts.".to_string(),
+        (true, true) => "  Active for this boot only — not saved to the config.".to_string(),
+        (false, _) => format!(
+            "  Saved to the config — starts with the VM (`agv start {name}`)."
+        ),
+    }
+}
+
+fn print_forward_json(entries: &[forward::ActiveForward]) -> anyhow::Result<()> {
+    let out: Vec<forward::ForwardJson> = entries.iter().cloned().map(Into::into).collect();
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
@@ -1102,7 +1173,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         },
-        Command::Forward(args) => forward_command(args, quiet).await,
+        Command::Forward(args) => forward_command(args, quiet, cli.yes).await,
         Command::ForwardDaemon(args) => {
             let mut spec: forward::ForwardSpec = args.spec.parse()?;
             spec.binds = parse_bind_targets(&args.bind)?;

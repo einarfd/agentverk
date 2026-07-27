@@ -779,6 +779,66 @@ fn forward_invalid_bind_fails() {
         .stderr(contains("bind address"));
 }
 
+#[test]
+fn forward_stop_is_still_accepted_as_an_alias_for_rm() {
+    // `--stop` was the pre-rework spelling. Keep it parsing so existing
+    // scripts fail on the VM lookup, not on the flag.
+    agv()
+        .args(["forward", "novm", "--stop", "8080"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
+}
+
+#[test]
+fn forward_help_documents_persistence_and_temporary() {
+    agv()
+        .args(["forward", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--temporary"))
+        .stdout(contains("persistent"));
+}
+
+#[test]
+fn forward_rm_rejects_bind() {
+    // A bind selects where to listen; it means nothing when removing.
+    agv()
+        .args(["forward", "myvm", "--rm", "8080", "--bind", "0.0.0.0"])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
+}
+
+#[test]
+fn forward_list_rejects_every_mutating_flag() {
+    for extra in [
+        vec!["--rm"],
+        vec!["--temporary"],
+        vec!["8080"],
+        vec!["--bind", "0.0.0.0"],
+    ] {
+        let mut args = vec!["forward", "myvm", "--list"];
+        args.extend(extra.iter().copied());
+        agv()
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(contains("cannot be used with"));
+    }
+}
+
+#[test]
+fn forward_rejects_bind_flag_together_with_at_bind_suffix() {
+    // Two spellings of the same thing — picking a winner silently is worse
+    // than saying so.
+    agv()
+        .args(["forward", "novm", "8642@0.0.0.0", "--bind", "10.0.0.1"])
+        .assert()
+        .failure()
+        .stderr(contains("not both"));
+}
+
 // ── Cp ────────────────────────────────────────────────────────────────────────
 
 #[test]

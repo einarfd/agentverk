@@ -79,20 +79,24 @@ pub enum Command {
     #[command(verbatim_doc_comment)]
     Cp(CpArgs),
 
-    /// Add, list, or remove host-to-guest port forwards on a running VM.
+    /// Add, list, or remove host-to-guest port forwards.
     ///
-    /// Port specs use the form HOST[:GUEST]. TCP is implicit — the
+    /// Port specs use the form HOST[:GUEST][@BIND]. TCP is implicit — the
     /// underlying `ssh -L` tunnel is TCP-only.
     ///
     ///   agv forward myvm 8080               # host:8080 → VM:8080
     ///   agv forward myvm 8080:3000          # host:8080 → VM:3000
     ///   agv forward myvm 5432 9090          # add two at once
     ///   agv forward myvm --list             # show active forwards
-    ///   agv forward myvm --stop             # remove every active forward
-    ///   agv forward myvm --stop 8080        # remove a specific forward
+    ///   agv forward myvm --rm 8080          # remove one
+    ///   agv forward myvm --rm               # remove all (asks first)
     ///
-    /// Runtime changes are ephemeral: on next start/resume the set is reset
-    /// to what the config declares in `forwards = [...]`.
+    /// Changes are persistent: a forward is written to the VM's config and
+    /// comes back on every later start. Pass --temporary to affect only the
+    /// current boot.
+    ///
+    /// Works on a stopped VM too — the change lands in the config and takes
+    /// effect on the next start.
     #[command(verbatim_doc_comment)]
     Forward(ForwardArgs),
 
@@ -706,13 +710,16 @@ pub struct IdleWatcherArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool maps to a distinct CLI flag (--temporary, --rm, --list, --json); refactoring would only obscure the clap-derive mapping"
+)]
 pub struct ForwardArgs {
     /// Name of the VM.
     pub name: String,
 
-    /// Port specs (HOST[:GUEST]). With no flags, each spec is added;
-    /// with --stop, each spec is removed. Cannot be combined with --list.
-    #[arg(conflicts_with = "list")]
+    /// Port specs (HOST[:GUEST][@BIND]...). Added by default; with --rm,
+    /// removed instead.
     pub ports: Vec<String>,
 
     /// Host address(es) to bind the forward on the host side (repeatable):
@@ -720,21 +727,27 @@ pub struct ForwardArgs {
     /// (127.0.0.1). Binding past loopback (e.g. `--bind 0.0.0.0` or a
     /// tailnet IP) exposes the guest service to that network — the SSH
     /// tunnel is no longer the only thing gating access. Applies to every
-    /// spec in this invocation; not valid with `--list`/`--stop`.
-    #[arg(long, value_name = "ADDR", conflicts_with_all = ["list", "stop"])]
+    /// spec in this invocation.
+    #[arg(long, value_name = "ADDR", conflicts_with = "rm")]
     pub bind: Vec<String>,
 
+    /// Apply for this boot only, leaving the saved config untouched.
+    /// Requires a running VM. Without it, adds and removals are written to
+    /// the VM's config and persist across restarts.
+    #[arg(long)]
+    pub temporary: bool,
+
+    /// Remove forwards. With port specs, only those; with none, all of them
+    /// (which asks for confirmation, since it rewrites the saved config).
+    #[arg(long = "rm", alias = "stop")]
+    pub rm: bool,
+
     /// Show the active forwards on the VM.
-    #[arg(long, conflicts_with = "stop")]
+    #[arg(long, conflicts_with_all = ["ports", "bind", "temporary", "rm"])]
     pub list: bool,
 
-    /// Remove forwards. With port specs, only those are removed; with no
-    /// specs, every active forward (config and ad-hoc) is removed.
-    #[arg(long)]
-    pub stop: bool,
-
-    /// Output as JSON. With `--list`, prints an array of active forwards;
-    /// without `--list`, ignored.
+    /// Output as JSON. Prints the affected forwards for every mode; implies
+    /// non-interactive, so `--rm` with no ports won't stop to confirm.
     #[arg(long)]
     pub json: bool,
 }
