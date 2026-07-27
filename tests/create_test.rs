@@ -1120,6 +1120,268 @@ backend = "qemu"
     destroy(data_dir.path(), name).await;
 }
 
+/// End-to-end test for persistent `agv forward`.
+///
+/// The whole point of the persistent default is that a forward added from
+/// the command line survives a stop/start, so that's what this checks — with
+/// a real tunnel carrying real HTTP at each step, not just the state file.
+///
+/// Walks the full loop: add → temporary removal → `--reapply` → stop/start →
+/// permanent removal, asserting both the live set (`--list --json`) and the
+/// saved `<instance>/config.toml` at each stage. Those two can drift apart
+/// independently, which is exactly the bug class this test exists to catch.
+///
+/// To run:
+///   cargo test `persistent_forward_survives_restart` -- --include-ignored --nocapture
+#[tokio::test]
+#[ignore = "downloads a real cloud image and boots a VM — slow"]
+#[serial(vm_boot)]
+async fn persistent_forward_survives_restart() {
+    if !qemu_img_available() || !iso_tool_available() || !qemu_available() {
+        eprintln!("required tools not installed — skipping persistent_forward_survives_restart");
+        return;
+    }
+
+    let data_dir = test_data_dir();
+    let host_tmp = tempfile::tempdir().unwrap();
+    let name = "_test-persistent-fwd";
+    // A high, unusual host port so a service on the dev machine is unlikely
+    // to be holding it.
+    let host_port: u16 = 18099;
+    let guest_port: u16 = 9002;
+
+    let config_toml = format!(
+        r#"
+[base]
+from = "debian-12"
+
+[vm]
+memory = "1G"
+cpus = 2
+disk = "10G"
+backend = "qemu"
+
+[[provision]]
+run = """
+set -eu
+sudo tee /etc/systemd/system/agv-test-http.service >/dev/null <<'UNIT'
+[Unit]
+Description=agv persistent-forward end-to-end test HTTP server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m http.server --bind 127.0.0.1 {guest_port}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now agv-test-http
+"""
+"#
+    );
+    let toml_path = write_config(host_tmp.path(), &config_toml).await;
+
+    let create_output = agv(data_dir.path())
+        .args([
+            "create",
+            "--start",
+            "--json",
+            "--config",
+            toml_path.to_str().unwrap(),
+            name,
+        ])
+        .output()
+        .await
+        .unwrap();
+    if !create_output.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv create failed (exit {:?}): {}",
+            create_output.status.code(),
+            String::from_utf8_lossy(&create_output.stderr),
+        );
+    }
+    let report = parse_json("agv create", &create_output.stdout);
+    let inst_dir = PathBuf::from(report["data_dir"].as_str().unwrap());
+    let config_path = inst_dir.join("config.toml");
+
+    // Every assertion below runs through these, so a failure names the stage
+    // it happened in rather than leaving a bare `assert!(false)`.
+    let saved_has_port = |stage: &'static str, want: bool| {
+        let path = config_path.clone();
+        async move {
+            let saved = tokio::fs::read_to_string(&path).await.unwrap();
+            let found = saved.contains(&format!("host = {host_port}"));
+            assert_eq!(
+                found, want,
+                "[{stage}] saved config {} contain host = {host_port}:\n{saved}",
+                if want { "should" } else { "should not" },
+            );
+        }
+    };
+    let live_has_port = |stage: &'static str, want: bool| {
+        let dir = data_dir.path().to_path_buf();
+        async move {
+            let out = agv(&dir)
+                .args(["forward", "--list", "--json", name])
+                .output()
+                .await
+                .unwrap();
+            assert!(out.status.success(), "[{stage}] forward --list failed");
+            let listed = parse_json("agv forward --list", &out.stdout);
+            let found = listed
+                .as_array()
+                .expect("forward --list --json must be an array")
+                .iter()
+                .any(|f| f["host"].as_u64() == Some(u64::from(host_port)));
+            assert_eq!(
+                found, want,
+                "[{stage}] live set {} contain host {host_port}: {listed:?}",
+                if want { "should" } else { "should not" },
+            );
+        }
+    };
+
+    // 1. Add it. Persistent by default: live now *and* in the saved config.
+    let add = agv(data_dir.path())
+        .args(["forward", name, &format!("{host_port}:{guest_port}")])
+        .output()
+        .await
+        .unwrap();
+    if !add.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "agv forward add failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+    }
+    saved_has_port("after add", true).await;
+    live_has_port("after add", true).await;
+    await_http_ok(host_port, true, "after add", data_dir.path(), name).await;
+
+    // 2. Temporary removal drops the tunnel but keeps the config entry.
+    let rm_temp = agv(data_dir.path())
+        .args([
+            "forward",
+            name,
+            "--rm",
+            &host_port.to_string(),
+            "--temporary",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        rm_temp.status.success(),
+        "temporary rm failed: {}",
+        String::from_utf8_lossy(&rm_temp.stderr)
+    );
+    saved_has_port("after --rm --temporary", true).await;
+    live_has_port("after --rm --temporary", false).await;
+
+    // 3. --reapply is the undo for that.
+    let reapply = agv(data_dir.path())
+        .args(["forward", name, "--reapply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        reapply.status.success(),
+        "reapply failed: {}",
+        String::from_utf8_lossy(&reapply.stderr)
+    );
+    live_has_port("after --reapply", true).await;
+    await_http_ok(host_port, true, "after --reapply", data_dir.path(), name).await;
+
+    // 4. The point of the whole rework: it comes back after a restart.
+    let stop = agv(data_dir.path()).args(["stop", name]).output().await.unwrap();
+    assert!(
+        stop.status.success(),
+        "stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let start = agv(data_dir.path()).args(["start", name]).output().await.unwrap();
+    if !start.status.success() {
+        destroy(data_dir.path(), name).await;
+        panic!(
+            "start failed: {}",
+            String::from_utf8_lossy(&start.stderr)
+        );
+    }
+    saved_has_port("after restart", true).await;
+    live_has_port("after restart", true).await;
+    await_http_ok(host_port, true, "after restart", data_dir.path(), name).await;
+
+    // 5. A plain --rm takes it out of both, for good.
+    let rm = agv(data_dir.path())
+        .args(["forward", name, "--rm", &host_port.to_string()])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        rm.status.success(),
+        "rm failed: {}",
+        String::from_utf8_lossy(&rm.stderr)
+    );
+    saved_has_port("after --rm", false).await;
+    live_has_port("after --rm", false).await;
+
+    destroy(data_dir.path(), name).await;
+}
+
+/// Poll `http://127.0.0.1:<port>/` until it matches `want_ok`, then assert.
+///
+/// Polls rather than checking once because a freshly spawned supervisor
+/// takes a moment to establish its ssh tunnel, and the guest's systemd unit
+/// needs a moment after a boot. On failure, dumps both sides' diagnostics.
+async fn await_http_ok(
+    port: u16,
+    want_ok: bool,
+    stage: &str,
+    data_dir: &Path,
+    name: &str,
+) {
+    let url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+    for _ in 0..30 {
+        let ok = client
+            .get(&url)
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success());
+        if ok == want_ok {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    let service = ssh_exec(
+        data_dir,
+        name,
+        "systemctl status agv-test-http --no-pager -l || true",
+    )
+    .await;
+    let forwards_toml = tokio::fs::read_to_string(
+        data_dir.join("instances").join(name).join("forwards.toml"),
+    )
+    .await
+    .unwrap_or_else(|e| format!("<read failed: {e}>"));
+    destroy(data_dir, name).await;
+    panic!(
+        "[{stage}] expected HTTP on {url} to be {}, but it never was.\n\
+         \n\
+         ---- <instance>/forwards.toml ----\n{forwards_toml}\n\
+         ---- guest: systemctl status agv-test-http ----\n{service}",
+        if want_ok { "reachable" } else { "unreachable" },
+    );
+}
+
 /// Verify that suspend saves VM state and resume restores it.
 ///
 /// Creates a marker file in /run (tmpfs/RAM-backed), suspends the VM, resumes
