@@ -288,23 +288,14 @@ async fn destroy_command(args: &cli::DestroyArgs, yes: bool) -> anyhow::Result<(
         }
     }
 
-    // Confirmation prompt unless -y.
-    if !yes && !args.json {
-        use std::io::Write as _;
-        eprintln!("Will destroy {} VM(s):", matches.len());
-        for (n, s) in &matches {
-            eprintln!("  - {n}  ({s})");
-        }
-        eprintln!();
-        eprint!("Continue? [y/N] ");
-        std::io::stderr().flush().ok();
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim().to_lowercase();
-        if answer != "y" && answer != "yes" {
-            eprintln!("Aborted.");
-            return Ok(());
-        }
+    // Confirmation prompt unless -y; --json implies non-interactive.
+    let mut summary = Vec::with_capacity(matches.len() + 1);
+    summary.push(format!("Will destroy {} VM(s):", matches.len()));
+    for (n, s) in &matches {
+        summary.push(format!("  - {n}  ({s})"));
+    }
+    if !interactive::confirm(&summary, yes || args.json)? {
+        return Ok(());
     }
 
     // Destroy each. Collect reports for --json output.
