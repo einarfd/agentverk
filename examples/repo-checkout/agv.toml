@@ -16,8 +16,8 @@ spec    = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # Claude Code's manual `/login` step too — the claude mixin picks it up.
 
 # Expose VM ports on your host so you can point a browser, db client, or test
-# runner at services running inside the VM. `guest` defaults to `host`; runtime
-# `agv forward` changes are ephemeral — declare here for persistence. Each
+# runner at services running inside the VM. `guest` defaults to `host`;
+# `agv forward` adds the same persistent forwards from the command line. Each
 # `[[forwards]]` block is a root-level table so placement is free (a bare
 # `forwards = [...]` list must sit above the first [section]).
 #

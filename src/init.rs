@@ -40,8 +40,9 @@ spec    = "medium"                      # 2G RAM, 2 vCPUs, 20G disk (`agv specs`
 # ── Port forwards (host → VM) ───────────────────────────────────────────────
 # Expose VM ports on your host so you can point a browser, db client, or
 # test runner at services running inside the VM. Each entry is HOST[:GUEST];
-# the supervisor reconnects automatically if SSH drops. Runtime changes via
-# `agv forward` are ephemeral — declare here for "every time the VM starts".
+# the supervisor reconnects automatically if SSH drops. `agv forward` adds the
+# same persistent forwards from the command line; declare them here to have
+# them apply from the VM's very first start.
 #
 # forwards = ["8080", "5173:5173", "5433:5432"]
 

@@ -435,6 +435,11 @@ or `agv resume`. Each forward runs as a small supervisor process around
 `ssh -N -L`, so services bound to `127.0.0.1` inside the guest are reachable —
 and the supervisor reconnects on its own if SSH drops temporarily.
 
+This list is also what `agv forward` reads and writes. Adding a forward from
+the command line appends to it, `agv forward <vm> --rm <port>` removes from it,
+and both work whether the VM is running or stopped — so hand-editing this
+section is a convenience, not a requirement. See `agv forward --help`.
+
 There are two interchangeable ways to declare them.
 
 **Table form (recommended)** — each `[[forwards]]` block is a top-level
@@ -509,22 +514,28 @@ doesn't tear down the others.
 > address (e.g. your tailnet IP) over `0.0.0.0` / `*`, which expose on every
 > network the host is attached to.
 
-The string form can also carry a **single** bind via an `@BIND` suffix —
-`"8642@0.0.0.0"`, `"8080:80@192.168.1.5"`, `"3000@2001:db8::5"`, `"9000@*"`.
-The `@` disambiguates the IPv6 colons (everything after it is the bind), so this
-works in `forwards = [...]` and in `agv config set --forwards` alike. The only
-thing it can't express is **multiple** binds on one forward under a single
-supervisor (`bind = ["a", "b"]`) — for that use the table form, or just repeat
-the port (`"8642@10.0.0.1", "8642@::1"`), which serves both addresses as two
-supervisors. For an ad-hoc bound forward on a running VM, `agv forward <vm> 8642
---bind 0.0.0.0` (repeatable `--bind`).
+The string form carries binds via an `@BIND` suffix — `"8642@0.0.0.0"`,
+`"8080:80@192.168.1.5"`, `"3000@2001:db8::5"`, `"9000@*"`. The `@`
+disambiguates the IPv6 colons (everything after it is a bind), so this works in
+`forwards = [...]` and in `agv config set --forwards` alike. Repeat the suffix
+for several addresses on one forward: `"8642@10.0.0.1@::1"` is equivalent to
+the table form's `bind = ["10.0.0.1", "::1"]`, one supervisor serving both.
 
-Runtime changes made via `agv forward` (adding or stopping forwards) are **ephemeral** —
-the next start/resume resets the set back to what the config declares. To change the
-**persistent** set without editing the config file, use `agv config set --forwards
-"..."` (replaces the list wholesale, comma-separated `HOST[:GUEST][@BIND]` specs —
-so a bound forward like `agv config set <vm> --forwards "8642@0.0.0.0"` persists
-across every start/resume).
+On the command line, `agv forward <vm> 8642 --bind 0.0.0.0` does the same thing
+(`--bind` is repeatable). Use one spelling or the other — combining `--bind`
+with an `@BIND` suffix on the same spec is rejected rather than silently
+resolved.
+
+Changes made via `agv forward` land in this same list by default, so they survive
+every later start/resume. `agv forward <vm> --temporary <port>` opts out, adding a
+forward that lasts only until the VM stops; `agv forward <vm> --rm <port>
+--temporary` is the mirror image, dropping the tunnel now but leaving the config
+entry to return on the next start. `agv forward <vm> --reapply` restores config
+forwards that aren't currently running.
+
+`agv config set --forwards "..."` remains the bulk setter — it replaces the list
+wholesale with comma-separated `HOST[:GUEST][@BIND]` specs. Unlike `agv forward`
+it requires a stopped VM, as every `config set` field does.
 
 ## Desktop / GUI access
 

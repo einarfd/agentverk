@@ -87,15 +87,26 @@ agv forward myvm 3000:8080         # host:3000 → VM:8080
 
 Then open `http://localhost:8080` (or `3000`) in your browser.
 
+Forwards are persistent: the command above saves the mapping to the VM's config
+as well as applying it, so it comes back on every later `agv start` / `agv
+resume`. It works on a stopped VM too — the change lands in the config and
+takes effect on the next start.
+
 Manage what's active:
 
 ```sh
 agv forward myvm --list            # show everything currently forwarded
-agv forward myvm --stop 8080       # remove one
-agv forward myvm --stop            # remove every active forward
+agv forward myvm --rm 8080         # remove one, config included
+agv forward myvm --rm              # remove every forward (asks first)
 ```
 
-For forwards you want every time the VM starts, declare them in `agv.toml`:
+For a tunnel you want only until the VM stops, add `--temporary` — it skips
+the config write. It works on removals too, so `agv forward myvm --rm 8080
+--temporary` drops the tunnel now but leaves the config entry to return on the
+next start. `agv forward myvm --reapply` puts back any config forward that
+isn't currently running, which is the undo for that.
+
+You can equally declare forwards up front in `agv.toml`:
 
 ```toml
 [[forwards]]
@@ -108,10 +119,8 @@ guest = 8080
 
 A compact `forwards = ["8080", "3000:8080"]` string list works too, but it must
 sit above the first `[section]` in the file — `[[forwards]]` blocks can go
-anywhere. Runtime `agv forward` changes are ephemeral — the next `agv
-start`/`agv resume` resets to exactly what the config declares. See
-`docs/config.md#forwards` for the full syntax and `agv forward --help` for more
-options.
+anywhere. See `docs/config.md#forwards` for the full syntax and `agv forward
+--help` for more options.
 
 ## Copying files
 

@@ -23,8 +23,9 @@ spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 # ── Port forwards (host → VM) ────────────────────────────────────────────────
 # Expose VM ports on your host so you can point a browser, db client, or test
 # runner at services running inside the VM. `guest` defaults to `host`, and the
-# supervisor reconnects automatically if SSH drops. Runtime `agv forward`
-# changes are ephemeral — declare here for "every time the VM starts". Each
+# supervisor reconnects automatically if SSH drops. `agv forward` adds the same
+# persistent forwards from the command line; declare them here to have them
+# apply from the VM's very first start. Each
 # `[[forwards]]` block is a root-level table, so it can sit anywhere in the file
 # (a bare `forwards = [...]` list must go above the first [section] — see
 # docs/config.md#forwards).

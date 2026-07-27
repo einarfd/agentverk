@@ -133,9 +133,12 @@ guest = 5432       # host:5433 → VM:5432
 `guest` defaults to `host`. A compact string list works too
 (`forwards = ["8080", "5433:5432"]`), but it must sit above the first
 `[section]` in the file, whereas `[[forwards]]` blocks can go anywhere.
-They are reapplied on every `agv start` / `agv resume`. For one-off
-tunnels, `agv forward myvm 3000:8080` adds an ephemeral forward — wiped
-on the next start/resume.
+They are reapplied on every `agv start` / `agv resume`.
+
+You don't have to hand-edit the file: `agv forward myvm 3000:8080` adds
+the same persistent forward, applying it immediately if the VM is
+running and saving it either way. Add `--temporary` for a one-off tunnel
+that lasts only until the VM stops.
 
 Forwards listen on `127.0.0.1` by default. Add `bind = "0.0.0.0"` (or a
 specific IP such as your tailnet address, a list, or `*`) to a

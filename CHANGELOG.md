@@ -6,6 +6,55 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Breaking
+
+- **`agv forward` now persists by default.** A forward added from the
+  command line is written to the VM's saved config and comes back on
+  every later start, instead of being wiped on the next
+  start/resume. Pass `--temporary` for the old behaviour — a forward
+  that lasts only until the VM stops.
+- **`agv forward --stop` is now `--rm`**, since it removes a forward
+  from the config rather than merely stopping its tunnel. `--stop`
+  still works as a hidden alias, so existing scripts keep running.
+- **`agv forward --rm` with no ports asks for confirmation** before
+  clearing the saved config. Pass `-y`/`--yes` (or `--json`, which
+  implies non-interactive) to skip the prompt.
+
+### Added
+
+- **`agv forward` works on stopped and suspended VMs.** The change
+  lands in the saved config and takes effect on the next start, so
+  keeping a forward no longer requires stopping the VM to run
+  `agv config set --forwards`.
+- **`--temporary`** on `agv forward`, for both adding and removing:
+  "this boot only, don't touch the config". On a removal it drops the
+  tunnel but leaves the config entry, so the forward returns on the
+  next start.
+- **`agv forward --reapply`** respawns config-declared forwards that
+  aren't currently running — the undo for `--rm --temporary`. Additive
+  only: it leaves ad-hoc forwards alone and never re-allocates an
+  `auto_forwards` port.
+- **`--json` on every `agv forward` mode**, not just `--list`.
+- **String forward specs accept multiple `@BIND` suffixes**
+  (`"8642@10.0.0.1@::1"`), matching what the `[[forwards]]` table form
+  and repeated `--bind` could already express.
+
+### Fixed
+
+- **`agv forward <vm> 8642@0.0.0.0` silently ignored the bind.** The
+  `--bind` flag overwrote each spec's bind list unconditionally, so a
+  positional `@BIND` was discarded and the forward bound loopback —
+  and the non-loopback warning never fired, because that check ran
+  after the overwrite. Fail-safe (less exposure than requested, not
+  more) but wrong. Combining `--bind` with `@BIND` on the same spec is
+  now rejected rather than silently resolved.
+
+### Changed
+
+- **`agv config set --forwards` on a running VM now points at
+  `agv forward`.** The stopped-only rule is unchanged for every field;
+  the error just names the command that does work while running.
+
 ## [0.3.0] - 2026-05-21
 
 ### Added

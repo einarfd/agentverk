@@ -307,9 +307,18 @@ Array of cached-image entries. Empty array when the cache is empty.
 | `size` | uint64 | File size in bytes |
 | `in_use` | bool | `true` when at least one VM's disk references this file as a backing image |
 
-#### `agv forward <name> --list --json`
+#### `agv forward <name> --json`
 
-Array of active forwards on a running VM. Empty array when no forwards are active. The same per-entry shape (`ForwardJson`) appears as the `forwards` field of `VmStateReport`.
+Array of forwards, in the same per-entry shape (`ForwardJson`) that appears as the `forwards` field of `VmStateReport`. Which forwards depends on the mode:
+
+| Mode | Contents |
+|---|---|
+| `--list` | Every forward currently active on a running VM |
+| *(add)* | The forwards this call brought up. **Empty array** when the VM isn't running — the specs were saved to the config but nothing is live yet |
+| `--rm` | The live forwards this call killed. **Empty array** when the VM isn't running, even though the config entries were removed |
+| `--reapply` | The config forwards this call spawned; empty when they were all running already |
+
+`--json` implies non-interactive, so `--rm` with no ports clears every forward without stopping to confirm.
 
 ```json
 [
@@ -323,7 +332,7 @@ Array of active forwards on a running VM. Empty array when no forwards are activ
 | `host` | uint16 | Host port |
 | `guest` | uint16 | Guest port the forward terminates at |
 | `binds` | string[] | Host addresses the forward is bound to (each an IP or `"*"`). **Empty array** = the default loopback (`127.0.0.1`) bind. Additive field (introduced with `bind` support) — consumers predating it can ignore it |
-| `origin` | string | One of: `"config"` (declared in `agv.toml`), `"adhoc"` (added at runtime via `agv forward`), `"auto"` (provisioned by an `[auto_forwards.<name>]` mixin entry) |
+| `origin` | string | One of: `"config"` (persistent — declared in `agv.toml` or added by `agv forward`, and saved to the VM's config), `"adhoc"` (added by `agv forward --temporary`, lasting only until the VM stops), `"auto"` (provisioned by an `[auto_forwards.<name>]` mixin entry) |
 | `alive` | bool | Whether the supervisor process for this forward is still running. `agv forward --list` sweeps dead entries before serializing, so `--list` always returns `true`. `VmStateReport.forwards` doesn't sweep, so a stale entry surfaces as `false` |
 
 The supervisor PID tracked internally is intentionally not exposed — it's an implementation detail of how agv keeps the SSH tunnel alive.
