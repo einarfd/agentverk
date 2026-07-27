@@ -324,6 +324,89 @@ pub async fn add(
     })
 }
 
+/// What [`reapply`] did.
+pub struct ReapplyOutcome {
+    /// Config forwards that were spawned by this call.
+    pub applied: Vec<ActiveForward>,
+    /// Config forwards left alone, with why. Either already running (the
+    /// common, boring case) or blocked by something holding the port.
+    pub skipped: Vec<(ForwardSpec, String)>,
+    /// Whether the VM was running.
+    pub live: bool,
+}
+
+/// Respawn config-declared forwards that aren't currently live.
+///
+/// The undo for `agv forward --rm --temporary`: it puts back what the saved
+/// config declares without needing to know what that was.
+///
+/// Deliberately *additive*, not a reset. Tearing down and re-applying (what
+/// [`apply_config_forwards`] does on start) would kill ad-hoc forwards as
+/// collateral, and worse, would re-run [`apply_auto_forwards`] — which
+/// allocates a fresh host port and rewrites `<instance>/<name>_port`,
+/// silently moving an `auto_forwards` port out from under anything holding
+/// it. Stop/start is already the reset path; this is the gentle one.
+pub async fn reapply(name: &str) -> anyhow::Result<ReapplyOutcome> {
+    let (inst, status) = open_editable(name).await?;
+    let live = status == Status::Running;
+    let specs = saved_forwards(&inst)?;
+
+    if !live {
+        return Ok(ReapplyOutcome {
+            applied: Vec::new(),
+            skipped: Vec::new(),
+            live,
+        });
+    }
+
+    let mut active = sweep_dead(&inst).await?;
+    let mut outcome = ReapplyOutcome {
+        applied: Vec::new(),
+        skipped: Vec::new(),
+        live,
+    };
+
+    for spec in specs {
+        // Recomputed each iteration: a spec spawned a moment ago is itself a
+        // claim the next one has to respect.
+        let claimed: HashSet<(String, u16)> = active
+            .iter()
+            .flat_map(|a| forward::bind_keys(&a.spec()))
+            .collect();
+
+        if let Some(key) = forward::bind_keys(&spec)
+            .into_iter()
+            .find(|k| claimed.contains(k))
+        {
+            let already = active
+                .iter()
+                .find(|a| a.host == spec.host)
+                .is_some_and(|a| a.origin == Origin::Config);
+            let reason = if already {
+                "already running".to_string()
+            } else {
+                format!("host port {} on bind {} is in use by another forward", spec.host, key.0)
+            };
+            outcome.skipped.push((spec, reason));
+            continue;
+        }
+
+        // A spawn failure is per-entry, not fatal: the rest of the config is
+        // still worth restoring.
+        match spawn_supervisor(name, &spec) {
+            Ok(pid) => {
+                let entry = ActiveForward::new(spec, Origin::Config, pid);
+                active.push(entry.clone());
+                forward::write_active(&inst.forwards_path(), &active).await?;
+                outcome.applied.push(entry);
+            }
+            Err(e) => outcome.skipped.push((spec, format!("{e:#}"))),
+        }
+    }
+
+    Ok(outcome)
+}
+
 /// Read the active forwards on a running VM, sweeping dead supervisors first.
 pub async fn list(name: &str) -> anyhow::Result<Vec<ActiveForward>> {
     let inst = open_running(name).await?;

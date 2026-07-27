@@ -90,10 +90,12 @@ pub enum Command {
     ///   agv forward myvm --list             # show active forwards
     ///   agv forward myvm --rm 8080          # remove one
     ///   agv forward myvm --rm               # remove all (asks first)
+    ///   agv forward myvm --reapply          # restore config forwards
     ///
     /// Changes are persistent: a forward is written to the VM's config and
     /// comes back on every later start. Pass --temporary to affect only the
-    /// current boot.
+    /// current boot, and --reapply to restore config forwards that a
+    /// --temporary removal took away.
     ///
     /// Works on a stopped VM too — the change lands in the config and takes
     /// effect on the next start.
@@ -742,8 +744,14 @@ pub struct ForwardArgs {
     #[arg(long = "rm", alias = "stop")]
     pub rm: bool,
 
-    /// Show the active forwards on the VM.
+    /// Respawn config-declared forwards that aren't currently running —
+    /// the undo for `--rm --temporary`. Leaves ad-hoc forwards alone and
+    /// never re-allocates an `auto_forwards` port.
     #[arg(long, conflicts_with_all = ["ports", "bind", "temporary", "rm"])]
+    pub reapply: bool,
+
+    /// Show the active forwards on the VM.
+    #[arg(long, conflicts_with_all = ["ports", "bind", "temporary", "rm", "reapply"])]
     pub list: bool,
 
     /// Output as JSON. Prints the affected forwards for every mode; implies

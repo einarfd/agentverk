@@ -828,6 +828,210 @@ fn forward_list_rejects_every_mutating_flag() {
     }
 }
 
+/// Build a stopped VM instance by hand in an isolated data dir.
+///
+/// `agv forward` reaches a stopped VM through the saved config alone — no
+/// QEMU, no image, no network — so the whole persistence surface is testable
+/// from a directory and a `config.toml`.
+fn stopped_vm_with_forwards(forwards_toml: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("instances").join("testvm");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        format!(
+            "base_url = \"https://example.invalid/img.qcow2\"\n\
+             base_checksum = \"\"\n\
+             skip_checksum = true\n\
+             memory = \"2G\"\n\
+             cpus = 2\n\
+             disk = \"20G\"\n\
+             user = \"agent\"\n\
+             os_family = \"debian\"\n\
+             backend = \"qemu\"\n\
+             idle_suspend_minutes = 0\n\
+             idle_load_threshold = 0.2\n\
+             {forwards_toml}"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("status"), "stopped").unwrap();
+    tmp
+}
+
+fn saved_config(tmp: &tempfile::TempDir) -> String {
+    std::fs::read_to_string(
+        tmp.path().join("instances").join("testvm").join("config.toml"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn forward_add_on_stopped_vm_writes_the_config() {
+    let tmp = stopped_vm_with_forwards("");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "9000"])
+        .assert()
+        .success()
+        .stdout(contains("Saved to the config"));
+
+    assert!(
+        saved_config(&tmp).contains("host = 9000"),
+        "the forward must land in the saved config:\n{}",
+        saved_config(&tmp)
+    );
+}
+
+#[test]
+fn forward_add_preserves_at_binds_in_the_saved_config() {
+    // Regression: `--bind` used to clobber `@BIND` unconditionally, so the
+    // spec was silently saved as loopback.
+    let tmp = stopped_vm_with_forwards("");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "7000@10.0.0.1@::1"])
+        .assert()
+        .success();
+
+    let saved = saved_config(&tmp);
+    assert!(saved.contains("10.0.0.1"), "first bind missing:\n{saved}");
+    assert!(saved.contains("::1"), "second bind missing:\n{saved}");
+}
+
+#[test]
+fn forward_add_rejects_a_port_already_in_the_config() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "8080"])
+        .assert()
+        .failure()
+        .stderr(contains("already declared in the saved config"));
+}
+
+#[test]
+fn forward_rm_on_stopped_vm_drops_it_from_the_config() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n\n[[forwards]]\nhost = 5432\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "--rm", "8080"])
+        .assert()
+        .success();
+
+    let saved = saved_config(&tmp);
+    assert!(!saved.contains("host = 8080"), "8080 should be gone:\n{saved}");
+    assert!(saved.contains("host = 5432"), "5432 should remain:\n{saved}");
+}
+
+#[test]
+fn forward_rm_of_an_unknown_port_fails_without_touching_the_config() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "--rm", "12345"])
+        .assert()
+        .failure()
+        .stderr(contains("no forward for"));
+
+    assert!(saved_config(&tmp).contains("host = 8080"));
+}
+
+#[test]
+fn forward_temporary_needs_a_running_vm() {
+    // A temporary change on a stopped VM would be a silent no-op.
+    let tmp = stopped_vm_with_forwards("");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "9000", "--temporary"])
+        .assert()
+        .failure()
+        .stderr(contains("--temporary needs a running VM"));
+}
+
+#[test]
+fn forward_bare_rm_aborts_on_a_declined_confirmation() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "--rm"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stderr(contains("Aborted."));
+
+    assert!(
+        saved_config(&tmp).contains("host = 8080"),
+        "declining must leave the config alone"
+    );
+}
+
+#[test]
+fn forward_bare_rm_clears_everything_when_confirmed() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n\n[[forwards]]\nhost = 5432\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "--rm", "--yes"])
+        .assert()
+        .success();
+
+    let saved = saved_config(&tmp);
+    assert!(!saved.contains("[[forwards]]"), "config should be empty:\n{saved}");
+}
+
+#[test]
+fn forward_reapply_on_a_stopped_vm_is_a_no_op() {
+    let tmp = stopped_vm_with_forwards("[[forwards]]\nhost = 8080\n");
+    agv()
+        .env("AGV_DATA_DIR", tmp.path())
+        .args(["forward", "testvm", "--reapply"])
+        .assert()
+        .success()
+        .stdout(contains("Nothing to reapply"));
+
+    assert!(saved_config(&tmp).contains("host = 8080"));
+}
+
+#[test]
+fn forward_reapply_rejects_every_mutating_flag() {
+    for extra in [
+        vec!["--rm"],
+        vec!["--temporary"],
+        vec!["8080"],
+        vec!["--bind", "0.0.0.0"],
+        vec!["--list"],
+    ] {
+        let mut args = vec!["forward", "myvm", "--reapply"];
+        args.extend(extra.iter().copied());
+        agv()
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(contains("cannot be used with"));
+    }
+}
+
+#[test]
+fn forward_json_is_registered_on_every_mode() {
+    let tmp = stopped_vm_with_forwards("");
+    for args in [
+        vec!["forward", "testvm", "9000", "--json"],
+        vec!["forward", "testvm", "--rm", "9000", "--json"],
+        vec!["forward", "testvm", "--reapply", "--json"],
+    ] {
+        let output = agv()
+            .env("AGV_DATA_DIR", tmp.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_ne!(
+            output.status.code().unwrap_or(-1),
+            2,
+            "clap rejected {args:?} — --json is not registered on this mode"
+        );
+    }
+}
+
 #[test]
 fn forward_rejects_bind_flag_together_with_at_bind_suffix() {
     // Two spellings of the same thing — picking a winner silently is worse

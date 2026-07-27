@@ -391,7 +391,49 @@ async fn forward_command(args: cli::ForwardArgs, quiet: bool, yes: bool) -> anyh
     if args.rm {
         return forward_rm(&args, quiet, yes).await;
     }
+    if args.reapply {
+        return forward_reapply(&args, quiet).await;
+    }
     forward_add(&args, quiet).await
+}
+
+async fn forward_reapply(args: &cli::ForwardArgs, quiet: bool) -> anyhow::Result<()> {
+    let outcome = vm::forwarding::reapply(&args.name).await?;
+    if args.json {
+        return print_forward_json(&outcome.applied);
+    }
+    if quiet {
+        return Ok(());
+    }
+
+    if !outcome.live {
+        println!(
+            "Nothing to reapply — '{}' is not running, so its config forwards \
+             start with it (`agv start {}`).",
+            args.name, args.name
+        );
+        return Ok(());
+    }
+    if outcome.applied.is_empty() && outcome.skipped.is_empty() {
+        println!("'{}' declares no forwards in its config.", args.name);
+        return Ok(());
+    }
+    for entry in &outcome.applied {
+        let arrow = if entry.host == entry.guest { "↔" } else { "→" };
+        println!(
+            "  ✓ host:{host} {arrow} VM:{guest}{bind}",
+            host = entry.host,
+            guest = entry.guest,
+            bind = bind_note(&entry.binds),
+        );
+    }
+    for (spec, reason) in &outcome.skipped {
+        println!("  · {spec} skipped — {reason}");
+    }
+    if outcome.applied.is_empty() {
+        println!("  Every config forward was already running.");
+    }
+    Ok(())
 }
 
 async fn forward_list(args: &cli::ForwardArgs) -> anyhow::Result<()> {
