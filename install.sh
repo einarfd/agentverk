@@ -6,7 +6,7 @@
 set -eu
 
 REPO="einarfd/agentverk"
-DEST="${1:-}"
+DEST=""
 
 # Color output when stdout is a TTY and NO_COLOR is not set. Leaves the
 # variables empty otherwise, so unstyled output falls through unchanged
@@ -23,12 +23,34 @@ else
     RESET=""
 fi
 
-# Parse --dest flag
+usage() {
+    cat <<'USAGE'
+Usage: install.sh [--dest DIR]
+
+  --dest DIR   Install into DIR (default: /usr/local/bin when writable,
+               otherwise ~/.local/bin)
+  -h, --help   Show this message
+USAGE
+}
+
+# Parse flags. An unrecognized argument is an error rather than
+# something to skip past: the loop used to ignore them while DEST was
+# seeded from "$1", so a typo like `--dset ~/bin` installed into a
+# directory named `--dset` without a word of complaint.
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dest) DEST="$2"; shift 2 ;;
+        --dest)
+            [ $# -ge 2 ] || {
+                echo "${RED}error:${RESET} --dest requires a directory" >&2
+                exit 1
+            }
+            DEST="$2"; shift 2 ;;
         --dest=*) DEST="${1#--dest=}"; shift ;;
-        *) shift ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            echo "${RED}error:${RESET} unknown argument: $1" >&2
+            usage >&2
+            exit 1 ;;
     esac
 done
 
