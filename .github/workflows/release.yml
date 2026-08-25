@@ -83,6 +83,14 @@ jobs:
       - name: Build agv (Rust)
         run: cargo build --release --target ${{ matrix.target }}
 
+      # Every target runs natively on its own runner (musl binaries
+      # are static, so they run on the glibc Ubuntu images), so each
+      # one can be executed before it ships. install.sh also runs
+      # `--version`, but that is after a non-executing binary has
+      # already reached the release page.
+      - name: Smoke test agv
+        run: ./target/${{ matrix.target }}/release/agv --version
+
       # macOS releases bundle `agv-avf-runner` alongside `agv` so a
       # single install step lays down both binaries. Without this an
       # install on macOS Apple Silicon — where `avf` is the default
@@ -95,6 +103,14 @@ jobs:
       - name: Build agv-avf-runner (macOS only)
         if: matrix.target == 'aarch64-apple-darwin'
         run: just build-avf-runner
+
+      # Catches an ad-hoc codesigning failure before publishing —
+      # `agv --version` cannot, since agv only spawns the runner at
+      # VM-start time. The runner prints its wire-protocol version,
+      # which is what `agv doctor` compares against.
+      - name: Smoke test agv-avf-runner (macOS only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: swift/avf-runner/.build/release/agv-avf-runner --version
 
       # Stage binaries into a per-target dir, then tar. Tarballs
       # rather than raw binaries so:
