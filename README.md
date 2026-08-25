@@ -25,6 +25,13 @@ To install to a custom location:
 curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --dest ~/.local/bin
 ```
 
+To install a specific release rather than the latest — worth pinning in
+CI, so a new release can't change the build underneath you:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --version v0.3.0
+```
+
 **From crates.io** (if you already have Rust 1.85+):
 
 ```sh

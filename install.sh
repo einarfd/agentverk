@@ -1,12 +1,13 @@
 #!/usr/bin/env sh
 # Install agv — QEMU VM manager for AI coding agents.
 # Usage: curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh
-# Or:    sh install.sh [--dest /usr/local/bin]
+# Or:    sh install.sh [--dest /usr/local/bin] [--version v0.3.0]
 
 set -eu
 
 REPO="einarfd/agentverk"
 DEST=""
+VERSION=""
 
 # Color output when stdout is a TTY and NO_COLOR is not set. Leaves the
 # variables empty otherwise, so unstyled output falls through unchanged
@@ -25,11 +26,13 @@ fi
 
 usage() {
     cat <<'USAGE'
-Usage: install.sh [--dest DIR]
+Usage: install.sh [--dest DIR] [--version TAG]
 
-  --dest DIR   Install into DIR (default: /usr/local/bin when writable,
-               otherwise ~/.local/bin)
-  -h, --help   Show this message
+  --dest DIR      Install into DIR (default: /usr/local/bin when
+                  writable, otherwise ~/.local/bin)
+  --version TAG   Install a specific release (e.g. v0.3.0) instead of
+                  the latest one
+  -h, --help      Show this message
 USAGE
 }
 
@@ -46,6 +49,13 @@ while [ $# -gt 0 ]; do
             }
             DEST="$2"; shift 2 ;;
         --dest=*) DEST="${1#--dest=}"; shift ;;
+        --version)
+            [ $# -ge 2 ] || {
+                echo "${RED}error:${RESET} --version requires a release tag" >&2
+                exit 1
+            }
+            VERSION="$2"; shift 2 ;;
+        --version=*) VERSION="${1#--version=}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             echo "${RED}error:${RESET} unknown argument: $1" >&2
@@ -53,6 +63,16 @@ while [ $# -gt 0 ]; do
             exit 1 ;;
     esac
 done
+
+# Release tags are v-prefixed. Accept either form so `--version 0.3.0`
+# works as well as `--version v0.3.0` — the bare number is what people
+# read off `agv --version`.
+if [ -n "$VERSION" ]; then
+    case "$VERSION" in
+        v*) ;;
+        *) VERSION="v$VERSION" ;;
+    esac
+fi
 
 # Detect OS
 OS=$(uname -s)
@@ -101,9 +121,20 @@ fi
 
 BIN="$DEST/agv"
 TARBALL="agv-$TARGET.tar.gz"
-URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
+
+# An unpinned install follows GitHub's `latest` redirect. Pinning
+# resolves to that one release's asset path instead — without it there
+# is no way to install a known version, which is what CI that
+# curl-pipes this script needs to stay reproducible.
+if [ -n "$VERSION" ]; then
+    BASE="https://github.com/$REPO/releases/download/$VERSION"
+else
+    BASE="https://github.com/$REPO/releases/latest/download"
+fi
+URL="$BASE/$TARBALL"
 
 echo "Detected: $OS/$ARCH ($TARGET)"
+echo "Version: ${VERSION:-latest}"
 echo "Installing to: $DEST"
 echo ""
 
