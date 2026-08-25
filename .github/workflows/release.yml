@@ -9,8 +9,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Pre-flight gate. Runs before any target builds so a bad tag fails
+  # in seconds rather than after three matrix legs have burned.
+  #
+  # Two things are checked here that nothing else checks:
+  #   1. The tag matches the version in Cargo.toml. Release binaries
+  #      themselves report the tag either way — build.rs derives
+  #      `agv --version` from `git describe`. The manifest is what
+  #      that falls back to with no .git dir (a source-tarball build)
+  #      and what any crates.io publish would carry, so drift there
+  #      is invisible until it surfaces somewhere awkward.
+  #   2. The tagged commit passes the fast tests. `ci.yml` triggers on
+  #      pushes to main and PRs, not on tags, so without this a tag on
+  #      a commit that never went green still publishes.
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `^version` only matches the unindented [package] key —
+      # dependency tables write theirs indented, so head -1 is the
+      # package version and not a dependency's.
+      - name: Tag matches Cargo.toml
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$declared" != "$tagged" ]; then
+            echo "::error::Cargo.toml declares $declared but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "Cargo.toml $declared matches tag $GITHUB_REF_NAME"
+
+      # Unit tests only — the same subset ci.yml runs on Linux. Enough
+      # to catch a tag cut from an unbuildable or broken commit without
+      # duplicating the full CI matrix on every release.
+      - name: Unit tests
+        run: cargo test --lib
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
