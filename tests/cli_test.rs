@@ -8,10 +8,6 @@ use predicates::prelude::*;
 use predicates::str::contains;
 
 fn agv() -> Command {
-    #[expect(
-        deprecated,
-        reason = "assert_cmd's Command::cargo_bin is marked deprecated but is still the documented API"
-    )]
     Command::cargo_bin("agv").unwrap()
 }
 
