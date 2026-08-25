@@ -1,0 +1,29 @@
+# Without this, nothing tells us an action has gone stale. Both
+# `actions/checkout` and `actions/download-artifact` sat a major behind
+# before anyone noticed, which is the failure mode this exists to catch.
+version: 2
+
+updates:
+  # Action majors are the ones worth seeing promptly — they carry the
+  # runtime and behavioural changes (ESM migrations, stricter defaults).
+  # Monthly, because these workflows are small and a weekly PR for a
+  # patch bump is noise.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "CI:"
+
+  # Cargo deps grouped into one PR per run. agv pins loosely ("1",
+  # "0.22"), so most updates are already picked up at build time and a
+  # PR per crate would be pure churn; the group exists to surface the
+  # ones that need a manifest edit.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns:
+          - "*"
