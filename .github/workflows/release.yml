@@ -152,9 +152,18 @@ jobs:
           cd artifacts
           sha256sum agv-*.tar.gz > checksums.txt
 
+      # A tag with a hyphen (v0.4.0-rc1, v1.0.0-beta) is a
+      # pre-release. Without --prerelease, gh marks it `latest`, which
+      # is exactly what install.sh downloads — so an rc would land on
+      # every fresh install.
       - name: Create GitHub release
         run: |
-          gh release create "${{ github.ref_name }}" \
+          set -euo pipefail
+          flags=""
+          case "$GITHUB_REF_NAME" in
+            *-*) flags="--prerelease" ;;
+          esac
+          gh release create "${{ github.ref_name }}" $flags \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
