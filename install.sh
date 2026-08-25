@@ -157,6 +157,55 @@ else
     exit 1
 fi
 
+# Verify the tarball against the release's checksums.txt. The tarball
+# and the checksums come from the same origin, so this is not
+# protection against a compromised release — it catches truncated
+# downloads, proxy corruption, and a partially-replaced asset. Real
+# tamper-evidence would need signing or build provenance.
+#
+# Linux ships sha256sum, macOS ships shasum. A host with neither still
+# installs: a missing checksum tool is not a reason to refuse.
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA_CHECK="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+    SHA_CHECK="shasum -a 256"
+else
+    SHA_CHECK=""
+fi
+
+if [ -z "$SHA_CHECK" ]; then
+    echo "${YELLOW}warning:${RESET} no sha256 tool found; skipping checksum verification" >&2
+else
+    echo "Verifying checksum..."
+    # No -S here, unlike the tarball fetch: a release without a
+    # checksums.txt is handled below with our own warning, and curl's
+    # raw 404 ahead of it just looks like a failed install.
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || true
+    else
+        wget -q -O "$TMP/checksums.txt" "$BASE/checksums.txt" || true
+    fi
+
+    # Pull out this target's line. Nothing to check means the release
+    # predates checksums.txt or doesn't list this asset — warn rather
+    # than fail, so an older pinned version stays installable.
+    EXPECTED=""
+    if [ -f "$TMP/checksums.txt" ]; then
+        EXPECTED=$(grep " $TARBALL\$" "$TMP/checksums.txt" || true)
+    fi
+
+    if [ -z "$EXPECTED" ]; then
+        echo "${YELLOW}warning:${RESET} no published checksum for $TARBALL; skipping verification" >&2
+    elif echo "$EXPECTED" | (cd "$TMP" && $SHA_CHECK -c -) >/dev/null 2>&1; then
+        echo "${GREEN}Checksum OK${RESET}"
+    else
+        echo "${RED}error:${RESET} checksum mismatch for $TARBALL" >&2
+        echo "The download is corrupt or incomplete. Retry the install; if it" >&2
+        echo "keeps failing, report it at https://github.com/$REPO/issues" >&2
+        exit 1
+    fi
+fi
+
 echo "Extracting..."
 tar -xzf "$TMP/$TARBALL" -C "$TMP"
 
