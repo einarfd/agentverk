@@ -62,16 +62,20 @@ pub async fn start_with_loadvm(
 
     // `-daemonize` used to provide the "started successfully" signal:
     // its parent process only exited once the child had finished
-    // setting up, so a zero exit status meant QEMU was up. Without it
-    // the spawn returns immediately, so wait for the QMP socket the
-    // same way the AVF backend waits for its control socket.
-    if let Err(e) = wait_for_qmp_socket(instance, pid, QMP_READY_TIMEOUT).await {
-        force_kill(pid);
+    // setting up, so a zero exit status meant QEMU was up.
+    if let Err(failure) = wait_for_qmp_ready(instance, pid, QMP_READY_TIMEOUT).await {
+        // Only signal a QEMU known to be alive. On the `Exited` path the
+        // reaper in `spawn_detached` has already collected the process,
+        // so the PID may belong to something else entirely by now.
+        if matches!(failure, StartupFailure::Stalled(_)) {
+            force_kill(pid);
+        }
         let _ = tokio::fs::remove_file(instance.pid_path()).await;
-        return Err(e.context(qemu_failure_message(
-            "QEMU failed to start",
-            &instance.qemu_log_path(),
-        )));
+        let _ = tokio::fs::remove_file(instance.qmp_socket_path()).await;
+        bail!(
+            "{}",
+            qemu_failure_message(failure.reason(), &instance.qemu_log_path())
+        );
     }
 
     // Write the SSH port so other commands (ssh, scp) can find it.
@@ -133,19 +137,22 @@ pub async fn suspend(instance: &Instance) -> anyhow::Result<()> {
     let mut client = QmpClient::connect(&socket_path).await?;
     // Run `savevm agv-suspend` via the human monitor.
     if let Err(e) = client.execute_hmp("savevm agv-suspend").await {
-        // A savevm that takes QEMU down with it surfaces here only as
-        // an EOF on the monitor socket, which on its own says nothing
-        // about why. Check whether the process is still there and, if
-        // not, attach what QEMU printed on the way out.
-        let e = e.context("failed to save VM state");
-        return Err(if is_process_alive(pid) {
-            e
-        } else {
-            e.context(qemu_failure_message(
-                "QEMU exited during savevm",
-                &instance.qemu_log_path(),
-            ))
-        });
+        // A savevm that takes QEMU down with it surfaces here only as an
+        // EOF on the monitor socket, which on its own says nothing about
+        // why. Give the exit a moment to land before concluding QEMU is
+        // alive — the kernel closes its fds (producing this EOF) before
+        // the process is reaped, so an immediate check reports "alive"
+        // exactly in the case the log excerpt was captured for.
+        if wait_for_exit(pid, QEMU_EXIT_GRACE).await {
+            bail!(
+                "{}",
+                qemu_failure_message(
+                    &format!("QEMU exited during savevm: {e:#}"),
+                    &instance.qemu_log_path(),
+                )
+            );
+        }
+        return Err(e.context("failed to save VM state"));
     }
     info!(vm = %instance.name, "VM state saved, shutting down QEMU");
 
@@ -725,6 +732,23 @@ fn build_qemu_args(
         .to_str()
         .context("QMP socket path is not valid UTF-8")?
         .to_string();
+    // Reject an over-long socket path here rather than letting QEMU take
+    // it. QEMU's own length check is `>` where every client's is `>=`, so
+    // at exactly `sizeof(sun_path)` it happily binds a path that nothing
+    // can then connect to — verified on macOS at 104 bytes: QEMU creates
+    // the socket, and both Rust and Python refuse it as "path too long".
+    // The VM would start and then be uncontrollable, with the failure
+    // surfacing much later as a confusing error from `stop` or `suspend`.
+    //
+    // `SocketAddr::from_pathname` applies exactly the check the client
+    // will, so this stays correct on platforms with a different limit.
+    std::os::unix::net::SocketAddr::from_pathname(instance.qmp_socket_path()).map_err(|_| {
+        anyhow::anyhow!(
+            "QMP socket path is too long for a unix socket ({} bytes): {qmp_str}\n\
+             Use a shorter VM name, or set AGV_DATA_DIR to a shorter path.",
+            qmp_str.len(),
+        )
+    })?;
 
     // Memory and CPUs.
     args.extend(["-m".to_string(), memory.to_string()]);
@@ -827,12 +851,16 @@ async fn read_pid(instance: &Instance) -> anyhow::Result<u32> {
 /// sitting out the full timeout.
 const QMP_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long to let a QEMU that just closed its monitor socket actually
+/// exit before deciding it is still alive.
+const QEMU_EXIT_GRACE: Duration = Duration::from_secs(2);
+
 /// Spawn QEMU as a detached child and record its PID.
 ///
 /// Mirrors how agv already launches its other long-lived children
-/// (forward supervisors, the idle watcher, the AVF runner): own
-/// process group, stdio pointed somewhere durable, handle forgotten so
-/// the OS owns the process, PID written from Rust.
+/// (forward supervisors, the idle watcher, the AVF runner): own process
+/// group, stdio pointed somewhere durable, PID written from Rust. Unlike
+/// those, the handle is kept and waited on — see the reaper below.
 ///
 /// QEMU's stdout and stderr go to `<instance>/qemu.log`. Under
 /// `-daemonize` they went to a pipe nobody read once startup
@@ -840,6 +868,14 @@ const QMP_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// motivated this change, say — it printed a message naming the exact
 /// problem and agv threw it away.
 fn spawn_detached(instance: &Instance, binary: &str, args: &[String]) -> anyhow::Result<u32> {
+    // Sweep a QMP socket left by an earlier boot. QEMU does not remove
+    // its own on a failed start, and nothing else will: `reconcile_status`
+    // only cleans up when the recorded status is `running`, so a VM left
+    // `broken` with QEMU still running keeps the file once that QEMU
+    // dies. Left in place it would satisfy the readiness check below on
+    // the first poll, from the previous boot.
+    let _ = std::fs::remove_file(instance.qmp_socket_path());
+
     let log_path = instance.qemu_log_path();
     // Truncate rather than append: one boot per file, matching
     // `serial.log` (which QEMU truncates via `-serial file:`) and the
@@ -883,40 +919,108 @@ fn spawn_detached(instance: &Instance, binary: &str, args: &[String]) -> anyhow:
     // The task only has to outlive agv's interest in the VM, not the VM
     // itself: if agv exits first, QEMU is orphaned to init exactly as
     // before and init does the reaping.
+    //
+    // The PID file is written first, while the handle is still ours: a
+    // QEMU running with no PID file is unmanageable, since stop and
+    // force_stop have nothing to signal while it holds the qcow2 write
+    // lock and the allocated hostfwd port, so the next start fails on the
+    // image lock too.
+    if let Err(e) = std::fs::write(instance.pid_path(), pid.to_string()) {
+        let _ = child.start_kill();
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        return Err(e).with_context(|| {
+            format!("failed to write PID file {}", instance.pid_path().display())
+        });
+    }
+
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
 
-    std::fs::write(instance.pid_path(), pid.to_string())
-        .with_context(|| format!("failed to write PID file {}", instance.pid_path().display()))?;
-
     Ok(pid)
 }
 
-/// Wait for QEMU to create its QMP socket, giving up early if the
-/// process exits first.
-async fn wait_for_qmp_socket(
+/// Why QEMU never became ready.
+enum StartupFailure {
+    /// QEMU exited on its own. Already reaped, so its PID must not be
+    /// signalled — it may have been recycled.
+    Exited(String),
+    /// QEMU is still running but never served QMP, so it has to be killed.
+    Stalled(String),
+}
+
+impl StartupFailure {
+    fn reason(&self) -> &str {
+        match self {
+            Self::Exited(r) | Self::Stalled(r) => r,
+        }
+    }
+}
+
+/// Wait until QEMU is actually serving QMP, giving up early if it exits.
+///
+/// Deliberately a completed handshake rather than `socket_path.exists()`.
+/// QEMU creates the QMP chardev socket very early in startup — before it
+/// opens `-drive` files, binds the hostfwd port, realizes devices, or
+/// applies `-loadvm` — and it does *not* unlink the socket when it then
+/// exits with an error. Measured on an aarch64 host with a missing disk
+/// image: socket present at 6.1ms, process gone with status 1 at 6.1ms,
+/// socket still on disk afterwards. A file-existence check would call
+/// that a successful start, which is strictly weaker than the exit
+/// status `-daemonize` used to give us, and would leave the caller to
+/// discover the failure later as an SSH timeout.
+///
+/// `QmpClient::connect` reads the greeting and sends `qmp_capabilities`,
+/// so a connection that completes proves QEMU is up and past the point
+/// where the errors above would have killed it. It also rejects a stale
+/// socket left by a previous boot, which has no listener behind it.
+async fn wait_for_qmp_ready(
     instance: &Instance,
     pid: u32,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> Result<(), StartupFailure> {
     let socket_path = instance.qmp_socket_path();
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if socket_path.exists() {
+        // Liveness first: an exited QEMU can still have a socket file on
+        // disk, so checking the socket first would report success for a
+        // process that is already gone.
+        if !is_process_alive(pid) {
+            return Err(StartupFailure::Exited(format!(
+                "QEMU exited before serving QMP on {}",
+                socket_path.display()
+            )));
+        }
+        if socket_path.exists() && QmpClient::connect(&socket_path).await.is_ok() {
             return Ok(());
         }
-        if !is_process_alive(pid) {
-            bail!(
-                "QEMU exited before creating QMP socket {}",
+        if std::time::Instant::now() >= deadline {
+            return Err(StartupFailure::Stalled(format!(
+                "QEMU did not serve QMP on {} within {timeout:?}",
                 socket_path.display()
-            );
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Poll until `pid` is gone, up to `timeout`. Returns whether it exited.
+///
+/// Exit is not instantaneous from the observer's side: a process that
+/// aborts has its fds closed by the kernel — which is what shows up as an
+/// EOF on the monitor socket — while `kill(pid, 0)` keeps succeeding until
+/// it is reaped. Deciding on a single check right after an EOF therefore
+/// tends to conclude "still alive" precisely when it isn't.
+async fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_process_alive(pid) {
+            return true;
         }
         if std::time::Instant::now() >= deadline {
-            bail!(
-                "QEMU did not create QMP socket {} within {timeout:?}",
-                socket_path.display()
-            );
+            return false;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -932,12 +1036,17 @@ fn force_kill(pid: u32) {
     }
 }
 
-/// Build an error message that includes the tail of `qemu.log`.
+/// Build a single error message carrying the tail of `qemu.log`.
 ///
 /// The whole point of capturing QEMU's output is that the user sees it
-/// without going digging, so put it in the error rather than pointing
-/// at a file path and hoping.
-fn qemu_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
+/// without going digging, so put it in the error rather than pointing at
+/// a file path and hoping.
+///
+/// Flat rather than an `anyhow` context layer: `main.rs` renders errors
+/// with `{err:#}`, which joins the chain with `": "` onto one line. A
+/// multi-line log excerpt added as context therefore comes out ahead of
+/// the reason it belongs to, reading as `<log dump>: <reason>`.
+fn qemu_failure_message(reason: &str, log_path: &std::path::Path) -> String {
     // Cap the excerpt: a device-probe failure can be verbose, and the
     // line that matters is at the end.
     const MAX: usize = 2048;
@@ -945,10 +1054,7 @@ fn qemu_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
     let log = std::fs::read_to_string(log_path).unwrap_or_default();
     let trimmed = log.trim();
     if trimmed.is_empty() {
-        return format!(
-            "{prefix} — QEMU produced no output (see {})",
-            log_path.display()
-        );
+        return format!("{reason} (no output in {})", log_path.display());
     }
     let tail = if trimmed.len() > MAX {
         let start = trimmed.len() - MAX;
@@ -960,7 +1066,7 @@ fn qemu_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
     } else {
         trimmed.to_string()
     };
-    format!("{prefix} (from {}):\n{tail}", log_path.display())
+    format!("{reason}\n--- {} ---\n{tail}", log_path.display())
 }
 
 /// Check whether a process with the given PID is alive.
