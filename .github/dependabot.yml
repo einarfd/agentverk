@@ -36,3 +36,15 @@ updates:
       - dependency-name: serial_test
         versions:
           - ">=4"
+      # reqwest 0.13 dropped the `webpki-roots` feature and made plain
+      # `rustls` bundle aws-lc-rs, which needs cmake and a C toolchain
+      # at build time — the two musl legs of the release matrix install
+      # only musl-tools. Staying on 0.13 without it means supplying both
+      # the crypto provider and the root store by hand through
+      # `use_preconfigured_tls`, and a mistake there breaks every image
+      # download at runtime, which only the #[ignore]'d boot tests would
+      # catch. We use five stable calls from this crate and 0.12 is
+      # still maintained, so there is nothing to gain for that risk.
+      - dependency-name: reqwest
+        versions:
+          - ">=0.13"
