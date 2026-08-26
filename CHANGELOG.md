@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-27
+
 ### Fixed
 
 - **`agv suspend` no longer kills QEMU on Apple Silicon.** agv passed
@@ -21,6 +23,21 @@ All notable changes to `agv` will be documented here. This project follows
   console) instead of a pipe that was read only when startup failed. A
   crash mid-run used to discard the message naming the cause; that text
   is now attached to the error.
+
+- **`agv start` now reports a QEMU that failed to start.** Success used
+  to be inferred from the monitor socket appearing — which QEMU creates
+  before it opens disk images, binds ports, or applies a snapshot, and
+  does not remove when it then exits. A bad disk image produced a VM
+  marked `running` and, minutes later, an unrelated SSH timeout; on
+  `agv resume` a failed restore could take a VM from `suspended` to
+  `broken` with the snapshot still intact. Startup is now confirmed by a
+  completed QMP handshake, so the failure arrives at once with QEMU's own
+  message.
+- **An over-long QMP socket path is refused up front.** At exactly
+  `sizeof(sun_path)` QEMU binds a unix socket that no client can connect
+  to, so the VM started and was then uncontrollable, failing later and
+  confusingly in `stop` or `suspend`. `agv` now rejects it before
+  starting and says to shorten the VM name or `AGV_DATA_DIR`.
 
 ## [0.4.0] - 2026-08-26
 
@@ -762,7 +779,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/einarfd/agentverk/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/einarfd/agentverk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/einarfd/agentverk/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/einarfd/agentverk/compare/v0.2.5...v0.2.6
