@@ -14,6 +14,19 @@ updates:
       interval: monthly
     commit-message:
       prefix: "CI:"
+    # The MSRV job pins `dtolnay/rust-toolchain@<version>`, and that ref
+    # is a policy statement — the oldest Rust this crate claims to build
+    # on — not a dependency to keep current. Dependabot reads it as a
+    # version anyway and proposed 1.88 -> 1.100, which is not a Rust that
+    # exists; it failed with "could not download nonexistent rust version
+    # 1.100.0". A bump that *did* resolve would be worse: the job would
+    # keep the name "MSRV (1.88)" while testing something else entirely,
+    # and the field it exists to enforce would go unchecked again.
+    #
+    # The toolchain moves when `rust-version` in Cargo.toml moves, by
+    # hand and in the same commit.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
 
   # Cargo deps grouped into one PR per run. agv pins loosely ("1",
   # "0.22"), so most updates are already picked up at build time and a
