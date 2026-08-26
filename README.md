@@ -32,13 +32,13 @@ CI, so a new release can't change the build underneath you:
 curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh | sh -s -- --version v0.3.0
 ```
 
-**From crates.io** (if you already have Rust 1.85+):
+**From crates.io** (if you already have Rust 1.88+):
 
 ```sh
 cargo install agv
 ```
 
-**From source** (latest `main`, requires Rust 1.85+):
+**From source** (latest `main`, requires Rust 1.88+):
 
 ```sh
 git clone https://github.com/einarfd/agentverk.git
@@ -269,7 +269,7 @@ Templates are currently QEMU-only — `agv template create` refuses on AVF VMs, 
 
 **Build dependencies:**
 
-- Rust 1.85 or later — install via [rustup](https://rustup.rs):
+- Rust 1.88 or later — install via [rustup](https://rustup.rs):
   ```
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
