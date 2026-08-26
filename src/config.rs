@@ -1153,17 +1153,16 @@ fn apply_includes(
             })?;
 
         // Validate: includes must not set base.from, arch images, spec, user, or vm settings.
-        if let Some(ref base) = include_config.base {
-            if base.from.is_some()
+        if let Some(ref base) = include_config.base
+            && (base.from.is_some()
                 || base.aarch64.is_some()
                 || base.x86_64.is_some()
                 || base.spec.is_some()
-                || base.user.is_some()
-            {
-                bail!(
-                    "include '{name}' must not set base.from, base.aarch64, base.x86_64, base.spec, or base.user — includes contribute only files, setup, and provision steps"
-                );
-            }
+                || base.user.is_some())
+        {
+            bail!(
+                "include '{name}' must not set base.from, base.aarch64, base.x86_64, base.spec, or base.user — includes contribute only files, setup, and provision steps"
+            );
         }
         if include_config.vm.is_some() {
             bail!(
@@ -1210,18 +1209,18 @@ fn apply_includes(
         }
 
         // Validate the resolved family is supported.
-        if let Some(list) = supported.as_ref() {
-            if !list.iter().any(|f| f == &resolved.os_family) {
-                let mut sorted = list.clone();
-                sorted.sort();
-                bail!(
-                    "mixin '{name}' does not support os_family '{family}'\n  \
+        if let Some(list) = supported.as_ref()
+            && !list.iter().any(|f| f == &resolved.os_family)
+        {
+            let mut sorted = list.clone();
+            sorted.sort();
+            bail!(
+                "mixin '{name}' does not support os_family '{family}'\n  \
                      base image os_family: {family}\n  \
                      mixin supports: {supported}",
-                    family = resolved.os_family,
-                    supported = sorted.join(", "),
-                );
-            }
+                family = resolved.os_family,
+                supported = sorted.join(", "),
+            );
         }
 
         // Tag top-level steps with the source module so status output can
@@ -1251,24 +1250,24 @@ fn apply_includes(
         let mut collected_manual_steps = include_config.manual_steps;
 
         // Append the matching per-family steps, if any.
-        if let Some(mut os_families) = include_config.os_families {
-            if let Some(mut family_steps) = os_families.remove(&resolved.os_family) {
-                for step in &mut family_steps.setup {
-                    if step.source.is_none() {
-                        step.source = Some(name.clone());
-                    }
+        if let Some(mut os_families) = include_config.os_families
+            && let Some(mut family_steps) = os_families.remove(&resolved.os_family)
+        {
+            for step in &mut family_steps.setup {
+                if step.source.is_none() {
+                    step.source = Some(name.clone());
                 }
                 for step in &mut family_steps.provision {
                     if step.source.is_none() {
                         step.source = Some(name.clone());
                     }
                 }
-                resolved.files.extend(family_steps.files);
-                resolved.setup.extend(family_steps.setup);
-                resolved.provision.extend(family_steps.provision);
-                collected_notes.extend(family_steps.notes);
-                collected_manual_steps.extend(family_steps.manual_steps);
             }
+            resolved.files.extend(family_steps.files);
+            resolved.setup.extend(family_steps.setup);
+            resolved.provision.extend(family_steps.provision);
+            collected_notes.extend(family_steps.notes);
+            collected_manual_steps.extend(family_steps.manual_steps);
         }
 
         // Merge this include's auto_forwards into the resolved map, erroring

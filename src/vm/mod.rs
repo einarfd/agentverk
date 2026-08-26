@@ -1653,10 +1653,10 @@ pub async fn destroy(name: &str, force: bool) -> anyhow::Result<()> {
     // running, kill it before we nuke the instance dir, otherwise we
     // orphan the process (especially painful for AVF — the runner holds
     // the VZ VM open and there's no pid file left to find it from).
-    if inst.is_process_alive().await {
-        if let Ok(backend) = backend::for_instance(&inst) {
-            let _ = backend.force_stop(&inst).await;
-        }
+    if inst.is_process_alive().await
+        && let Ok(backend) = backend::for_instance(&inst)
+    {
+        let _ = backend.force_stop(&inst).await;
     }
 
     let _ = ssh_config::remove_entry(name).await;

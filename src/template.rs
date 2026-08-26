@@ -69,19 +69,19 @@ pub fn load_variables(
     // Load .env from the config file's directory first (lowest priority).
     if let Some(dir) = config_dir {
         let dotenv_path = dir.join(".env");
-        if dotenv_path.exists() {
-            if let Ok(dotenv_vars) = load_dotenv(&dotenv_path) {
-                vars.extend(dotenv_vars);
-            }
+        if dotenv_path.exists()
+            && let Ok(dotenv_vars) = load_dotenv(&dotenv_path)
+        {
+            vars.extend(dotenv_vars);
         }
     }
 
     // .env in cwd overrides the config-dir one.
     let dotenv_path = Path::new(".env");
-    if dotenv_path.exists() {
-        if let Ok(dotenv_vars) = load_dotenv(dotenv_path) {
-            vars.extend(dotenv_vars);
-        }
+    if dotenv_path.exists()
+        && let Ok(dotenv_vars) = load_dotenv(dotenv_path)
+    {
+        vars.extend(dotenv_vars);
     }
 
     // Explicit --env-file overrides both implicit .envs. Errors if the

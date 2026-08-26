@@ -527,10 +527,11 @@ pub async fn stop_all_for_instance(inst: &Instance) {
 async fn remove_auto_forward_port_files(inst: &Instance) -> anyhow::Result<()> {
     let mut entries = tokio::fs::read_dir(&inst.dir).await?;
     while let Some(entry) = entries.next_entry().await? {
-        if let Some(name) = entry.file_name().to_str() {
-            if name.ends_with("_port") && name != "ssh_port" {
-                let _ = tokio::fs::remove_file(entry.path()).await;
-            }
+        if let Some(name) = entry.file_name().to_str()
+            && name.ends_with("_port")
+            && name != "ssh_port"
+        {
+            let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
     Ok(())

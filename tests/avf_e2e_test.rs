@@ -74,10 +74,10 @@ fn ensure_runner_alongside_agv(source: &Path) {
         .expect("agv binary has a parent dir")
         .join("agv-avf-runner");
     // Idempotent: if a symlink to the right target already exists, no-op.
-    if let Ok(cur) = std::fs::read_link(&dest) {
-        if cur == source {
-            return;
-        }
+    if let Ok(cur) = std::fs::read_link(&dest)
+        && cur == source
+    {
+        return;
     }
     let _ = std::fs::remove_file(&dest);
     std::os::unix::fs::symlink(source, &dest)

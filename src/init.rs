@@ -99,12 +99,12 @@ fn run_to(dest: &Path, template: Option<&str>, force: bool) -> anyhow::Result<()
     };
 
     // Create parent directory if needed.
-    if let Some(parent) = dest.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create parent directory {}", parent.display())
-            })?;
-        }
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
     }
 
     std::fs::write(dest, content)

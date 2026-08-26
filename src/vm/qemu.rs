@@ -252,10 +252,10 @@ impl QmpClient {
         // The "return" field of human-monitor-command is the HMP output as a
         // string. Most HMP commands are silent on success — treat any
         // non-empty output as an error.
-        if let Some(ret) = resp.get("return").and_then(|v| v.as_str()) {
-            if !ret.trim().is_empty() {
-                bail!("HMP command '{command}' returned error: {}", ret.trim());
-            }
+        if let Some(ret) = resp.get("return").and_then(|v| v.as_str())
+            && !ret.trim().is_empty()
+        {
+            bail!("HMP command '{command}' returned error: {}", ret.trim());
         }
         Ok(resp)
     }
@@ -835,10 +835,10 @@ async fn cleanup_runtime_files(instance: &Instance) {
         instance.qmp_socket_path(),
         instance.ssh_port_path(),
     ] {
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                debug!(path = %path.display(), error = %e, "cleanup: failed to remove runtime file");
-            }
+        if let Err(e) = tokio::fs::remove_file(&path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            debug!(path = %path.display(), error = %e, "cleanup: failed to remove runtime file");
         }
     }
     // Use the supervisor-aware cleanup so any leftover forward supervisors

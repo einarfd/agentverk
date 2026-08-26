@@ -374,10 +374,10 @@ impl Instance {
     /// - `Fresh` if neither exists.
     pub async fn read_provision_state(&self) -> ProvisionState {
         let path = self.provision_state_path();
-        if let Ok(contents) = tokio::fs::read_to_string(&path).await {
-            if let Ok(state) = toml::from_str::<ProvisionState>(&contents) {
-                return state;
-            }
+        if let Ok(contents) = tokio::fs::read_to_string(&path).await
+            && let Ok(state) = toml::from_str::<ProvisionState>(&contents)
+        {
+            return state;
         }
         if self.provisioned_path().exists() {
             return ProvisionState::complete();
@@ -402,10 +402,10 @@ impl Instance {
     #[must_use]
     pub fn is_provisioned(&self) -> bool {
         let state_path = self.provision_state_path();
-        if let Ok(contents) = std::fs::read_to_string(&state_path) {
-            if let Ok(state) = toml::from_str::<ProvisionState>(&contents) {
-                return state.is_complete();
-            }
+        if let Ok(contents) = std::fs::read_to_string(&state_path)
+            && let Ok(state) = toml::from_str::<ProvisionState>(&contents)
+        {
+            return state.is_complete();
         }
         self.provisioned_path().exists()
     }

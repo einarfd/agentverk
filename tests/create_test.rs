@@ -1074,11 +1074,11 @@ backend = "qemu"
         .unwrap();
     let mut body = None;
     for _ in 0..30 {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().is_success() {
-                body = Some(resp.text().await.unwrap_or_default());
-                break;
-            }
+        if let Ok(resp) = client.get(&url).send().await
+            && resp.status().is_success()
+        {
+            body = Some(resp.text().await.unwrap_or_default());
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }

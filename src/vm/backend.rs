@@ -507,14 +507,16 @@ impl VmBackend for LocalAvfBackend {
             rpc_result?;
         }
 
-        if let Some(pid) = pid {
-            if wait_for_pid_exit(pid, Duration::from_secs(30)).await.is_err() {
-                warn!(
-                    pid,
-                    "agv-avf-runner didn't exit within 30s after stop RPC; escalating signals"
-                );
-                avf_terminate_runner(pid).await?;
-            }
+        if let Some(pid) = pid
+            && wait_for_pid_exit(pid, Duration::from_secs(30))
+                .await
+                .is_err()
+        {
+            warn!(
+                pid,
+                "agv-avf-runner didn't exit within 30s after stop RPC; escalating signals"
+            );
+            avf_terminate_runner(pid).await?;
         }
         let _ = tokio::fs::remove_file(inst.avf_runner_pid_path()).await;
         Ok(())

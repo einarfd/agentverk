@@ -55,14 +55,12 @@ pub async fn run(name: &str, no_launch: bool) -> anyhow::Result<()> {
     println!("  VM:   {name}");
     println!("  URL:  {url}");
 
-    if !no_launch {
-        if let Err(e) = open_in_browser(&url) {
-            // Browser launch is a convenience — don't fail out if no
-            // handler is registered. The URL above is the whole story.
-            eprintln!();
-            eprintln!("  ! Could not open the browser: {e:#}");
-            eprintln!("  Open the URL above manually.");
-        }
+    if !no_launch && let Err(e) = open_in_browser(&url) {
+        // Browser launch is a convenience — don't fail out if no
+        // handler is registered. The URL above is the whole story.
+        eprintln!();
+        eprintln!("  ! Could not open the browser: {e:#}");
+        eprintln!("  Open the URL above manually.");
     }
 
     Ok(())

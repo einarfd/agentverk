@@ -209,10 +209,10 @@ fn ensure_runner_alongside_test_binary(source: &std::path::Path) {
         .expect("test binary has a parent dir")
         .join("agv-avf-runner");
     // Idempotent: if the symlink already points at the right place, no-op.
-    if let Ok(cur) = std::fs::read_link(&dest) {
-        if cur == source {
-            return;
-        }
+    if let Ok(cur) = std::fs::read_link(&dest)
+        && cur == source
+    {
+        return;
     }
     let _ = std::fs::remove_file(&dest);
     std::os::unix::fs::symlink(source, &dest)

@@ -135,32 +135,29 @@ pub fn list_all() -> anyhow::Result<Vec<SpecInfo>> {
     let mut seen = std::collections::HashSet::new();
 
     // User specs first (they take precedence).
-    if let Ok(user_dir) = dirs::specs_dir() {
-        if user_dir.exists() {
-            let entries = std::fs::read_dir(&user_dir)
-                .with_context(|| format!("failed to read specs dir {}", user_dir.display()))?;
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "toml") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        let name = stem.to_string();
-                        seen.insert(name.clone());
-                        let spec: Spec = toml::from_str(
-                            &std::fs::read_to_string(&path).with_context(|| {
-                                format!("failed to read spec file {}", path.display())
-                            })?,
-                        )
-                        .with_context(|| {
-                            format!("failed to parse spec file {}", path.display())
-                        })?;
-                        specs.push(SpecInfo {
-                            name,
-                            spec,
-                            source: SpecSource::User(path),
-                        });
-                    }
-                }
+    if let Ok(user_dir) = dirs::specs_dir()
+        && user_dir.exists()
+    {
+        let entries = std::fs::read_dir(&user_dir)
+            .with_context(|| format!("failed to read specs dir {}", user_dir.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "toml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                let name = stem.to_string();
+                seen.insert(name.clone());
+                let spec: Spec = toml::from_str(
+                    &std::fs::read_to_string(&path)
+                        .with_context(|| format!("failed to read spec file {}", path.display()))?,
+                )
+                .with_context(|| format!("failed to parse spec file {}", path.display()))?;
+                specs.push(SpecInfo {
+                    name,
+                    spec,
+                    source: SpecSource::User(path),
+                });
             }
         }
     }
