@@ -6,6 +6,7 @@
 use std::path::Path;
 #[cfg(target_arch = "aarch64")]
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{bail, Context as _};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -17,8 +18,9 @@ use crate::vm::instance::Instance;
 /// Spawn a QEMU process for the given VM instance.
 ///
 /// Allocates a free port for SSH forwarding, builds the QEMU command line,
-/// and spawns QEMU in daemon mode. On success, the PID file and SSH port
-/// file are written by QEMU and this function respectively.
+/// and spawns QEMU as a detached child. On success, the PID file, the SSH
+/// port file, and the QMP socket all exist — this returns only once QEMU
+/// has created the socket.
 ///
 /// `machine_type` is the pinned `-machine` value (e.g. `pc-q35-9.2`,
 /// `virt-9.2`). The caller is expected to resolve this once via
@@ -56,25 +58,20 @@ pub async fn start_with_loadvm(
         "starting QEMU"
     );
 
-    let result = tokio::process::Command::new(&binary)
-        .args(&args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
+    let pid = spawn_detached(instance, &binary, &args)?;
 
-    match result {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("QEMU failed to start (exit {}): {stderr}", output.status);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("{binary} not found — run 'agv doctor' to check all dependencies");
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to run {binary}"));
-        }
+    // `-daemonize` used to provide the "started successfully" signal:
+    // its parent process only exited once the child had finished
+    // setting up, so a zero exit status meant QEMU was up. Without it
+    // the spawn returns immediately, so wait for the QMP socket the
+    // same way the AVF backend waits for its control socket.
+    if let Err(e) = wait_for_qmp_socket(instance, pid, QMP_READY_TIMEOUT).await {
+        force_kill(pid);
+        let _ = tokio::fs::remove_file(instance.pid_path()).await;
+        return Err(e.context(qemu_failure_message(
+            "QEMU failed to start",
+            &instance.qemu_log_path(),
+        )));
     }
 
     // Write the SSH port so other commands (ssh, scp) can find it.
@@ -94,12 +91,11 @@ pub async fn stop(instance: &Instance) -> anyhow::Result<()> {
     let socket_path = instance.qmp_socket_path();
     info!(vm = %instance.name, "sending graceful shutdown via QMP");
 
-    // Read the pid before asking QEMU to exit. QEMU removes its own
-    // pidfile when it exits (via `-pidfile`), so reading after
-    // `system_powerdown` / `quit` races with the exit path on fast VMs
-    // and produces a confusing ENOENT. `system_powerdown` is ACPI so
-    // the race is rare here, but `suspend` hits it routinely — keep
-    // the two paths consistent.
+    // Read the pid before asking QEMU to exit: the poll loop below
+    // needs it, and once QEMU is gone `cleanup_runtime_files` removes
+    // the file. agv writes this file itself now (QEMU is spawned
+    // without `-pidfile`), so it outlives the process rather than
+    // being unlinked from under us mid-shutdown.
     let pid = read_pid(instance).await?;
 
     let mut client = QmpClient::connect(&socket_path).await?;
@@ -129,18 +125,28 @@ pub async fn suspend(instance: &Instance) -> anyhow::Result<()> {
     let socket_path = instance.qmp_socket_path();
     info!(vm = %instance.name, "saving VM state via QMP savevm");
 
-    // Read the pid before telling QEMU to quit. QEMU removes its
-    // pidfile on exit and `quit` is immediate (no ACPI), so reading
-    // afterwards races with the exit path — we routinely see ENOENT
-    // on fast systems.
+    // Read the pid up front — it is needed both to poll for exit below
+    // and to tell "QEMU rejected the command" apart from "QEMU died"
+    // if the save fails.
     let pid = read_pid(instance).await?;
 
     let mut client = QmpClient::connect(&socket_path).await?;
     // Run `savevm agv-suspend` via the human monitor.
-    client
-        .execute_hmp("savevm agv-suspend")
-        .await
-        .context("failed to save VM state")?;
+    if let Err(e) = client.execute_hmp("savevm agv-suspend").await {
+        // A savevm that takes QEMU down with it surfaces here only as
+        // an EOF on the monitor socket, which on its own says nothing
+        // about why. Check whether the process is still there and, if
+        // not, attach what QEMU printed on the way out.
+        let e = e.context("failed to save VM state");
+        return Err(if is_process_alive(pid) {
+            e
+        } else {
+            e.context(qemu_failure_message(
+                "QEMU exited during savevm",
+                &instance.qemu_log_path(),
+            ))
+        });
+    }
     info!(vm = %instance.name, "VM state saved, shutting down QEMU");
 
     // Quit QEMU cleanly now that the snapshot is on disk.
@@ -719,11 +725,6 @@ fn build_qemu_args(
         .to_str()
         .context("QMP socket path is not valid UTF-8")?
         .to_string();
-    let pid_str = instance
-        .pid_path()
-        .to_str()
-        .context("PID file path is not valid UTF-8")?
-        .to_string();
 
     // Memory and CPUs.
     args.extend(["-m".to_string(), memory.to_string()]);
@@ -790,12 +791,19 @@ fn build_qemu_args(
     // status reconciliation will mark the VM as stopped.
     args.push("-no-reboot".to_string());
 
-    // Daemonize and write PID.
-    args.extend([
-        "-daemonize".to_string(),
-        "-pidfile".to_string(),
-        pid_str,
-    ]);
+    // Deliberately no `-daemonize`. QEMU's own daemonize forks without
+    // exec'ing, and on macOS any first-time Objective-C class
+    // initialization in the forked child aborts the process — Apple's
+    // runtime refuses it. That is reachable from `savevm` (HVF's GIC
+    // state save goes through Hypervisor.framework, which is
+    // Objective-C underneath), so a suspend on an Apple Silicon host
+    // killed QEMU outright. Upstream has this confirmed and unfixed
+    // since 2024: https://gitlab.com/qemu-project/qemu/-/work_items/2515
+    //
+    // agv detaches the process itself instead — see `spawn_detached`.
+    // That also means no `-pidfile`: the PID is written from Rust, so
+    // it is on disk before this function returns rather than whenever
+    // QEMU gets around to it.
 
     Ok((binary, args))
 }
@@ -809,6 +817,150 @@ async fn read_pid(instance: &Instance) -> anyhow::Result<u32> {
     raw.trim()
         .parse::<u32>()
         .with_context(|| format!("invalid PID in {}: {raw:?}", path.display()))
+}
+
+/// How long to wait for QEMU to create its QMP socket before giving up.
+///
+/// Generous: this covers image probing and firmware load on a cold
+/// host. A QEMU that is going to fail usually dies in well under a
+/// second, and `wait_for_qmp_socket` notices the exit rather than
+/// sitting out the full timeout.
+const QMP_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Spawn QEMU as a detached child and record its PID.
+///
+/// Mirrors how agv already launches its other long-lived children
+/// (forward supervisors, the idle watcher, the AVF runner): own
+/// process group, stdio pointed somewhere durable, handle forgotten so
+/// the OS owns the process, PID written from Rust.
+///
+/// QEMU's stdout and stderr go to `<instance>/qemu.log`. Under
+/// `-daemonize` they went to a pipe nobody read once startup
+/// succeeded, so when QEMU died later — the Objective-C abort that
+/// motivated this change, say — it printed a message naming the exact
+/// problem and agv threw it away.
+fn spawn_detached(instance: &Instance, binary: &str, args: &[String]) -> anyhow::Result<u32> {
+    let log_path = instance.qemu_log_path();
+    // Truncate rather than append: one boot per file, matching
+    // `serial.log` (which QEMU truncates via `-serial file:`) and the
+    // idle watcher's log.
+    let log = std::fs::File::create(&log_path)
+        .with_context(|| format!("failed to create {}", log_path.display()))?;
+    let log_clone = log.try_clone().context("failed to dup QEMU log fd")?;
+
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_clone));
+    // Own process group, so a signal aimed at the VM can't travel back
+    // up into the agv process that started it.
+    cmd.process_group(0);
+    // Explicit: dropping the handle must not take the VM with it.
+    cmd.kill_on_drop(false);
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("{binary} not found — run 'agv doctor' to check all dependencies");
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to run {binary}"));
+        }
+    };
+    let pid = child.id().context("QEMU exited before its PID could be read")?;
+
+    // Reap the child rather than forgetting it. Under `-daemonize` QEMU
+    // forked and the process agv spawned exited immediately, leaving the
+    // real QEMU orphaned to init — which reaped it on exit, so a PID
+    // check was always honest. Spawned directly, QEMU is agv's own
+    // child, and a child nobody waits on becomes a zombie: the PID stays
+    // in the process table and `kill(pid, 0)` keeps succeeding, so
+    // `is_process_alive` would report a dead VM as running for as long
+    // as the agv process lived. That matters wherever one invocation
+    // both starts and stops a VM.
+    //
+    // The task only has to outlive agv's interest in the VM, not the VM
+    // itself: if agv exits first, QEMU is orphaned to init exactly as
+    // before and init does the reaping.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    std::fs::write(instance.pid_path(), pid.to_string())
+        .with_context(|| format!("failed to write PID file {}", instance.pid_path().display()))?;
+
+    Ok(pid)
+}
+
+/// Wait for QEMU to create its QMP socket, giving up early if the
+/// process exits first.
+async fn wait_for_qmp_socket(
+    instance: &Instance,
+    pid: u32,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let socket_path = instance.qmp_socket_path();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if socket_path.exists() {
+            return Ok(());
+        }
+        if !is_process_alive(pid) {
+            bail!(
+                "QEMU exited before creating QMP socket {}",
+                socket_path.display()
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "QEMU did not create QMP socket {} within {timeout:?}",
+                socket_path.display()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// SIGKILL a PID, ignoring failures.
+///
+/// Used on the startup-failure path, where QEMU may be wedged rather
+/// than dead and there is no QMP socket to ask politely through.
+fn force_kill(pid: u32) {
+    if let Some(p) = crate::forward::pid_from_u32(pid) {
+        let _ = rustix::process::kill_process(p, rustix::process::Signal::KILL);
+    }
+}
+
+/// Build an error message that includes the tail of `qemu.log`.
+///
+/// The whole point of capturing QEMU's output is that the user sees it
+/// without going digging, so put it in the error rather than pointing
+/// at a file path and hoping.
+fn qemu_failure_message(prefix: &str, log_path: &std::path::Path) -> String {
+    // Cap the excerpt: a device-probe failure can be verbose, and the
+    // line that matters is at the end.
+    const MAX: usize = 2048;
+
+    let log = std::fs::read_to_string(log_path).unwrap_or_default();
+    let trimmed = log.trim();
+    if trimmed.is_empty() {
+        return format!(
+            "{prefix} — QEMU produced no output (see {})",
+            log_path.display()
+        );
+    }
+    let tail = if trimmed.len() > MAX {
+        let start = trimmed.len() - MAX;
+        let safe = trimmed
+            .char_indices()
+            .find(|(i, _)| *i >= start)
+            .map_or(trimmed.len(), |(i, _)| i);
+        format!("...{}", &trimmed[safe..])
+    } else {
+        trimmed.to_string()
+    };
+    format!("{prefix} (from {}):\n{tail}", log_path.display())
 }
 
 /// Check whether a process with the given PID is alive.
@@ -942,7 +1094,17 @@ mod tests {
             "missing hostfwd: {joined}"
         );
         assert!(joined.contains("-no-reboot"), "missing -no-reboot: {joined}");
-        assert!(joined.contains("-daemonize"), "missing -daemonize: {joined}");
+        // No `-daemonize` / `-pidfile`: agv detaches QEMU itself and
+        // writes the PID, because QEMU's own daemonize fork makes a
+        // later `savevm` abort on macOS. See `spawn_detached`.
+        assert!(
+            !joined.contains("-daemonize"),
+            "-daemonize must not be passed: {joined}"
+        );
+        assert!(
+            !joined.contains("-pidfile"),
+            "-pidfile must not be passed: {joined}"
+        );
         assert!(
             joined.contains("pc-q35-9.2"),
             "missing pinned machine type in args: {joined}"

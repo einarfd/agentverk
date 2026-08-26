@@ -217,6 +217,17 @@ impl Instance {
         self.dir.join("efi-vars.fd")
     }
 
+    /// Path to QEMU's own stdout/stderr log.
+    ///
+    /// Distinct from `serial.log`, which is the *guest's* console. This
+    /// is what QEMU the process says about itself — argument errors,
+    /// device warnings, and the abort message when it dies mid-run.
+    /// Truncated on each start, like the serial log.
+    #[must_use]
+    pub fn qemu_log_path(&self) -> PathBuf {
+        self.dir.join("qemu.log")
+    }
+
     /// Path to the serial console log.
     #[must_use]
     pub fn serial_log_path(&self) -> PathBuf {
