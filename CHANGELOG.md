@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-26
+
 ### Breaking
 
 - **`agv forward` now persists by default.** A forward added from the
@@ -744,7 +746,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/einarfd/agentverk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/einarfd/agentverk/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/einarfd/agentverk/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/einarfd/agentverk/compare/v0.2.4...v0.2.5
