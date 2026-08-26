@@ -2,7 +2,7 @@
 name = "agv"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Create and manage microVMs for AI agents — QEMU on Linux, Apple Virtualization on macOS"
 license = "MIT OR Apache-2.0"
 authors = ["Einar Fløystad Dørum <einarfd@mailthief.com>"]
