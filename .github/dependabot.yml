@@ -27,3 +27,12 @@ updates:
       cargo:
         patterns:
           - "*"
+    # serial_test 4 requires rustc 1.93.1, above the `rust-version =
+    # "1.85"` this crate declares. It is a dev-dependency, so taking it
+    # would break `cargo test` for anyone on an older toolchain while
+    # buying nothing — the test-ordering API we use is unchanged. Drop
+    # this ignore if the MSRV is ever raised.
+    ignore:
+      - dependency-name: serial_test
+        versions:
+          - ">=4"
