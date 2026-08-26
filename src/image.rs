@@ -292,10 +292,29 @@ pub(crate) fn filename_from_url(url: &str) -> String {
             || {
                 let mut hasher = Sha256::new();
                 hasher.update(url.as_bytes());
-                format!("{:x}", hasher.finalize())
+                hex_encode(&hasher.finalize())
             },
             String::from,
         )
+}
+
+/// Render a digest as lowercase hex.
+///
+/// digest 0.11 finalizes into a `hybrid_array::Array` rather than a
+/// `GenericArray`, and that type does not implement `LowerHex`, so the
+/// `format!("{:x}", ..)` this replaced no longer compiles. Written out
+/// by hand rather than pulling in `hex` or `base16ct` for three call
+/// sites.
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        },
+    )
 }
 
 /// Compute the SHA256 digest of a file, reading in 64 KiB chunks.
@@ -320,7 +339,7 @@ async fn sha256_file(path: &Path) -> anyhow::Result<String> {
         hasher.update(&buf[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 /// Compute the SHA512 digest of a file, reading in 64 KiB chunks.
@@ -345,7 +364,7 @@ async fn sha512_file(path: &Path) -> anyhow::Result<String> {
         hasher.update(&buf[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 /// Stream-download a URL to a local file, logging progress.
