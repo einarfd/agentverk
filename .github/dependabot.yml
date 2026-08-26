@@ -48,10 +48,10 @@ updates:
       - dependency-name: reqwest
         versions:
           - ">=0.13"
-      # sysinfo 0.37 and up require rustc 1.88, and 0.39 requires 1.95.
-      # This is a runtime dependency, so unlike serial_test it would
-      # raise the floor for the shipped binary, not just the tests.
-      # 0.36 is the newest that still builds on 1.85.
+      # sysinfo 0.39 requires rustc 1.95, well past the 1.88 this crate
+      # declares. It is a runtime dependency, so unlike serial_test it
+      # would raise the floor for the shipped binary and not just for
+      # the tests. 0.38 is the newest that builds on 1.88.
       - dependency-name: sysinfo
         versions:
-          - ">=0.37"
+          - ">=0.39"
