@@ -34,6 +34,46 @@ jobs:
       - name: CLI tests
         run: cargo test --test cli_test
 
+  # Enforces the `rust-version` in Cargo.toml. Without this the field
+  # is a claim nothing checks: both other legs install
+  # dtolnay/rust-toolchain@stable, which accepts whatever the current
+  # compiler accepts. It had already drifted — two let-chains needing
+  # 1.88 landed while the manifest still said 1.85, and nothing noticed.
+  #
+  # Deliberately `check`, not `clippy` or `test`:
+  #   - clippy's pedantic set changes between releases, so pinning the
+  #     toolchain would pin the lints too and this job would fail on
+  #     warnings the stable legs never see. Linting is their job.
+  #   - MSRV is a question about what compiles. Running the suite here
+  #     would double the test time to re-prove what stable already
+  #     proved about behaviour.
+  #
+  # `--all-targets` so dev-dependencies are covered too (serial_test is
+  # held at 3 for exactly this reason), and `--locked` so the committed
+  # Cargo.lock is what gets checked rather than a fresh resolve that
+  # might pick different versions.
+  #
+  # Runs on both OSes because the macOS-gated code — src/qcow2.rs,
+  # src/raw_cache.rs, LocalAvfBackend — is invisible to a Linux check,
+  # and it is the newest and most intricate code in the tree, so it is
+  # exactly where a too-new language feature is most likely to land.
+  msrv:
+    name: MSRV (1.88, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets --locked
+
   # macOS job — without this, the whole AVF code path (most of
   # src/vm/backend.rs, the Swift runner, the four AVF integration test
   # files) goes un-compiled and un-linted in CI. The Ubuntu job
