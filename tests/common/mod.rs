@@ -51,9 +51,26 @@ use tempfile::TempDir;
 /// realistic scenario. If `~/.local/share/agv/cache/images/` doesn't
 /// exist yet (fresh host), the symlink is skipped and agv populates
 /// a real cache dir inside the tempdir as before.
+/// **Why not plain `tempfile::tempdir()`.** A VM's QMP socket lives at
+/// `<data_dir>/instances/<name>/qmp.sock`, and a unix socket path has a
+/// hard limit of `sizeof(sun_path)` — 104 bytes on macOS, so 103 usable.
+/// macOS hands out `TMPDIR=/var/folders/<...>/T`, 48 characters before
+/// anything of ours, which leaves 24 for the VM name. Several test VMs
+/// are longer than that (`_test-auto-suspend-active` is 25), and the
+/// failure is thoroughly unobvious: QEMU binds an over-long path anyway,
+/// then nothing can connect to it. Anchoring at `/tmp` raises the budget
+/// to 68.
 #[must_use]
 pub fn test_data_dir() -> TempDir {
-    let dir = tempfile::tempdir().expect("create test tempdir");
+    let short_base = Path::new("/tmp");
+    let dir = if short_base.is_dir() {
+        tempfile::Builder::new()
+            .prefix("agv")
+            .tempdir_in(short_base)
+            .expect("create test tempdir")
+    } else {
+        tempfile::tempdir().expect("create test tempdir")
+    };
     share_image_cache(dir.path());
     dir
 }

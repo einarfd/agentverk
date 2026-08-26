@@ -6,6 +6,22 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agv suspend` no longer kills QEMU on Apple Silicon.** agv passed
+  `-daemonize`, which makes QEMU fork; on macOS the Objective-C runtime
+  aborts a process that first initializes a class in a forked child, and
+  `savevm` reaches exactly that through HVF's GIC state save. Suspend
+  died with `QMP socket closed unexpectedly` and the VM stopped instead.
+  agv now detaches QEMU itself. Upstream bug, confirmed and unfixed
+  since 2024 (qemu-project/qemu#2515); it also affects emulated targets
+  on macOS, so the fix is not suspend-specific.
+- **A QEMU that dies says why.** Its stdout and stderr go to
+  `<instance>/qemu.log` (distinct from `serial.log`, which is the guest
+  console) instead of a pipe that was read only when startup failed. A
+  crash mid-run used to discard the message naming the cause; that text
+  is now attached to the error.
+
 ## [0.4.0] - 2026-08-26
 
 ### Breaking
