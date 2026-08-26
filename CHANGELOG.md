@@ -38,6 +38,27 @@ All notable changes to `agv` will be documented here. This project follows
 - **String forward specs accept multiple `@BIND` suffixes**
   (`"8642@10.0.0.1@::1"`), matching what the `[[forwards]]` table form
   and repeated `--bind` could already express.
+- **`install.sh --version <tag>`** to pin a specific release instead of
+  following `latest`. Takes `v0.3.0` or `0.3.0`. Needed by CI that
+  curl-pipes the installer and has to stay reproducible.
+- **The installer verifies the tarball against the release's
+  `checksums.txt`** before extracting. This catches truncated downloads
+  and proxy corruption, not a compromised release — the tarball and the
+  checksums come from the same origin. A release with no published
+  checksums, or a host with neither `sha256sum` nor `shasum`, warns and
+  continues rather than refusing to install.
+- **Release pipeline gates.** A pre-flight job checks the tag against
+  the version in `Cargo.toml` and runs the unit tests before any target
+  builds, and every built binary runs `--version` before it can reach
+  the release page. `ci.yml` triggers on pushes and PRs, not on tags, so
+  until now a tag cut from a commit that never went green still shipped.
+- **Hyphenated tags publish as pre-releases.** `v0.4.0-rc1` no longer
+  becomes the `latest` release that `install.sh` downloads.
+- **MSRV job in CI**, pinned to the declared `rust-version` and run on
+  both Linux and macOS. Without it the field was a claim nothing
+  checked.
+- **Dependabot** for GitHub Actions and cargo, monthly, with cargo
+  updates grouped into a single PR.
 
 ### Fixed
 
@@ -48,12 +69,22 @@ All notable changes to `agv` will be documented here. This project follows
   after the overwrite. Fail-safe (less exposure than requested, not
   more) but wrong. Combining `--bind` with `@BIND` on the same spec is
   now rejected rather than silently resolved.
+- **`install.sh` treated an unrecognized argument as the install
+  directory.** `sh install.sh --dset ~/bin` installed into a directory
+  named `--dset` without complaint. Unknown arguments are now an error
+  with usage.
 
 ### Changed
 
 - **`agv config set --forwards` on a running VM now points at
   `agv forward`.** The stopped-only rule is unchanged for every field;
   the error just names the command that does work while running.
+- **The documented Rust version is now 1.88, corrected from 1.85.** This
+  is not a new requirement: the code has needed 1.88 since it started
+  using let chains, and the manifest and README understated it. Nothing
+  in CI checked, which is why it drifted.
+- **Dependency bumps:** anstream 1.0, base64 0.23, indicatif 0.18,
+  sha2 0.11, sysinfo 0.38, toml 1.1.
 
 ## [0.3.0] - 2026-05-21
 
