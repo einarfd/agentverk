@@ -6,6 +6,8 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-27
+
 ### Fixed
 
 - **An over-long AVF control socket path is refused up front.** The same
@@ -22,10 +24,10 @@ All notable changes to `agv` will be documented here. This project follows
   uploads the crate as well as the binaries, so `cargo install agv` no
   longer trails the install script. Authentication is crates.io Trusted
   Publishing over GitHub OIDC, so no API token is stored anywhere.
-  Pre-release tags build binaries without publishing. Note that `cargo install` provides the `agv`
-  binary only — on macOS Apple Silicon the default `avf` backend also
-  needs `agv-avf-runner`, which cargo cannot carry; use the install
-  script or build the runner alongside.
+  Pre-release tags build binaries without publishing. Note that `cargo
+  install` provides the `agv` binary only — on macOS Apple Silicon the
+  default `avf` backend also needs `agv-avf-runner`, which cargo cannot
+  carry; use the install script or build the runner alongside.
 
 ## [0.4.1] - 2026-08-27
 
@@ -800,7 +802,8 @@ coding agents on macOS (Apple Silicon) and Linux (x86_64, aarch64).
 
 See [`SECURITY.md`](SECURITY.md) for scope and reporting instructions.
 
-[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/einarfd/agentverk/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/einarfd/agentverk/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/einarfd/agentverk/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/einarfd/agentverk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/einarfd/agentverk/compare/v0.2.6...v0.3.0

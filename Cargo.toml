@@ -1,6 +1,6 @@
 [package]
 name = "agv"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Create and manage microVMs for AI agents — QEMU on Linux, Apple Virtualization on macOS"
