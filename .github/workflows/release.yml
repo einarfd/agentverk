@@ -171,3 +171,89 @@ jobs:
             artifacts/checksums.txt
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # crates.io publish. Last in the DAG on purpose: publishing a version
+  # is irreversible (yank hides it, nothing deletes it), so it only
+  # happens once the binaries have built on every target and the GitHub
+  # release exists. A failed macOS leg must not leave a crates.io
+  # version pointing at a release that was never cut.
+  #
+  # Only `agv` ships here — `agv-avf-runner` is a Swift binary and cargo
+  # has no way to carry it, so a `cargo install agv` on macOS Apple
+  # Silicon is deliberately a partial install. The README says so.
+  #
+  # Auth is crates.io Trusted Publishing (RFC 3691), not a stored API
+  # token: GitHub proves this workflow's identity over OIDC and
+  # crates-io-auth-action exchanges that for a token good for ~30
+  # minutes, which its post step revokes when the job ends. A long-lived
+  # `CARGO_REGISTRY_TOKEN` secret would be a standing credential that
+  # any action running in this job could read, and its blast radius is
+  # everyone who runs `cargo install agv`.
+  #
+  # The crates.io side is configured per (owner, repo, workflow
+  # filename) — einarfd / agentverk / release.yml. Renaming this file
+  # breaks publishing until the trusted publisher is updated to match.
+  publish:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    # `id-token` is what lets the OIDC exchange happen. Naming any
+    # permission drops the rest to none, so `contents: read` has to be
+    # spelled out for checkout.
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Pre-release tags (v0.4.0-rc1) build binaries and cut a GitHub
+      # pre-release, but don't publish. crates.io would accept the
+      # semver pre-release and `cargo install` would correctly ignore
+      # it, but the version number is then burned forever for a build
+      # whose only audience is the tarball channel.
+      #
+      # The already-published check makes a re-run of this workflow on
+      # the same tag a no-op rather than a hard failure, so a transient
+      # upload error can be retried from the Actions UI.
+      - name: Decide whether to publish
+        id: decide
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF_NAME" in
+            *-*)
+              echo "::notice::$GITHUB_REF_NAME is a pre-release tag — skipping crates.io"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          # crates.io rejects API requests without a User-Agent.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H 'User-Agent: agv-release-workflow (https://github.com/einarfd/agentverk)' \
+            "https://crates.io/api/v1/crates/agv/$version")
+          if [ "$code" = "200" ]; then
+            echo "::notice::agv $version is already on crates.io — skipping"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Minted only when we're actually going to publish, so a skipped
+      # run never brings a credential into existence.
+      - name: Mint a crates.io token
+        id: auth
+        if: steps.decide.outputs.publish == 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # --locked so the published build resolves the committed
+      # Cargo.lock. release-check.sh already asserts the lock matches
+      # Cargo.toml before the tag is pushed, so this is a cheap
+      # assertion rather than a new failure mode.
+      - name: cargo publish
+        if: steps.decide.outputs.publish == 'true'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

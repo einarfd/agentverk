@@ -16,6 +16,17 @@ All notable changes to `agv` will be documented here. This project follows
   later as an unexplained timeout. It is now rejected before the runner
   starts, naming the VM name and `AGV_DATA_DIR` as the things to shorten.
 
+### Changed
+
+- **Releases publish to crates.io from CI.** Tagging a release now
+  uploads the crate as well as the binaries, so `cargo install agv` no
+  longer trails the install script. Authentication is crates.io Trusted
+  Publishing over GitHub OIDC, so no API token is stored anywhere.
+  Pre-release tags build binaries without publishing. Note that `cargo install` provides the `agv`
+  binary only — on macOS Apple Silicon the default `avf` backend also
+  needs `agv-avf-runner`, which cargo cannot carry; use the install
+  script or build the runner alongside.
+
 ## [0.4.1] - 2026-08-27
 
 ### Fixed
