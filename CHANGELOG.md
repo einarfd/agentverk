@@ -6,6 +6,16 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An over-long AVF control socket path is refused up front.** The same
+  check `agv` already applied to the QEMU monitor socket now covers the
+  AVF runner's control socket, which hits the limit at a shorter VM name
+  because its filename is longer. Past the limit the runner booted a VM
+  that `stop`, `suspend`, and `status` could no longer reach, failing
+  later as an unexplained timeout. It is now rejected before the runner
+  starts, naming the VM name and `AGV_DATA_DIR` as the things to shorten.
+
 ## [0.4.1] - 2026-08-27
 
 ### Fixed

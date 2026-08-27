@@ -371,6 +371,17 @@ impl VmBackend for LocalAvfBackend {
             );
         }
 
+        // The runner binds the control socket at the path we hand it,
+        // and every later `stop`/`suspend`/`status` connects to it. An
+        // over-long path would surface as an opaque RPC failure after
+        // the VM was already up — reject it before spawning. This path
+        // is 8 bytes longer than the QEMU backend's `qmp.sock`, so it
+        // hits the `sun_path` limit at a shorter VM name.
+        super::ensure_socket_path_fits(
+            &inst.avf_control_socket_path(),
+            "AVF control socket",
+        )?;
+
         // Compose the JSON config the runner reads.
         let runner_cfg = AvfRunnerConfig {
             runner_protocol_version: RUNNER_PROTOCOL_VERSION,
