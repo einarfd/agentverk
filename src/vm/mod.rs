@@ -36,6 +36,39 @@ use crate::error::Error;
 use crate::{dirs, idle_watcher, image, ssh, ssh_config};
 use instance::{Instance, Phase, ProvisionState, Status};
 
+/// Reject a unix-socket path that won't fit in `sockaddr_un.sun_path`
+/// before handing it to a process that will bind it.
+///
+/// Both hypervisor supervisors (QEMU's QMP socket, the AVF runner's
+/// control socket) are told where to bind by agv, and both are more
+/// permissive about the length than the clients that later connect.
+/// QEMU's own check is `>` where every client's is `>=`, so at exactly
+/// `sizeof(sun_path)` it happily binds a path nothing can connect to —
+/// verified on macOS at 104 bytes: QEMU creates the socket, and both
+/// Rust and Python refuse it as "path too long". The VM would start and
+/// then be uncontrollable, with the failure surfacing much later as a
+/// confusing error from `stop` or `suspend`. Failing here turns that
+/// into an actionable message at the point the name is chosen.
+///
+/// `SocketAddr::from_pathname` applies exactly the check the client
+/// will, so this stays correct on platforms with a different limit.
+///
+/// `label` names the socket in the error (e.g. `"QMP socket"`).
+pub(crate) fn ensure_socket_path_fits(
+    path: &std::path::Path,
+    label: &str,
+) -> anyhow::Result<()> {
+    if std::os::unix::net::SocketAddr::from_pathname(path).is_err() {
+        let shown = path.display();
+        let len = path.as_os_str().len();
+        anyhow::bail!(
+            "{label} path is too long for a unix socket ({len} bytes): {shown}\n\
+             Use a shorter VM name, or set AGV_DATA_DIR to a shorter path."
+        );
+    }
+    Ok(())
+}
+
 /// Machine-readable snapshot of a VM's current state.
 ///
 /// Returned by `agv create --json` (and, in the future, by `agv inspect
@@ -2103,5 +2136,26 @@ mod tests {
         assert_eq!(actual, expected, "DestroyReport JSON keys drifted");
         assert_eq!(obj.get("destroyed"), Some(&serde_json::Value::Bool(true)));
     }
-}
 
+    /// A path that fits `sun_path` passes; one past the limit is
+    /// rejected with an actionable message. The exact limit is
+    /// platform-defined (104 on macOS, 108 on Linux), so build the
+    /// over-long case well past both rather than pinning a number.
+    #[test]
+    fn socket_path_length_is_checked() {
+        let ok = std::path::Path::new("/tmp/agv/qmp.sock");
+        ensure_socket_path_fits(ok, "QMP socket").expect("short path must pass");
+
+        let long = std::path::PathBuf::from(format!("/tmp/{}/qmp.sock", "n".repeat(200)));
+        let err = ensure_socket_path_fits(&long, "QMP socket").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("QMP socket path is too long"),
+            "expected a too-long message naming the socket, got: {msg}"
+        );
+        assert!(
+            msg.contains("AGV_DATA_DIR"),
+            "expected the message to suggest a fix, got: {msg}"
+        );
+    }
+}

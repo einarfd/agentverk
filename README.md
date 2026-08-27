@@ -38,6 +38,11 @@ curl -fsSL https://raw.githubusercontent.com/einarfd/agentverk/main/install.sh |
 cargo install agv
 ```
 
+This installs the `agv` binary only. On Linux that is the whole tool. On macOS
+Apple Silicon the default `avf` backend also needs the `agv-avf-runner` helper,
+which is a Swift binary and cannot ship through cargo — either build it
+alongside (see below) or use the install script, which lays down both.
+
 **From source** (latest `main`, requires Rust 1.88+):
 
 ```sh
@@ -46,7 +51,7 @@ cd agentverk
 just install     # cargo install + builds + installs agv-avf-runner on macOS
 ```
 
-If you don't have [just](https://just.systems), the equivalent is `cargo install --path .` plus — on macOS Apple Silicon, where the `avf` backend is the default — `just build-avf-runner` (or `swift build -c release` in `swift/avf-runner/` plus the codesign step from the recipe) and copying `swift/avf-runner/.build/release/agv-avf-runner` next to the installed `agv` binary (typically `~/.cargo/bin/`). Without the sibling runner, `agv create` falls back to QEMU and `--backend avf` fails with a clear `agv doctor` hint.
+If you don't have [just](https://just.systems), the equivalent is `cargo install --path .` plus — on macOS Apple Silicon, where the `avf` backend is the default — `just build-avf-runner` (or `swift build -c release` in `swift/avf-runner/` plus the codesign step from the recipe) and copying `swift/avf-runner/.build/release/agv-avf-runner` next to the installed `agv` binary (typically `~/.cargo/bin/`). Without the sibling runner, `agv create` still defaults to the `avf` backend on that host and fails when it tries to boot; `agv doctor` reports the missing runner. Pass `--backend qemu` to work without it.
 
 ## Requirements
 

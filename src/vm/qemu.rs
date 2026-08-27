@@ -732,23 +732,9 @@ fn build_qemu_args(
         .to_str()
         .context("QMP socket path is not valid UTF-8")?
         .to_string();
-    // Reject an over-long socket path here rather than letting QEMU take
-    // it. QEMU's own length check is `>` where every client's is `>=`, so
-    // at exactly `sizeof(sun_path)` it happily binds a path that nothing
-    // can then connect to — verified on macOS at 104 bytes: QEMU creates
-    // the socket, and both Rust and Python refuse it as "path too long".
-    // The VM would start and then be uncontrollable, with the failure
-    // surfacing much later as a confusing error from `stop` or `suspend`.
-    //
-    // `SocketAddr::from_pathname` applies exactly the check the client
-    // will, so this stays correct on platforms with a different limit.
-    std::os::unix::net::SocketAddr::from_pathname(instance.qmp_socket_path()).map_err(|_| {
-        anyhow::anyhow!(
-            "QMP socket path is too long for a unix socket ({} bytes): {qmp_str}\n\
-             Use a shorter VM name, or set AGV_DATA_DIR to a shorter path.",
-            qmp_str.len(),
-        )
-    })?;
+    // Reject an over-long socket path here rather than letting QEMU bind
+    // one no client can reach. See `super::ensure_socket_path_fits`.
+    super::ensure_socket_path_fits(&instance.qmp_socket_path(), "QMP socket")?;
 
     // Memory and CPUs.
     args.extend(["-m".to_string(), memory.to_string()]);

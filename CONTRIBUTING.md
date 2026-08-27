@@ -75,8 +75,10 @@ Before marking a PR ready:
 
 ## Cutting a release
 
-Release flow (one-person project; `cargo publish` runs from a trusted
-local machine, not CI, on purpose):
+Release flow (the tag drives everything — the release workflow builds the
+cross-platform binaries, cuts the GitHub Release, and publishes to
+crates.io, in that order, so a failed build never leaves a published
+crate pointing at a release that was never cut):
 
 1. Bump `version` in `Cargo.toml` to the new value.
 2. Close out the `## [Unreleased]` section in `CHANGELOG.md`: add a new
@@ -97,6 +99,19 @@ local machine, not CI, on purpose):
    `release-check.sh` exists to catch.
 
 6. If the script's green, follow the suggested next steps it prints —
-   `git tag -a vX.Y.Z`, `git push origin main`, `git push origin vX.Y.Z`,
-   `cargo publish`. The tag push triggers the GitHub Release workflow
-   (cross-platform binaries + `install.sh` redirect target).
+   `git tag -a vX.Y.Z`, `git push origin main`, `git push origin vX.Y.Z`.
+   The tag push triggers the GitHub Release workflow: cross-platform
+   binaries (the `install.sh` redirect target), then the GitHub Release,
+   then the crates.io publish. Don't run `cargo publish` by hand; CI owns
+   it. There is no API token to manage — the publish job authenticates
+   with crates.io Trusted Publishing, exchanging a GitHub OIDC identity
+   for a short-lived token that is revoked when the job ends. crates.io
+   trusts this repo by (owner, repo, workflow filename), so renaming
+   `.github/workflows/release.yml` means updating the trusted publisher
+   on crates.io in the same change or releases will start failing at the
+   publish step.
+
+   A tag containing a hyphen (`v0.5.0-rc1`) is treated as a pre-release:
+   binaries and a GitHub pre-release, no crates.io upload. The publish
+   step also skips a version that is already on crates.io, so re-running
+   a failed workflow from the Actions UI is safe.

@@ -3,8 +3,14 @@
 #
 # Run AFTER committing the "Release X.Y.Z" commit (with bumped Cargo.toml,
 # refreshed Cargo.lock, and a closed-out CHANGELOG section) but BEFORE
-# `git tag` / `git push` / `cargo publish`. Asserts that the working tree,
-# version metadata, branch, and tests all agree before a release goes out.
+# `git tag` / `git push`. Asserts that the working tree, version metadata,
+# branch, and tests all agree before a release goes out.
+#
+# The tag push is the point of no return: it triggers the release
+# workflow, which builds the binaries, cuts the GitHub Release, and then
+# publishes to crates.io. The dry-run below is the last chance to catch a
+# crate that will not package, since by the time CI reaches the publish
+# step the release is already out.
 #
 # Designed to catch the class of mistake where a tag gets pushed before
 # the version bump (then `cargo publish --dry-run` reports the wrong
@@ -118,4 +124,5 @@ echo "${GREEN}All checks passed.${RESET}  Suggested next steps:"
 echo "  git tag -a v$VERSION -m \"Release $VERSION\""
 echo "  git push origin main"
 echo "  git push origin v$VERSION"
-echo "  cargo publish"
+echo
+echo "The tag push publishes to crates.io from CI — don't run \`cargo publish\` by hand."
