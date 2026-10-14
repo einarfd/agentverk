@@ -948,13 +948,41 @@ struct AvfRpcResponse {
 #[cfg(target_os = "macos")]
 const AVF_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Backoff between connect attempts when the runner's listen backlog
+/// is full. macOS answers a full unix-socket backlog with an immediate
+/// `ECONNREFUSED` rather than queueing the connect, and `agv start`
+/// fans out one forward supervisor per `[[forwards]]` entry — each
+/// calls `status` at once, right before `update_ssh_config` does too.
+/// Total wait is ~1.5s, short enough that a genuinely dead runner
+/// (stale socket file, nobody listening) still fails promptly.
+#[cfg(target_os = "macos")]
+const AVF_CONNECT_RETRY_DELAYS_MS: [u64; 5] = [50, 100, 200, 400, 800];
+
+/// Connect to the runner's control socket, retrying on
+/// `ECONNREFUSED` (see [`AVF_CONNECT_RETRY_DELAYS_MS`]).
+#[cfg(target_os = "macos")]
+async fn connect_avf_socket(socket_path: &Path) -> std::io::Result<UnixStream> {
+    let mut delays = AVF_CONNECT_RETRY_DELAYS_MS.iter();
+    loop {
+        match UnixStream::connect(socket_path).await {
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                let Some(&ms) = delays.next() else {
+                    return Err(e);
+                };
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Send a single JSON-RPC command to the agv-avf-runner control
 /// socket and return the parsed response. Returns `Err` if the socket
 /// can't be reached, the request times out, the response isn't valid
 /// JSON, or the response has `ok: false`.
 #[cfg(target_os = "macos")]
 async fn avf_rpc(socket_path: &Path, op: &str) -> anyhow::Result<AvfRpcResponse> {
-    let conn = tokio::time::timeout(AVF_RPC_TIMEOUT, UnixStream::connect(socket_path))
+    let conn = tokio::time::timeout(AVF_RPC_TIMEOUT, connect_avf_socket(socket_path))
         .await
         .with_context(|| {
             format!(

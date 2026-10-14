@@ -6,6 +6,19 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plain `ssh <vm>` works again for AVF VMs with many forwards.**
+  `agv start` launches one forward supervisor per `[[forwards]]` entry,
+  and each of them, plus the managed SSH config update, asks the AVF
+  runner for the guest IP at the same moment. The runner's control
+  socket only queued four connections, and macOS refuses a connect
+  outright once that queue is full, so with enough forwards the SSH
+  config update failed with `Connection refused`. That left the
+  managed `ssh_config` empty and only `agv ssh` could reach the VM.
+  agv now retries a refused connect briefly, and the runner queues up
+  to the system maximum.
+
 ## [0.4.2] - 2026-08-27
 
 ### Fixed
