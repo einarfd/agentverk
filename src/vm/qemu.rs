@@ -1173,7 +1173,7 @@ mod tests {
             return;
         };
 
-        assert!(!binary.is_empty());
+        assert_ne!(binary, "");
 
         let joined = args.join(" ");
         assert!(joined.contains("-m 2G"), "missing -m flag: {joined}");

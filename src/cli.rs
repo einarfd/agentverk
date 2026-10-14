@@ -880,7 +880,7 @@ mod tests {
         let Command::Ssh(ssh) = cli.command else {
             panic!("expected Command::Ssh");
         };
-        assert!(ssh.args.is_empty());
+        assert_eq!(ssh.args, Vec::<String>::new());
     }
 }
 

@@ -697,7 +697,7 @@ mod tests {
         let inst = instance_with_saved_forwards(dir.path(), vec![ForwardSpec::new(8080, 8080)]).await;
 
         let removed = persist_remove(&inst, &[9999]).await.unwrap();
-        assert!(removed.is_empty());
+        assert_eq!(removed, Vec::new());
         assert_eq!(saved_forwards(&inst).unwrap().len(), 1);
     }
 
@@ -712,7 +712,7 @@ mod tests {
 
         let removed = persist_clear(&inst).await.unwrap();
         assert_eq!(removed.len(), 2);
-        assert!(saved_forwards(&inst).unwrap().is_empty());
+        assert_eq!(saved_forwards(&inst).unwrap(), Vec::new());
     }
 
     #[tokio::test]
@@ -802,6 +802,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let inst = test_instance(dir.path());
         let live = sweep_dead(&inst).await.unwrap();
-        assert!(live.is_empty());
+        assert_eq!(live, Vec::new());
     }
 }

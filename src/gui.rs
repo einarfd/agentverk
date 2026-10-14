@@ -100,6 +100,6 @@ mod tests {
     fn launcher_tool_is_defined_for_this_platform() {
         // Compile-time check that at least one cfg branch picks a tool.
         let tool = super::launcher_tool();
-        assert!(!tool.is_empty());
+        assert_ne!(tool, "");
     }
 }

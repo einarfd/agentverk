@@ -651,7 +651,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("forwards.toml");
         let active = read_active(&path).await.unwrap();
-        assert!(active.is_empty());
+        assert_eq!(active, Vec::new());
     }
 
     #[tokio::test]
@@ -921,7 +921,7 @@ mod tests {
         let specs = parse_specs(["8642@0.0.0.0", "5433:5432", "3000@*"]).unwrap();
         assert_eq!(specs.len(), 3);
         assert_eq!(specs[0].binds, vec!["0.0.0.0".parse().unwrap()]);
-        assert!(specs[1].binds.is_empty());
+        assert_eq!(specs[1].binds, Vec::new());
         assert_eq!(specs[2].binds, vec![BindTarget::All]);
     }
 

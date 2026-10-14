@@ -1360,7 +1360,7 @@ mod tests {
     fn split_ssh_args_separator_at_start_in_args() {
         let args = [s("--"), s("ls")];
         let (opts, cmd) = split_ssh_args("myvm", &args);
-        assert!(opts.is_empty());
+        assert_eq!(opts, [] as [String; 0]);
         assert_eq!(cmd, &[s("ls")]);
     }
 
@@ -1369,7 +1369,7 @@ mod tests {
         let args = [s("-N"), s("--")];
         let (opts, cmd) = split_ssh_args("myvm", &args);
         assert_eq!(opts, &[s("-N")]);
-        assert!(cmd.is_empty());
+        assert_eq!(cmd, [] as [String; 0]);
     }
 
     /// No `--` and no leading `--` in raw argv — everything is
@@ -1379,14 +1379,14 @@ mod tests {
         let args = [s("-A"), s("-L"), s("8080:localhost:8080")];
         let (opts, cmd) = split_ssh_args("myvm", &args);
         assert_eq!(opts, &[s("-A"), s("-L"), s("8080:localhost:8080")]);
-        assert!(cmd.is_empty());
+        assert_eq!(cmd, [] as [String; 0]);
     }
 
     #[test]
     fn split_ssh_args_empty() {
         let (opts, cmd) = split_ssh_args("myvm", &[]);
-        assert!(opts.is_empty());
-        assert!(cmd.is_empty());
+        assert_eq!(opts, [] as [String; 0]);
+        assert_eq!(cmd, [] as [String; 0]);
     }
 
     /// `has_leading_dash_dash_after_ssh` is the recovery path for

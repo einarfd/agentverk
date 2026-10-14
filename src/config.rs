@@ -2297,7 +2297,7 @@ from = "ubuntu-24.04"
         assert_eq!(resolved.cpus, 2);
         assert_eq!(resolved.disk, "20G");
         assert_eq!(resolved.user, "agent");
-        assert!(!resolved.base_url.is_empty());
+        assert_ne!(resolved.base_url, "");
     }
 
     #[test]
@@ -3197,7 +3197,7 @@ bind = ["192.168.1.5", "2001:db8::5", "*"]
     #[test]
     fn forwards_string_form_has_no_binds() {
         let cfg: Config = toml::from_str("forwards = [\"8642\"]").unwrap();
-        assert!(cfg.forwards[0].binds.is_empty());
+        assert_eq!(cfg.forwards[0].binds, Vec::new());
     }
 
     #[test]
