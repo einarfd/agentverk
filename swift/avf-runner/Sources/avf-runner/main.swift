@@ -806,7 +806,11 @@ final class ControlServer {
         // should be able to control the VM.
         chmod(path, 0o600)
 
-        guard listen(fd, 4) == 0 else {
+        // SOMAXCONN rather than a small fixed backlog: macOS refuses
+        // (ECONNREFUSED) rather than queues once the backlog is full,
+        // and `agv start` connects from every forward supervisor plus
+        // itself at roughly the same instant.
+        guard listen(fd, SOMAXCONN) == 0 else {
             let err = errno
             Darwin.close(fd)
             fd = -1
