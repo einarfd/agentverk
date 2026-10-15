@@ -26,7 +26,7 @@ the config.
 ```toml
 # agv.toml
 [base]
-from    = "ubuntu-24.04"
+from    = "ubuntu-26.04"
 include = ["devtools", "gh"]
 spec    = "large"
 
@@ -66,7 +66,7 @@ Use the bundled `ssh-key` mixin: opt-in via `include`, and point
 ```toml
 # agv.toml
 [base]
-from    = "ubuntu-24.04"
+from    = "ubuntu-26.04"
 include = ["devtools", "ssh-key"]
 ```
 

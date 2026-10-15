@@ -26,7 +26,7 @@ const DEFAULT_CONTENT: &str = r#"# agv VM configuration.
 # Full reference: docs/config.md
 
 [base]
-from    = "ubuntu-24.04"                # `agv images` to list more
+from    = "ubuntu-26.04"                # `agv images` to list more
 # include = ["devtools"]                # git, curl, build-essential
 # include = ["devtools", "claude"]      # + Claude Code (also: gemini, codex, openclaw)
 spec    = "medium"                      # 2G RAM, 2 vCPUs, 20G disk (`agv specs` to see all)
@@ -127,7 +127,7 @@ mod tests {
         run_to(&dest, None, false).unwrap();
         assert!(dest.exists());
         let content = std::fs::read_to_string(&dest).unwrap();
-        assert!(content.contains("ubuntu-24.04"));
+        assert!(content.contains("ubuntu-26.04"));
     }
 
     #[test]

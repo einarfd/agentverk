@@ -6,6 +6,19 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The `ubuntu`, `debian`, and `fedora` image aliases now resolve to
+  current distro releases.** `ubuntu` moves from `ubuntu-24.04` to
+  `ubuntu-26.04` (Resolute Raccoon, LTS), `debian` from `debian-12`
+  (Bookworm) to `debian-13` (Trixie), and `fedora` from `fedora-43`
+  to `fedora-44` (43 reaches end of life around December 2026). The
+  old images stay registered under their canonical names, so existing
+  configs and scripts pinning them are unaffected; only un-pinned
+  `--image ubuntu`/`debian`/`fedora` uses the new releases. `agv create`
+  without `--image`/`--config`, and the `agv init` template, now
+  default to `ubuntu-26.04`.
+
 ### Fixed
 
 - **Plain `ssh <vm>` works again for AVF VMs with many forwards.**

@@ -9,7 +9,7 @@ section shows the equivalent flags.
 
 > **Note:** `agv create` does not look for `agv.toml` in the current directory —
 > the `--config` flag is required if you want to use a config file. Without it,
-> `agv create` falls back to the built-in `ubuntu-24.04` image.
+> `agv create` falls back to the built-in `ubuntu-26.04` image.
 
 ## Overview
 
@@ -31,7 +31,7 @@ the order listed. Sections from mixins (`include`) run before your own.
 
 ```toml
 [base]
-from    = "ubuntu-24.04"           # base image  (run `agv images` to list all)
+from    = "ubuntu-26.04"           # base image  (run `agv images` to list all)
 include = ["devtools", "claude"]   # mixins       (run `agv images` to list all)
 spec    = "large"                  # hardware preset — optional, default: "medium"
 user    = "agent"                  # VM username — optional, default: "agent"
@@ -41,15 +41,15 @@ CLI equivalents:
 
 | TOML field | CLI flag |
 |------------|----------|
-| `from = "ubuntu-24.04"` | `--image ubuntu-24.04` |
+| `from = "ubuntu-26.04"` | `--image ubuntu-26.04` |
 | `include = ["devtools", "claude"]` | `--include devtools --include claude` |
 | `spec = "large"` | `--spec large` |
 
 The `user` field has no CLI equivalent — it can only be set in the config file.
 
 **Shorthands**: `--image ubuntu`, `--image debian`, and `--image fedora` are
-accepted as aliases for the current canonical versions (`ubuntu-24.04`,
-`debian-12`, `fedora-43`). Aliases resolve at CLI-parse time; the VM's
+accepted as aliases for the current canonical versions (`ubuntu-26.04`,
+`debian-13`, `fedora-44`). Aliases resolve at CLI-parse time; the VM's
 saved config records the concrete URL, so they never introduce ambiguity
 after creation. For stability in scripts, prefer the canonical names —
 aliases may move when a newer release ships.
@@ -552,7 +552,7 @@ and Windows hosts.
 
 ```toml
 [base]
-from    = "debian-12"
+from    = "debian-13"
 include = ["devtools", "gui-xfce"]
 spec    = "large"    # XFCE + browser benefits from the bigger preset
 ```

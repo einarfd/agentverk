@@ -1477,7 +1477,7 @@ pub fn build_from_cli(args: &CreateArgs) -> anyhow::Result<ResolvedConfig> {
     } else {
         Config {
             base: Some(BaseConfig {
-                from: Some("ubuntu-24.04".into()),
+                from: Some("ubuntu-26.04".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2292,7 +2292,7 @@ from = "ubuntu-24.04"
     fn build_from_cli_minimal() {
         let args = minimal_args();
         let resolved = build_from_cli(&args).unwrap();
-        // Should resolve to ubuntu-24.04 defaults.
+        // Should resolve to ubuntu-26.04 defaults.
         assert_eq!(resolved.memory, "2G");
         assert_eq!(resolved.cpus, 2);
         assert_eq!(resolved.disk, "20G");

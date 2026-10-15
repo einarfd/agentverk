@@ -231,7 +231,7 @@ Array of image and mixin entries (built-ins plus any user-provided files in `<da
 
 ```json
 [
-  {"name": "ubuntu-24.04", "type": "image", "built_in": true,  "path": null},
+  {"name": "ubuntu-26.04", "type": "image", "built_in": true,  "path": null},
   {"name": "claude",       "type": "mixin", "built_in": true,  "path": null},
   {"name": "myimage",      "type": "image", "built_in": false, "path": "/Users/u/.local/share/agv/images/myimage.toml"}
 ]
@@ -296,8 +296,8 @@ Array of cached-image entries. Empty array when the cache is empty.
 
 ```json
 [
-  {"filename": "ubuntu-24.04-arm64.img", "size": 345678901, "in_use": true},
-  {"filename": "fedora-43-aarch64.qcow2", "size": 412300000, "in_use": false}
+  {"filename": "ubuntu-26.04-arm64.img", "size": 345678901, "in_use": true},
+  {"filename": "fedora-44-aarch64.qcow2", "size": 412300000, "in_use": false}
 ]
 ```
 

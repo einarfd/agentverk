@@ -91,9 +91,9 @@ See [`examples/`](examples/) for ready-to-use configs for Claude, Gemini, Codex,
 agv create --include devtools --include claude --start myvm  # uses the default spec (medium: 2G RAM, 2 vCPUs, 20G disk)
 ```
 
-**Picking a base image** — Ubuntu 24.04 is the default if `--image` is omitted.
+**Picking a base image** — Ubuntu 26.04 is the default if `--image` is omitted.
 `--image ubuntu`, `--image debian`, and `--image fedora` are shorthands for the
-current canonical versions (`ubuntu-24.04`, `debian-12`, `fedora-43`). Mixins
+current canonical versions (`ubuntu-26.04`, `debian-13`, `fedora-44`). Mixins
 like `devtools`, `nodejs`, `gh`, `rust`, `zsh`, and `oh-my-zsh` work across
 every supported family, so `--image fedora --include devtools` is as
 straightforward as the Ubuntu case.
@@ -226,7 +226,7 @@ See [`docs/config.md`](docs/config.md) for the full reference including CLI equi
 
 ```toml
 [base]
-from = "ubuntu-24.04"
+from = "ubuntu-26.04"
 include = ["devtools", "claude"]
 spec = "large"  # 8G RAM, 4 vCPUs, 40G disk
 

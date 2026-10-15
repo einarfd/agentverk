@@ -12,9 +12,12 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::dirs;
 
-const UBUNTU_TOML: &str = include_str!("ubuntu-24.04.toml");
+const UBUNTU_24_04_TOML: &str = include_str!("ubuntu-24.04.toml");
+const UBUNTU_26_04_TOML: &str = include_str!("ubuntu-26.04.toml");
 const DEBIAN_12_TOML: &str = include_str!("debian-12.toml");
+const DEBIAN_13_TOML: &str = include_str!("debian-13.toml");
 const FEDORA_43_TOML: &str = include_str!("fedora-43.toml");
+const FEDORA_44_TOML: &str = include_str!("fedora-44.toml");
 const CLAUDE_TOML: &str = include_str!("claude.toml");
 const CODEX_TOML: &str = include_str!("codex.toml");
 const DEVTOOLS_TOML: &str = include_str!("devtools.toml");
@@ -31,9 +34,12 @@ const OH_MY_ZSH_TOML: &str = include_str!("oh-my-zsh.toml");
 const SSH_KEY_TOML: &str = include_str!("ssh-key.toml");
 
 const BUILTIN_IMAGES: &[(&str, &str)] = &[
-    ("ubuntu-24.04", UBUNTU_TOML),
+    ("ubuntu-24.04", UBUNTU_24_04_TOML),
+    ("ubuntu-26.04", UBUNTU_26_04_TOML),
     ("debian-12", DEBIAN_12_TOML),
+    ("debian-13", DEBIAN_13_TOML),
     ("fedora-43", FEDORA_43_TOML),
+    ("fedora-44", FEDORA_44_TOML),
     ("claude", CLAUDE_TOML),
     ("codex", CODEX_TOML),
     ("devtools", DEVTOOLS_TOML),
@@ -51,17 +57,17 @@ const BUILTIN_IMAGES: &[(&str, &str)] = &[
 ];
 
 /// Shorthand aliases for base images — purely CLI-time sugar so users can
-/// type `--image ubuntu` instead of `--image ubuntu-24.04`.
+/// type `--image ubuntu` instead of `--image ubuntu-26.04`.
 ///
 /// Aliases resolve to the canonical name before lookup; they never appear
 /// in saved instance configs, and `agv images` lists canonical names only.
-/// When we bump a distro (e.g. Ubuntu 26.04), moving an alias is a
-/// deliberate, documented change in the CHANGELOG — scripts that want
+/// When we bump a distro (e.g. a future Ubuntu 28.04), moving an alias is
+/// a deliberate, documented change in the CHANGELOG — scripts that want
 /// stability should pin to the canonical name.
 const ALIASES: &[(&str, &str)] = &[
-    ("ubuntu", "ubuntu-24.04"),
-    ("debian", "debian-12"),
-    ("fedora", "fedora-43"),
+    ("ubuntu", "ubuntu-26.04"),
+    ("debian", "debian-13"),
+    ("fedora", "fedora-44"),
 ];
 
 /// Resolve a possible alias to its canonical image name.
@@ -181,7 +187,7 @@ pub fn lookup(name: &str) -> anyhow::Result<Option<Config>> {
     }
 
     // Resolve any alias before consulting the built-in registry, so
-    // `--image ubuntu` routes to the same config as `--image ubuntu-24.04`.
+    // `--image ubuntu` routes to the same config as `--image ubuntu-26.04`.
     let canonical = resolve_alias(name);
 
     // Check built-in images.
@@ -298,6 +304,43 @@ mod tests {
         let config = config.unwrap();
         let base = config.base.unwrap();
         assert!(base.from.is_none(), "fedora-43 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+        assert_eq!(base.os_family.as_deref(), Some("fedora"));
+    }
+
+    #[test]
+    fn lookup_builtin_ubuntu_26_04() {
+        let config = lookup("ubuntu-26.04").unwrap();
+        assert!(config.is_some(), "ubuntu-26.04 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "ubuntu-26.04 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+    }
+
+    #[test]
+    fn lookup_builtin_debian_13() {
+        let config = lookup("debian-13").unwrap();
+        assert!(config.is_some(), "debian-13 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "debian-13 is a root image");
+        assert!(base.aarch64.is_some());
+        assert!(base.x86_64.is_some());
+    }
+
+    #[test]
+    fn lookup_builtin_fedora_44() {
+        let config = lookup("fedora-44").unwrap();
+        assert!(config.is_some(), "fedora-44 should be a built-in image");
+
+        let config = config.unwrap();
+        let base = config.base.unwrap();
+        assert!(base.from.is_none(), "fedora-44 is a root image");
         assert!(base.aarch64.is_some());
         assert!(base.x86_64.is_some());
         assert_eq!(base.os_family.as_deref(), Some("fedora"));
@@ -466,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn alias_ubuntu_resolves_to_ubuntu_24_04() {
+    fn alias_ubuntu_resolves_to_ubuntu_26_04() {
         let via_alias = lookup("ubuntu").unwrap().unwrap();
-        let via_canonical = lookup("ubuntu-24.04").unwrap().unwrap();
+        let via_canonical = lookup("ubuntu-26.04").unwrap().unwrap();
         let base_alias = via_alias.base.unwrap();
         let base_canonical = via_canonical.base.unwrap();
         assert_eq!(base_alias.os_family, base_canonical.os_family);
@@ -479,9 +522,9 @@ mod tests {
     }
 
     #[test]
-    fn alias_debian_resolves_to_debian_12() {
+    fn alias_debian_resolves_to_debian_13() {
         let via_alias = lookup("debian").unwrap().unwrap();
-        let via_canonical = lookup("debian-12").unwrap().unwrap();
+        let via_canonical = lookup("debian-13").unwrap().unwrap();
         assert_eq!(
             via_alias.base.as_ref().and_then(|b| b.os_family.clone()),
             via_canonical.base.as_ref().and_then(|b| b.os_family.clone()),
@@ -489,9 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn alias_fedora_resolves_to_fedora_43() {
+    fn alias_fedora_resolves_to_fedora_44() {
         let via_alias = lookup("fedora").unwrap().unwrap();
-        let via_canonical = lookup("fedora-43").unwrap().unwrap();
+        let via_canonical = lookup("fedora-44").unwrap().unwrap();
         assert_eq!(
             via_alias.base.as_ref().and_then(|b| b.os_family.clone()),
             via_canonical.base.as_ref().and_then(|b| b.os_family.clone()),
@@ -517,8 +560,11 @@ mod tests {
         let images = list_all().unwrap();
         let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
         assert!(names.contains(&"ubuntu-24.04"));
+        assert!(names.contains(&"ubuntu-26.04"));
         assert!(names.contains(&"debian-12"));
+        assert!(names.contains(&"debian-13"));
         assert!(names.contains(&"fedora-43"));
+        assert!(names.contains(&"fedora-44"));
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"devtools"));
