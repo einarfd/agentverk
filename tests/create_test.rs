@@ -698,8 +698,9 @@ async fn destroy_kills_live_process_for_broken_vm() {
     }
 }
 
-/// Full create-start-provision lifecycle test using debian-12 (smaller image,
-/// faster download than Ubuntu).
+/// Full create-start-provision lifecycle test using the `debian` alias
+/// (smaller image, faster download than Ubuntu), so it always exercises
+/// the current default Debian release.
 ///
 /// Ignored by default because it downloads a real cloud image and boots a VM.
 /// Requires QEMU, qemu-img, and mkisofs/genisoimage.
@@ -721,11 +722,12 @@ async fn create_with_start_and_provision() {
     let test_file = host_tmp.path().join("agv-test-inject.txt");
     tokio::fs::write(&test_file, "injected-by-agv").await.unwrap();
 
-    // Use debian-12: smaller image (~330 MB) and fully apt-compatible.
+    // Use the `debian` alias so this tracks the current default release:
+    // small (~330 MB), fully apt-compatible image.
     let config_toml = format!(
         r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -820,7 +822,8 @@ run = "cat /home/agent/.config/agv-test/agv-test-inject.txt"
 }
 
 /// Same happy-path check as `create_with_start_and_provision`, but against
-/// the `fedora-43` base to verify non-debian families boot and provision
+/// the `fedora` alias base (current default Fedora release) to verify
+/// non-debian families boot and provision
 /// end-to-end: cloud-init applies our seed, SSH comes up, file injection
 /// via SCP works, and a provision step runs successfully.
 ///
@@ -855,7 +858,7 @@ async fn fedora_base_boots_and_provisions() {
     let config_toml = format!(
         r#"
 [base]
-from = "fedora-43"
+from = "fedora"
 include = ["devtools"]
 
 [vm]
@@ -994,7 +997,7 @@ sudo systemctl enable --now agv-test-http
     let config_toml = format!(
         r#"
 [base]
-from = "debian-12"
+from = "debian"
 include = ["{mixin_name}"]
 
 [vm]
@@ -1153,7 +1156,7 @@ async fn persistent_forward_survives_restart() {
     let config_toml = format!(
         r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -1403,7 +1406,7 @@ async fn suspend_and_resume_preserves_state() {
 
     let config_toml = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -1554,7 +1557,7 @@ async fn provision_failure_then_retry_resumes() {
     // (phase/index/error) here, but the log is strictly stronger.
     let config_toml = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -1675,7 +1678,7 @@ async fn auto_suspend_idle_vm_suspends() {
 
     let config_toml = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -1757,7 +1760,7 @@ async fn auto_suspend_active_session_keeps_vm_running() {
 
     let config_toml = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"

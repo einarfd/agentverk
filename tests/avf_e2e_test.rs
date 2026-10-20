@@ -180,7 +180,7 @@ async fn agv_create_start_ssh_suspend_refused_destroy() {
 
     let config_toml = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"

@@ -55,36 +55,50 @@ fn runner_binary() -> Option<PathBuf> {
     }
 }
 
-/// Locate a bootable raw debian-12 disk to use as a fixture for the
+/// Locate a bootable raw Debian disk to use as a fixture for the
 /// boot-the-VM slow tests. Returns `None` if no fixture exists —
 /// tests skip in that case.
 ///
 /// Checks two paths in order:
-///   1. `~/.local/share/agv/cache/images/debian-12-…qcow2.raw` —
+///   1. `~/.local/share/agv/cache/images/debian-*…qcow2.raw` —
 ///      the agv raw cache (populated automatically the first time
 ///      any AVF VM is created from this base; see `src/raw_cache.rs`).
-///   2. `/tmp/qcow2-poc/out/debian-12-…ours.raw` — legacy path from
+///   2. `/tmp/qcow2-poc/out/debian-*…ours.raw` — legacy path from
 ///      the qcow2-rs proof-of-concept. Kept as a fallback because
 ///      `/tmp` gets swept on macOS day-boundary reboots and the
 ///      cache path is the more durable home now.
+///
+/// The filename is matched by `debian-` prefix rather than hardcoded:
+/// it embeds the pinned build (e.g.
+/// `debian-13-genericcloud-arm64-20261015-2632.qcow2.raw`), which changes
+/// every time the `debian` alias moves to a new release.
 ///
 /// Both files are byte-identical for the converted region (the
 /// agv cache is produced by the same qcow2-rs code path) so the
 /// tests behave identically regardless of which one is found.
 fn bootable_raw_fixture() -> Option<PathBuf> {
-    let candidates = [
-        std::env::home_dir().map(|h| {
-            h.join(".local/share/agv/cache/images")
-                .join("debian-12-genericcloud-arm64-20260210-2384.qcow2.raw")
-        }),
-        Some(PathBuf::from(
-            "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
-        )),
+    let dirs = [
+        std::env::home_dir().map(|h| h.join(".local/share/agv/cache/images")),
+        Some(PathBuf::from("/tmp/qcow2-poc/out")),
     ];
-    candidates
-        .into_iter()
+    dirs.into_iter()
         .flatten()
-        .find(|p| p.exists())
+        .filter_map(|dir| {
+            std::fs::read_dir(&dir).ok().map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("debian-"))
+                            && p.extension().is_some_and(|e| e == "raw")
+                    })
+                    .max()
+            })
+        })
+        .flatten()
+        .next()
 }
 
 /// Generate a tiny seed.iso via macOS's built-in `hdiutil`, matching

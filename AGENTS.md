@@ -58,7 +58,12 @@ Tests fall into three categories. Pick the right one when adding a new test:
 - **Run with:** `cargo test -- --include-ignored --nocapture`
 - **Conventions:** still call the runtime-skip helpers (so they no-op gracefully if
   tools are missing). Use VM names prefixed `_test-` and call `cleanup(name)` at the
-  start and end.
+  start and end. Reference base images via the distro aliases
+  (`from = "debian"`, `from = "fedora"`) rather than pinned canonical names, so the
+  slow suite tracks the current default releases — bumping an alias in
+  `src/images/mod.rs` retargets these tests automatically. The AVF raw-disk
+  fixture helpers (`bootable_raw_fixture`, `cached_raw`) match cache files by
+  `debian-` prefix rather than hardcoding a build for the same reason.
 - **Examples:** `create_with_start_and_provision`, `suspend_and_resume_preserves_state`,
   `provision_failure_then_retry_resumes`, `fedora_base_boots_and_provisions`,
   `auto_forwards_end_to_end`

@@ -175,7 +175,7 @@ async fn migrate_qemu_vm_to_avf_backend() {
     // give us an AVF VM and break the migration premise.
     let qemu_config = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"
@@ -372,7 +372,7 @@ async fn migrate_refuses_running_vm() {
     // source VM.
     let qemu_config = r#"
 [base]
-from = "debian-12"
+from = "debian"
 
 [vm]
 memory = "1G"

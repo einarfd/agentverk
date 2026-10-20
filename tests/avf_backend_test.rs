@@ -70,16 +70,31 @@ fn runner_binary() -> Option<PathBuf> {
 ///      but unreliable on macOS where `/tmp` is swept on day-boundary
 ///      reboots.
 fn cached_raw() -> Option<PathBuf> {
-    let candidates = [
-        std::env::home_dir().map(|h| {
-            h.join(".local/share/agv/cache/images")
-                .join("debian-12-genericcloud-arm64-20260210-2384.qcow2.raw")
-        }),
-        Some(PathBuf::from(
-            "/tmp/qcow2-poc/out/debian-12-genericcloud-arm64-20260210-2384.ours.raw",
-        )),
+    // Match the Debian build by `debian-` prefix rather than hardcoding:
+    // the filename embeds the pinned build, which changes every time the
+    // `debian` alias moves to a new release.
+    let dirs = [
+        std::env::home_dir().map(|h| h.join(".local/share/agv/cache/images")),
+        Some(PathBuf::from("/tmp/qcow2-poc/out")),
     ];
-    candidates.into_iter().flatten().find(|p| p.exists())
+    dirs.into_iter()
+        .flatten()
+        .filter_map(|dir| {
+            std::fs::read_dir(&dir).ok().map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("debian-"))
+                            && p.extension().is_some_and(|e| e == "raw")
+                    })
+                    .max()
+            })
+        })
+        .flatten()
+        .next()
 }
 
 /// Build a minimal `Instance` + a `ResolvedConfig` pointing at the AVF
