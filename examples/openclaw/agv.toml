@@ -5,7 +5,7 @@
 #   agv create --include devtools --include nodejs --include openclaw <name>
 
 [base]
-from = "ubuntu-24.04"  # also works: "debian-12", "fedora-43"
+from = "ubuntu-26.04"  # also works: "debian-13", "fedora-44"
 include = ["devtools", "nodejs", "openclaw"]
 spec = "large"  # 8G RAM, 4 vCPUs, 40G disk  (run `agv specs` to see all)
 
