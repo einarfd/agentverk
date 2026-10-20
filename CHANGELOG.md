@@ -21,6 +21,16 @@ All notable changes to `agv` will be documented here. This project follows
 
 ### Fixed
 
+- **Auto-suspend works on Debian 13 (and other guests with OpenSSH 10).**
+  Newer OpenSSH writes utmp entries for the machine sessions agv itself
+  opens — provisioning commands, file copies, the idle watcher's own
+  probes — and those entries can outlive their connection. The idle
+  watcher counted every `who` line as an interactive session, so a
+  leftover entry made a genuinely idle VM look active forever and
+  auto-suspend never fired. The watcher now counts only sessions with a
+  real tty (`pts/*`, `tty*`, `console`), which is what interactive SSH
+  sessions have and machine sessions don't.
+
 - **Plain `ssh <vm>` works again for AVF VMs with many forwards.**
   `agv start` launches one forward supervisor per `[[forwards]]` entry,
   and each of them, plus the managed SSH config update, asks the AVF

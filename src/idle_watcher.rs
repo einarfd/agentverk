@@ -6,10 +6,14 @@
 //! number of minutes of confirmed idleness.
 //!
 //! Idleness is the AND of:
-//!   * `who | wc -l == 0` — no interactive guest sessions. `-N` SSH
-//!     supervisors used by port forwards don't allocate a PTY and don't
-//!     show up in `who`, so config-declared forwards never count as
-//!     activity by themselves.
+//!   * No tty-bearing line in `who` — no interactive guest sessions.
+//!     `-N` SSH supervisors used by port forwards don't allocate a PTY
+//!     and don't count, so config-declared forwards never count as
+//!     activity by themselves. Newer OpenSSH (Debian 13+ ships 10.x)
+//!     also leaves behind utmp entries for the machine sessions agv
+//!     itself opens (provisioning commands, this watcher's own probes)
+//!     after the connection ends; those carry no tty and must not keep
+//!     an idle VM awake forever.
 //!   * 5-min load average (from `/proc/loadavg`) below the configured
 //!     threshold (default `0.2`). This catches background work like a
 //!     `claude` process running in tmux after the user disconnected.
@@ -247,10 +251,7 @@ pub async fn run(
 /// result and makes an idle VM look active forever.
 async fn probe(inst: &Instance, user: &str) -> anyhow::Result<(u32, f32)> {
     let who_out = ssh::run_cmd_stdout(inst, user, &["who".to_string()]).await?;
-    let who_count = who_out
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count();
+    let who_count = count_interactive_sessions(&who_out);
     let loadavg_out = ssh::run_cmd_stdout(
         inst,
         user,
@@ -258,8 +259,69 @@ async fn probe(inst: &Instance, user: &str) -> anyhow::Result<(u32, f32)> {
     )
     .await?;
     let loadavg = parse_loadavg_5m(&loadavg_out)?;
-    let who_count_u32 = u32::try_from(who_count).unwrap_or(u32::MAX);
-    Ok((who_count_u32, loadavg))
+    Ok((who_count, loadavg))
+}
+
+/// Count interactive sessions in `who` output.
+///
+/// A line counts only when one of its fields (after the user name) is a
+/// tty device — see [`is_tty`]. That is the shape a real interactive
+/// session has: `ssh` and `ssh -tt` allocate a PTY, which is recorded as
+/// the utmp line.
+///
+/// The tty requirement exists because newer OpenSSH (Debian 13+ ships
+/// 10.x) writes utmp entries for machine sessions too — the provisioning
+/// commands, file copies, and this watcher's own probes agv runs over
+/// SSH — and those entries can outlive their connection, showing up in
+/// `who` with no tty forever after. Counting them would make a genuinely
+/// idle VM look active and block auto-suspend permanently. On older
+/// OpenSSH (Debian 12, 9.x) such entries never appear, so the filter is
+/// inert there.
+#[must_use]
+pub fn count_interactive_sessions(who_output: &str) -> u32 {
+    who_output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| l.split_whitespace().skip(1).any(is_tty))
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+/// Whether a `who` output field is a tty device — the interactive-session
+/// marker.
+///
+/// Matches exactly the devices logins use, not a bare prefix: `console`,
+/// `pts/<digits>` (PTYs — SSH, `ssh -tt`), and the tty families
+/// (`tty<digits>` virtual consoles, `ttyS<n>` / `ttyAMA<n>` serial
+/// consoles, `ttyACM<n>` / `ttyUSB<n>` serial adapters). util-linux wraps
+/// the free-text client host in `(...)`, so a hostname can't normally
+/// land here anyway — but the exact match keeps a `who` variant that
+/// prints bare hostnames from letting something like `tty-host` fake a
+/// session.
+fn is_tty(field: &str) -> bool {
+    if field == "console" {
+        return true;
+    }
+    if let Some(n) = field.strip_prefix("pts/")
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+    {
+        return true;
+    }
+    let Some(rest) = field.strip_prefix("tty") else {
+        return false;
+    };
+    // Split the device family from its unit number at the first digit
+    // (split_at keeps the digit, unlike split_once which drops it):
+    // tty3 → ("", "3"), ttyS0 → ("S", "0"), ttyAMA0 → ("AMA", "0").
+    let idx = rest
+        .find(|c: char| c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (name, num) = rest.split_at(idx);
+    !num.is_empty()
+        && num.bytes().all(|b| b.is_ascii_digit())
+        && matches!(name, "" | "S" | "AMA" | "ACM" | "USB")
 }
 
 /// Extract the 5-minute load average from a `/proc/loadavg` line.
@@ -410,6 +472,93 @@ mod tests {
         let s = "0.10 0.45 0.30 1/123 4567\n";
         let got = parse_loadavg_5m(s).unwrap();
         assert!((got - 0.45).abs() < 1e-6, "expected ~0.45, got {got}");
+    }
+
+    #[test]
+    fn who_count_counts_pty_sessions() {
+        // Debian 12-era format: user, tty, timestamp, host.
+        let s = "agent    pts/0        2026-10-20 20:27 (10.0.2.2)\n";
+        assert_eq!(count_interactive_sessions(s), 1);
+    }
+
+    #[test]
+    fn who_count_counts_pty_sessions_openssh_10_format() {
+        // Debian 13 / OpenSSH 10: interactive lines carry an extra
+        // "sshd" token before the tty.
+        let s = "agent    sshd pts/0   2026-10-20 20:27 (10.0.2.2)\r\n";
+        assert_eq!(count_interactive_sessions(s), 1);
+    }
+
+    #[test]
+    fn who_count_ignores_leftover_machine_session_entries() {
+        // OpenSSH 10 leaves utmp entries for ended machine sessions
+        // (agv's provisioning/probe connections) with no tty. They must
+        // not count as activity.
+        let s = "agent    sshd         2026-10-20 20:22 (10.0.2.2)\n";
+        assert_eq!(count_interactive_sessions(s), 0);
+    }
+
+    #[test]
+    fn who_count_ignores_ttyless_line_from_who_a() {
+        // `who -a` prints the tty column as "?" for such entries.
+        let s = "agent    ? sshd 2026-10-20 20:22 ? 912 (10.0.2.2)\n";
+        assert_eq!(count_interactive_sessions(s), 0);
+    }
+
+    #[test]
+    fn who_count_mixed_real_and_leftover_entries() {
+        let s = concat!(
+            "agent    sshd         2026-10-20 20:22 (10.0.2.2)\n",
+            "agent    sshd pts/0   2026-10-20 20:27 (10.0.2.2)\n",
+        );
+        assert_eq!(count_interactive_sessions(s), 1);
+    }
+
+    #[test]
+    fn who_count_counts_console_and_serial_logins() {
+        let s = "agent    tty1         2026-10-20 20:27\nagent    ttyS0        2026-10-20 20:28\n";
+        assert_eq!(count_interactive_sessions(s), 2);
+    }
+
+    #[test]
+    fn who_count_empty_output_is_zero() {
+        assert_eq!(count_interactive_sessions(""), 0);
+        assert_eq!(count_interactive_sessions("\n\n"), 0);
+    }
+
+    #[test]
+    fn tty_match_accepts_login_devices() {
+        for f in [
+            "console",
+            "pts/0",
+            "pts/12",
+            "tty1",
+            "tty12",
+            "ttyS0",
+            "ttyAMA0",
+            "ttyACM0",
+            "ttyUSB0",
+        ] {
+            assert!(is_tty(f), "{f} should match a tty device");
+        }
+    }
+
+    #[test]
+    fn tty_match_rejects_non_devices() {
+        // Bare `tty` prefix matches would let a bare-hostname `who`
+        // variant fake an interactive session.
+        for f in [
+            "sshd",
+            "tty",
+            "ttyhost",
+            "tty1.example.com",
+            "(10.0.2.2)",
+            "10.0.2.2",
+            "?",
+            "2026-10-20",
+        ] {
+            assert!(!is_tty(f), "{f} should not match a tty device");
+        }
     }
 
     #[test]
