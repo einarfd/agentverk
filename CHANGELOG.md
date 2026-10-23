@@ -6,6 +6,15 @@ All notable changes to `agv` will be documented here. This project follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-21
+
+### Security
+
+- Updated rustls to 0.23.45, which fixes a moderate-severity flaw where
+  TLS 1.3 handshake messages were accepted across encryption level
+  boundaries. agv reaches rustls through reqwest, the TLS stack for
+  cloud-image downloads.
+
 ### Changed
 
 - **The `ubuntu`, `debian`, and `fedora` image aliases now resolve to
